@@ -9,6 +9,7 @@ import type {
   InventoryItem,
   InventorySnapshot,
   InventoryStatusSummary,
+  InventoryUnitInput,
   InventoryUnit,
   MenuRecipe,
   PriceHistoryRecord,
@@ -160,6 +161,12 @@ export function saveInventoryItem(
   return getInventoryItem(db, id);
 }
 
+export function deleteInventoryItem(db: Database.Database, id: number, actor = "admin"): void {
+  const item = getInventoryItem(db, id);
+  db.prepare("UPDATE inventory_items SET active = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(id);
+  recordActivity(db, "inventory_item_removed", { entityType: "inventory_item", entityId: String(id), itemName: item.name }, actor);
+}
+
 export function saveMenuRecipe(
   db: Database.Database,
   input: { menuItemId: number; ingredients: RecipeIngredientInput[] },
@@ -204,6 +211,30 @@ export function saveInventoryCategory(db: Database.Database, input: { id?: numbe
   return listInventoryCategories(db).find((category) => category.id === id)!;
 }
 
+export function removeInventoryCategory(db: Database.Database, id: number, actor = "admin"): void {
+  db.prepare("UPDATE inventory_categories SET active = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(id);
+  recordActivity(db, "inventory_category_removed", { entityType: "inventory_category", entityId: String(id) }, actor);
+}
+
+export function saveInventoryUnit(db: Database.Database, input: InventoryUnitInput, actor = "admin"): InventoryUnit {
+  const name = cleanText(input.name);
+  const shortName = cleanText(input.shortName).toLowerCase();
+  if (!name || !shortName) throw new Error("Unit name and short name are required.");
+  if (input.id) {
+    db.prepare("UPDATE inventory_units SET name = ?, short_name = ?, active = ? WHERE id = ?").run(name, shortName, input.active === false ? 0 : 1, input.id);
+    recordActivity(db, "inventory_unit_updated", { entityType: "inventory_unit", entityId: String(input.id), name, shortName }, actor);
+    return listInventoryUnits(db).find((unit) => unit.id === input.id)!;
+  }
+  const id = Number(db.prepare("INSERT INTO inventory_units (name, short_name, active) VALUES (?, ?, ?)").run(name, shortName, input.active === false ? 0 : 1).lastInsertRowid);
+  recordActivity(db, "inventory_unit_created", { entityType: "inventory_unit", entityId: String(id), name, shortName }, actor);
+  return listInventoryUnits(db).find((unit) => unit.id === id)!;
+}
+
+export function removeInventoryUnit(db: Database.Database, id: number, actor = "admin"): void {
+  db.prepare("UPDATE inventory_units SET active = 0 WHERE id = ?").run(id);
+  recordActivity(db, "inventory_unit_removed", { entityType: "inventory_unit", entityId: String(id) }, actor);
+}
+
 export function saveCostCategory(db: Database.Database, input: { id?: number; name: string; active?: boolean }, actor = "admin"): CostCategory {
   const name = cleanText(input.name);
   if (!name) throw new Error("Cost category name is required.");
@@ -215,6 +246,11 @@ export function saveCostCategory(db: Database.Database, input: { id?: number; na
   const id = Number(db.prepare("INSERT INTO cost_categories (name, active) VALUES (?, ?)").run(name, input.active === false ? 0 : 1).lastInsertRowid);
   recordActivity(db, "cost_category_created", { entityType: "cost_category", entityId: String(id), name }, actor);
   return listCostCategories(db).find((category) => category.id === id)!;
+}
+
+export function removeCostCategory(db: Database.Database, id: number, actor = "admin"): void {
+  db.prepare("UPDATE cost_categories SET active = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(id);
+  recordActivity(db, "cost_category_removed", { entityType: "cost_category", entityId: String(id) }, actor);
 }
 
 export function addRestockEntry(
@@ -350,14 +386,14 @@ export function reverseOrderCostSnapshot(db: Database.Database, orderId: number,
 }
 
 export function listInventoryCategories(db: Database.Database): InventoryCategory[] {
-  return db.prepare("SELECT id, name, active FROM inventory_categories ORDER BY name").all().map((row) => {
+  return db.prepare("SELECT id, name, active FROM inventory_categories WHERE active = 1 ORDER BY name").all().map((row) => {
     const item = row as { id: number; name: string; active: number };
     return { id: item.id, name: item.name, active: item.active === 1 };
   });
 }
 
 export function listInventoryUnits(db: Database.Database): InventoryUnit[] {
-  return db.prepare("SELECT id, name, short_name, active FROM inventory_units ORDER BY id").all().map((row) => {
+  return db.prepare("SELECT id, name, short_name, active FROM inventory_units WHERE active = 1 ORDER BY id").all().map((row) => {
     const item = row as { id: number; name: string; short_name: string; active: number };
     return { id: item.id, name: item.name, shortName: item.short_name, active: item.active === 1 };
   });
@@ -373,6 +409,7 @@ export function listInventoryItems(db: Database.Database): InventoryItem[] {
      FROM inventory_items ii
      JOIN inventory_units iu ON iu.id = ii.base_unit_id
      LEFT JOIN inventory_categories ic ON ic.id = ii.category_id
+     WHERE ii.active = 1
      ORDER BY ii.name`
   ).all() as Array<{
     id: number;
@@ -484,7 +521,7 @@ export function listPriceHistory(db: Database.Database, limit = 120): PriceHisto
 }
 
 export function listCostCategories(db: Database.Database): CostCategory[] {
-  return db.prepare("SELECT id, name, active FROM cost_categories ORDER BY name").all().map((row) => {
+  return db.prepare("SELECT id, name, active FROM cost_categories WHERE active = 1 ORDER BY name").all().map((row) => {
     const item = row as { id: number; name: string; active: number };
     return { id: item.id, name: item.name, active: item.active === 1 };
   });

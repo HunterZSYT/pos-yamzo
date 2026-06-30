@@ -18,14 +18,19 @@ const api = {
     importCsv: (csvPath: string) => ipcRenderer.invoke("inventory:importCsv", csvPath),
     saveItem: (input: { id?: number; name: string; categoryId?: number | null; baseUnitId: number; lowStockThreshold?: number; active?: boolean }) =>
       ipcRenderer.invoke("inventory:saveItem", input),
+    deleteItem: (id: number) => ipcRenderer.invoke("inventory:deleteItem", id),
     saveRecipe: (input: { menuItemId: number; ingredients: Array<{ inventoryItemId: number; quantityBase: number; unitLabel: string }> }) =>
       ipcRenderer.invoke("inventory:saveRecipe", input),
     saveCategory: (input: { id?: number; name: string; active?: boolean }) => ipcRenderer.invoke("inventory:saveCategory", input),
+    removeCategory: (id: number) => ipcRenderer.invoke("inventory:removeCategory", id),
+    saveUnit: (input: { id?: number; name: string; shortName: string; active?: boolean }) => ipcRenderer.invoke("inventory:saveUnit", input),
+    removeUnit: (id: number) => ipcRenderer.invoke("inventory:removeUnit", id),
     addRestock: (input: { inventoryItemId: number; quantity: number; unitLabel?: string; totalCost?: number; supplierName?: string | null; responsiblePerson?: string | null; note?: string | null; entryDate?: string | null }) =>
       ipcRenderer.invoke("inventory:addRestock", input),
     addPrice: (input: { inventoryItemId: number; pricePerBase: number; effectiveAt?: string | null; responsiblePerson?: string | null; note?: string | null }) =>
       ipcRenderer.invoke("inventory:addPrice", input),
     saveCostCategory: (input: { id?: number; name: string; active?: boolean }) => ipcRenderer.invoke("inventory:saveCostCategory", input),
+    removeCostCategory: (id: number) => ipcRenderer.invoke("inventory:removeCostCategory", id),
     addCost: (input: { categoryId?: number | null; costName: string; amount: number; paymentMethod?: string | null; responsiblePerson?: string | null; note?: string | null; costDate?: string | null }) =>
       ipcRenderer.invoke("inventory:addCost", input)
   },

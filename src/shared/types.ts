@@ -149,6 +149,13 @@ export interface InventoryUnit {
   active: boolean;
 }
 
+export interface InventoryUnitInput {
+  id?: number;
+  name: string;
+  shortName: string;
+  active?: boolean;
+}
+
 export interface InventoryItem {
   id: number;
   name: string;

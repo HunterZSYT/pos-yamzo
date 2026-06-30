@@ -13,18 +13,31 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import type {
   BrandingSettings,
   EmailSettings,
   ActivityLog,
+  CostCategory,
+  InventoryCategory,
+  InventoryItem,
   InventorySnapshot,
+  InventoryUnit,
   MenuRecipe,
   MenuImportResult,
   MenuItem,
@@ -1188,7 +1201,7 @@ export function App() {
 }
 
 function SideNav({ active, children, onClick }: { active: boolean; children: string; onClick: () => void }) {
-  return <Button variant={active ? "default" : "ghost"} size="lg" className="justify-start text-base" onClick={onClick}>{children}</Button>;
+  return <Button variant={active ? "default" : "ghost"} size="lg" className={`justify-start text-base ${active ? "ring-2 ring-stone-400 ring-offset-2 ring-offset-stone-950" : ""}`} onClick={onClick}>{children}</Button>;
 }
 
 function RecipeEditorDialog({
@@ -1233,42 +1246,48 @@ function RecipeEditorDialog({
   }
 
   return (
-    <AlertDialog open={Boolean(recipe)} onOpenChange={(open) => !open && onClose()}>
-      <AlertDialogContent className="max-w-3xl">
-        <AlertDialogHeader>
-          <AlertDialogTitle>{recipe ? `Edit recipe - ${recipe.menuItemName}` : "Edit recipe"}</AlertDialogTitle>
-          <AlertDialogDescription>Add ingredients from existing inventory items and enter the quantity used per order.</AlertDialogDescription>
-        </AlertDialogHeader>
-        <div className="grid max-h-[60vh] gap-2 overflow-auto pr-2">
+    <Dialog open={Boolean(recipe)} onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="max-h-[86vh] max-w-4xl overflow-hidden p-0">
+        <DialogHeader className="border-b px-6 py-5">
+          <DialogTitle>{recipe ? `Edit recipe - ${recipe.menuItemName}` : "Edit recipe"}</DialogTitle>
+          <DialogDescription>Add ingredients from existing inventory items and enter the quantity used per order.</DialogDescription>
+        </DialogHeader>
+        <div className="grid max-h-[58vh] gap-3 overflow-auto px-6 py-4">
           {rows.length === 0 && <p className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">No ingredients added.</p>}
           {rows.map((row, index) => {
             const selectedItem = items.find((item) => item.id === Number(row.inventoryItemId));
             return (
-              <div className="grid grid-cols-[minmax(0,1fr)_120px_90px_auto] items-end gap-2 rounded-lg border bg-white p-3" key={`${row.inventoryItemId}-${index}`}>
-                <InventoryItemSelect
-                  label="Ingredient"
-                  value={row.inventoryItemId}
-                  items={items}
-                  onChange={(value) => setRows((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, inventoryItemId: value, unitLabel: items.find((inventoryItem) => inventoryItem.id === Number(value))?.unitShortName || item.unitLabel } : item))}
-                />
-                <Field label="Amount">
+              <div className="grid gap-3 rounded-xl border bg-card p-4 md:grid-cols-[minmax(0,1fr)_140px_120px_auto] md:items-end" key={`${row.inventoryItemId}-${index}`}>
+                <div className="grid gap-2">
+                  <Label>Ingredient</Label>
+                  <Select
+                    value={row.inventoryItemId}
+                    onValueChange={(value) => setRows((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, inventoryItemId: value, unitLabel: items.find((inventoryItem) => inventoryItem.id === Number(value))?.unitShortName || item.unitLabel } : item))}
+                  >
+                    <SelectTrigger><SelectValue placeholder="Choose ingredient" /></SelectTrigger>
+                    <SelectContent>{items.map((item) => <SelectItem key={item.id} value={String(item.id)}>{item.name}</SelectItem>)}</SelectContent>
+                  </Select>
+                </div>
+                <div className="grid gap-2">
+                  <Label>Amount</Label>
                   <Input value={row.quantityBase} onChange={(event) => setRows((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, quantityBase: event.target.value } : item))} />
-                </Field>
-                <Field label="Unit">
+                </div>
+                <div className="grid gap-2">
+                  <Label>Unit</Label>
                   <Input value={row.unitLabel || selectedItem?.unitShortName || "g"} onChange={(event) => setRows((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, unitLabel: event.target.value } : item))} />
-                </Field>
+                </div>
                 <Button variant="secondary" onClick={() => setRows((current) => current.filter((_, itemIndex) => itemIndex !== index))}>Remove</Button>
               </div>
             );
           })}
         </div>
-        <AlertDialogFooter>
+        <DialogFooter className="border-t px-6 py-4">
           <Button variant="secondary" onClick={addRow} disabled={items.length === 0}>Add Ingredient</Button>
-          <AlertDialogCancel>Cancel</AlertDialogCancel>
-          <AlertDialogAction onClick={saveRecipe}>Save Recipe</AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
+          <Button variant="secondary" onClick={onClose}>Cancel</Button>
+          <Button onClick={saveRecipe}>Save Recipe</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -1295,30 +1314,32 @@ function PriceHistoryDialog({ snapshot, itemId, onClose }: { snapshot: Inventory
   }
 
   return (
-    <AlertDialog open={Boolean(itemId)} onOpenChange={(open) => !open && onClose()}>
-      <AlertDialogContent className="max-w-3xl">
-        <AlertDialogHeader>
-          <AlertDialogTitle>{item ? `Price record - ${item.name}` : "Price record"}</AlertDialogTitle>
-          <AlertDialogDescription>Price history is created from restock entries and manual price records.</AlertDialogDescription>
-        </AlertDialogHeader>
-        <div className="max-h-[55vh] overflow-auto rounded-xl border">
+    <Dialog open={Boolean(itemId)} onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="max-h-[86vh] max-w-4xl overflow-hidden p-0">
+        <DialogHeader className="border-b px-6 py-5">
+          <DialogTitle>{item ? `Price record - ${item.name}` : "Price record"}</DialogTitle>
+          <DialogDescription>Price history is created from restock entries and manual price records.</DialogDescription>
+        </DialogHeader>
+        <div className="max-h-[58vh] overflow-auto px-6 py-4">
           {rows.length === 0 ? (
-            <p className="p-4 text-sm text-muted-foreground">No price records yet.</p>
+            <p className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">No price records yet.</p>
           ) : (
-            <table className="w-full min-w-[620px] border-collapse text-sm">
-              <thead className="bg-muted/60 text-left"><tr><th className="border-b px-3 py-2">Date</th><th className="border-b px-3 py-2">Price</th><th className="border-b px-3 py-2">Person</th><th className="border-b px-3 py-2">Note</th></tr></thead>
-              <tbody>{rows.map((entry) => <tr className="border-b last:border-b-0" key={entry.id}><td className="px-3 py-2">{formatDate(entry.effectiveAt)}</td><td className="px-3 py-2">{entry.pricePerBase}</td><td className="px-3 py-2">{entry.responsiblePerson ?? "-"}</td><td className="px-3 py-2">{entry.note ?? "-"}</td></tr>)}</tbody>
-            </table>
+            <div className="rounded-xl border">
+              <Table>
+                <TableHeader><TableRow><TableHead>Date</TableHead><TableHead>Price</TableHead><TableHead>Person</TableHead><TableHead>Note</TableHead></TableRow></TableHeader>
+                <TableBody>{rows.map((entry) => <TableRow key={entry.id}><TableCell>{formatDate(entry.effectiveAt)}</TableCell><TableCell>{entry.pricePerBase}</TableCell><TableCell>{entry.responsiblePerson ?? "-"}</TableCell><TableCell>{entry.note ?? "-"}</TableCell></TableRow>)}</TableBody>
+              </Table>
+            </div>
           )}
         </div>
-        <AlertDialogFooter>
+        <DialogFooter className="border-t px-6 py-4">
           <Button variant="secondary" onClick={() => exportHistory("csv")}>Export CSV</Button>
           <Button variant="secondary" onClick={() => exportHistory("xls")}>Export Excel</Button>
           <Button variant="secondary" onClick={printHistory}>Print / PDF</Button>
-          <AlertDialogCancel>Close</AlertDialogCancel>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
+          <Button onClick={onClose}>Close</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -1474,8 +1495,21 @@ function BusinessSummary({ summary }: { summary: SalesSummary }) {
 }
 
 function ReportsPanel({ summary, inventory }: { summary: SalesSummary; inventory: InventorySnapshot }) {
+  const [reportRange, setReportRange] = useState({ start: "", end: "" });
+  const missingRecipeRows = inventory.status.missingRecipes.map((item) => [item.name, money(item.price), "Recipe not available"]);
+
+  function exportMissingRecipes() {
+    exportCsvRows("yamzo-missing-recipes.csv", [["Menu item", "Selling price", "Status"], ...missingRecipeRows]);
+  }
+
   return (
     <div className="grid gap-4">
+      <Card>
+        <CardContent className="grid gap-3 p-4 lg:grid-cols-[1fr_auto] lg:items-end">
+          <DateRangeControl value={reportRange} onChange={setReportRange} />
+          <Button variant="secondary" onClick={exportMissingRecipes}>Export Missing Recipes</Button>
+        </CardContent>
+      </Card>
       <BusinessSummary summary={summary} />
       <div className="grid grid-cols-[repeat(auto-fit,minmax(180px,1fr))] gap-3">
         <Metric label="Revenue" value={money(inventory.profit.revenue)} />
@@ -1493,6 +1527,15 @@ function ReportsPanel({ summary, inventory }: { summary: SalesSummary; inventory
           `${inventory.status.missingRecipeCount} menu items need recipes`
         ]} />
       </div>
+      <Card>
+        <CardHeader>
+          <CardTitle>Missing Recipes</CardTitle>
+          <CardDescription>Menu items that still need ingredient recipes before profit and inventory usage can be audited.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <InventoryTable headers={["Menu item", "Selling price", "Status"]} rows={missingRecipeRows} />
+        </CardContent>
+      </Card>
     </div>
   );
 }
@@ -1518,11 +1561,16 @@ function InventoryAdmin({
   onEditRecipe: (recipe: MenuRecipe) => void;
   onViewPriceHistory: (itemId: number) => void;
 }) {
+  const activeCategories = snapshot.categories.filter((category) => category.active);
+  const activeUnits = snapshot.units.filter((unit) => unit.active);
+  const activeCostCategories = snapshot.costCategories.filter((category) => category.active);
   const firstItem = snapshot.items[0];
-  const firstUnit = snapshot.units[0];
-  const firstCategory = snapshot.categories[0];
-  const firstCostCategory = snapshot.costCategories[0];
+  const firstUnit = activeUnits[0];
+  const firstCategory = activeCategories[0];
+  const firstCostCategory = activeCostCategories[0];
+  const firstMissingRecipe = snapshot.recipes.find((recipe) => recipe.status === "missing") ?? snapshot.recipes[0] ?? null;
   const [itemForm, setItemForm] = useState({
+    id: 0,
     name: "",
     categoryId: firstCategory?.id ? String(firstCategory.id) : "",
     baseUnitId: firstUnit?.id ? String(firstUnit.id) : "",
@@ -1546,24 +1594,15 @@ function InventoryAdmin({
   });
   const [categoryName, setCategoryName] = useState("");
   const [costCategoryName, setCostCategoryName] = useState("");
+  const [unitForm, setUnitForm] = useState({ name: "", shortName: "" });
+  const [statusRange, setStatusRange] = useState({ start: "", end: "" });
 
   useEffect(() => {
-    if (!itemForm.baseUnitId && snapshot.units[0]) setItemForm((current) => ({ ...current, baseUnitId: String(snapshot.units[0].id) }));
-    if (!itemForm.categoryId && snapshot.categories[0]) setItemForm((current) => ({ ...current, categoryId: String(snapshot.categories[0].id) }));
+    if (!itemForm.baseUnitId && activeUnits[0]) setItemForm((current) => ({ ...current, baseUnitId: String(activeUnits[0].id) }));
+    if (!itemForm.categoryId && activeCategories[0]) setItemForm((current) => ({ ...current, categoryId: String(activeCategories[0].id) }));
     if (!restockForm.inventoryItemId && snapshot.items[0]) setRestockForm((current) => ({ ...current, inventoryItemId: String(snapshot.items[0].id) }));
-    if (!costForm.categoryId && snapshot.costCategories[0]) setCostForm((current) => ({ ...current, categoryId: String(snapshot.costCategories[0].id) }));
+    if (!costForm.categoryId && activeCostCategories[0]) setCostForm((current) => ({ ...current, categoryId: String(activeCostCategories[0].id) }));
   }, [snapshot]);
-
-  async function importInventoryCsv() {
-    const result = await window.yamzo?.inventory.chooseAndImportCsv();
-    if (!result) return;
-    if (result.cancelled) {
-      setMessage("Inventory import cancelled.");
-      return;
-    }
-    setMessage(`${result.recipesImported} recipes imported, ${result.recipesUpdated} updated, ${result.inventoryItemsCreated} inventory items created, ${result.menuItemsCreated} menu items added.`);
-    await refreshData();
-  }
 
   async function saveItem() {
     if (!itemForm.name.trim()) {
@@ -1571,14 +1610,33 @@ function InventoryAdmin({
       return;
     }
     await window.yamzo?.inventory.saveItem({
+      id: itemForm.id || undefined,
       name: itemForm.name,
       categoryId: itemForm.categoryId ? Number(itemForm.categoryId) : null,
       baseUnitId: Number(itemForm.baseUnitId),
       lowStockThreshold: Number(itemForm.lowStockThreshold || 0),
       active: true
     });
-    setItemForm({ ...itemForm, name: "" });
+    setItemForm({ ...itemForm, id: 0, name: "" });
     setMessage("Inventory item saved.");
+    await refreshData();
+  }
+
+  function editItem(item: InventoryItem) {
+    setItemForm({
+      id: item.id,
+      name: item.name,
+      categoryId: item.categoryId ? String(item.categoryId) : "",
+      baseUnitId: String(item.baseUnitId),
+      lowStockThreshold: String(item.lowStockThreshold)
+    });
+    setMessage(`Editing ${item.name}.`);
+  }
+
+  async function removeItem(item: InventoryItem) {
+    if (!window.confirm(`Remove ${item.name} from active inventory items?`)) return;
+    await window.yamzo?.inventory.deleteItem(item.id);
+    setMessage("Inventory item removed.");
     await refreshData();
   }
 
@@ -1611,17 +1669,64 @@ function InventoryAdmin({
   }
 
   async function addCategory() {
-    await window.yamzo?.inventory.saveCategory({ name: categoryName, active: true });
+    if (!categoryName.trim()) return;
+    await window.yamzo?.inventory.saveCategory({ name: categoryName.trim(), active: true });
     setCategoryName("");
     setMessage("Inventory category saved.");
     await refreshData();
   }
 
+  async function removeCategory(category: InventoryCategory) {
+    if (!window.confirm(`Remove inventory category ${category.name}?`)) return;
+    await window.yamzo?.inventory.removeCategory(category.id);
+    setMessage("Inventory category removed.");
+    await refreshData();
+  }
+
   async function addCostCategory() {
-    await window.yamzo?.inventory.saveCostCategory({ name: costCategoryName, active: true });
+    if (!costCategoryName.trim()) return;
+    await window.yamzo?.inventory.saveCostCategory({ name: costCategoryName.trim(), active: true });
     setCostCategoryName("");
     setMessage("Cost category saved.");
     await refreshData();
+  }
+
+  async function removeCostCategory(category: CostCategory) {
+    if (!window.confirm(`Remove cost category ${category.name}?`)) return;
+    await window.yamzo?.inventory.removeCostCategory(category.id);
+    setMessage("Cost category removed.");
+    await refreshData();
+  }
+
+  async function addUnit() {
+    if (!unitForm.name.trim() || !unitForm.shortName.trim()) return;
+    await window.yamzo?.inventory.saveUnit({ name: unitForm.name.trim(), shortName: unitForm.shortName.trim(), active: true });
+    setUnitForm({ name: "", shortName: "" });
+    setMessage("Base unit saved.");
+    await refreshData();
+  }
+
+  async function removeUnit(unit: InventoryUnit) {
+    if (!window.confirm(`Remove base unit ${unit.name}?`)) return;
+    await window.yamzo?.inventory.removeUnit(unit.id);
+    setMessage("Base unit removed.");
+    await refreshData();
+  }
+
+  function stockRows() {
+    return snapshot.items.map((item) => [
+      item.name,
+      item.categoryName ?? "Other",
+      `${formatQuantity(item.currentStock)} ${item.unitShortName}`,
+      `${formatQuantity(item.lowStockThreshold)} ${item.unitShortName}`,
+      item.status === "ok" ? "OK" : item.status === "low" ? "Low stock" : "Out of stock"
+    ]);
+  }
+
+  function restockRows() {
+    return snapshot.restocks
+      .filter((entry) => withinDateRange(entry.entryDate, statusRange))
+      .map((entry) => [formatDate(entry.entryDate), entry.itemName, `${formatQuantity(entry.quantityBase)} ${entry.unitLabel}`, money(entry.totalCost), entry.responsiblePerson ?? "-", entry.supplierName ?? "-"]);
   }
 
   return (
@@ -1648,33 +1753,37 @@ function InventoryAdmin({
         <TabsContent value="status" className="grid gap-4 pt-4">
           <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
             <Card>
-              <CardHeader><CardTitle>Low Stock</CardTitle><CardDescription>Items that need attention.</CardDescription></CardHeader>
-              <CardContent className="grid gap-2">
-                {snapshot.status.lowStockItems.length === 0 ? <p className="text-sm text-muted-foreground">No low stock items.</p> : snapshot.status.lowStockItems.map((item) => (
-                  <InventoryListRow key={item.id} title={item.name} meta={`${formatQuantity(item.currentStock)} ${item.unitShortName} left | ${item.categoryName ?? "Other"}`} badge={item.status === "out" ? "Out of Stock" : "Low Stock"} />
-                ))}
+              <CardHeader>
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div><CardTitle>Stock Status</CardTitle><CardDescription>Current stock position for active inventory items.</CardDescription></div>
+                  <Button variant="secondary" onClick={() => exportCsvRows("yamzo-stock-status.csv", [["Item", "Category", "Stock", "Warning", "Status"], ...stockRows()])}>Export</Button>
+                </div>
+              </CardHeader>
+              <CardContent>
+                <DateRangeControl value={statusRange} onChange={setStatusRange} />
+                <div className="mt-4"><InventoryTable headers={["Item", "Category", "Stock", "Warning", "Status"]} rows={stockRows()} /></div>
               </CardContent>
             </Card>
             <Card>
-              <CardHeader><CardTitle>Missing Recipes</CardTitle><CardDescription>Menu items without ingredient recipes.</CardDescription></CardHeader>
-              <CardContent className="grid gap-2">
-                {snapshot.status.missingRecipes.length === 0 ? <p className="text-sm text-muted-foreground">All menu items have recipes.</p> : snapshot.status.missingRecipes.map((item) => (
-                  <InventoryListRow key={item.menuItemId} title={item.name} meta={money(item.price)} badge="Recipe Not Available" />
-                ))}
+              <CardHeader>
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div><CardTitle>Restock Status</CardTitle><CardDescription>Restock entries in the selected date range.</CardDescription></div>
+                  <Button variant="secondary" onClick={() => exportCsvRows("yamzo-restock-status.csv", [["Date", "Item", "Quantity", "Cost", "Person", "Supplier"], ...restockRows()])}>Export</Button>
+                </div>
+              </CardHeader>
+              <CardContent>
+                <DateRangeControl value={statusRange} onChange={setStatusRange} />
+                <div className="mt-4"><InventoryTable headers={["Date", "Item", "Quantity", "Cost", "Person", "Supplier"]} rows={restockRows()} /></div>
               </CardContent>
             </Card>
           </div>
-          <Card>
-            <CardHeader><CardTitle>Recent Restocks</CardTitle></CardHeader>
-            <CardContent className="grid gap-2">
-              {snapshot.status.recentRestocks.length === 0 ? <p className="text-sm text-muted-foreground">No restocks recorded yet.</p> : snapshot.status.recentRestocks.map((entry) => (
-                <InventoryListRow key={entry.id} title={entry.itemName} meta={`${formatQuantity(entry.quantityBase)} ${entry.unitLabel} | ${money(entry.totalCost)} | ${formatDate(entry.entryDate)}`} />
-              ))}
-            </CardContent>
-          </Card>
         </TabsContent>
 
         <TabsContent value="recipes" className="grid gap-3 pt-4">
+          <div className="flex flex-wrap justify-between gap-2">
+            <p className="text-sm text-muted-foreground">Add or edit one recipe at a time from existing inventory items.</p>
+            <Button disabled={!firstMissingRecipe} onClick={() => firstMissingRecipe && onEditRecipe(firstMissingRecipe)}>{firstMissingRecipe?.status === "missing" ? "Add Recipe" : "Edit Recipe"}</Button>
+          </div>
           {snapshot.recipes.map((recipe) => (
             <Card key={recipe.menuItemId} size="sm">
               <CardContent className="grid gap-3 p-4 lg:grid-cols-[minmax(0,1fr)_180px_180px_180px] lg:items-center">
@@ -1685,7 +1794,7 @@ function InventoryAdmin({
                 <span>Raw cost: <strong>{money(recipe.rawCost)}</strong></span>
                 <span>Profit: <strong>{money(recipe.estimatedProfit)}</strong></span>
                 <span>Margin: <strong>{recipe.profitMargin}%</strong></span>
-                <Button variant="secondary" onClick={() => onEditRecipe(recipe)}>Edit Recipe</Button>
+                <Button variant="secondary" onClick={() => onEditRecipe(recipe)}>{recipe.status === "missing" ? "Add Recipe" : "Edit Recipe"}</Button>
               </CardContent>
             </Card>
           ))}
@@ -1695,10 +1804,13 @@ function InventoryAdmin({
           <Card>
             <CardContent className="grid grid-cols-[repeat(auto-fit,minmax(180px,1fr))] gap-3 p-4">
               <Field label="Item name"><Input value={itemForm.name} onChange={(event) => setItemForm({ ...itemForm, name: event.target.value })} /></Field>
-              <Field label="Category"><Select value={itemForm.categoryId} onValueChange={(value) => setItemForm({ ...itemForm, categoryId: value })}><SelectTrigger><SelectValue placeholder="Choose category" /></SelectTrigger><SelectContent>{snapshot.categories.map((category) => <SelectItem key={category.id} value={String(category.id)}>{category.name}</SelectItem>)}</SelectContent></Select></Field>
-              <Field label="Base unit"><Select value={itemForm.baseUnitId} onValueChange={(value) => setItemForm({ ...itemForm, baseUnitId: value })}><SelectTrigger><SelectValue placeholder="Choose unit" /></SelectTrigger><SelectContent>{snapshot.units.map((unit) => <SelectItem key={unit.id} value={String(unit.id)}>{unit.name}</SelectItem>)}</SelectContent></Select></Field>
+              <Field label="Category"><Select value={itemForm.categoryId} onValueChange={(value) => setItemForm({ ...itemForm, categoryId: value })}><SelectTrigger><SelectValue placeholder="Choose category" /></SelectTrigger><SelectContent>{activeCategories.map((category) => <SelectItem key={category.id} value={String(category.id)}>{category.name}</SelectItem>)}</SelectContent></Select></Field>
+              <Field label="Base unit"><Select value={itemForm.baseUnitId} onValueChange={(value) => setItemForm({ ...itemForm, baseUnitId: value })}><SelectTrigger><SelectValue placeholder="Choose unit" /></SelectTrigger><SelectContent>{activeUnits.map((unit) => <SelectItem key={unit.id} value={String(unit.id)}>{unit.name}</SelectItem>)}</SelectContent></Select></Field>
               <Field label="Low stock warning"><Input value={itemForm.lowStockThreshold} onChange={(event) => setItemForm({ ...itemForm, lowStockThreshold: event.target.value })} /></Field>
-              <Button className="self-end" onClick={saveItem}>Save Item</Button>
+              <div className="flex gap-2 self-end">
+                <Button onClick={saveItem}>{itemForm.id ? "Save Changes" : "Save Item"}</Button>
+                {itemForm.id > 0 && <Button variant="secondary" onClick={() => setItemForm({ ...itemForm, id: 0, name: "" })}>Cancel Edit</Button>}
+              </div>
             </CardContent>
           </Card>
           <div className="grid gap-2">
@@ -1714,7 +1826,9 @@ function InventoryAdmin({
                   <span>Value: <strong>{money(item.estimatedValue)}</strong></span>
                   <div className="flex items-center gap-2">
                     <Badge variant={item.status === "ok" ? "secondary" : "destructive"}>{item.status === "ok" ? "OK" : item.status === "low" ? "Low Stock" : "Out of Stock"}</Badge>
+                    <Button variant="secondary" size="sm" onClick={() => editItem(item)}>Edit</Button>
                     <Button variant="secondary" size="sm" onClick={() => onViewPriceHistory(item.id)}>Price Record</Button>
+                    <Button variant="destructive" size="sm" onClick={() => removeItem(item)}>Remove</Button>
                   </div>
                 </CardContent>
               </Card>
@@ -1740,7 +1854,7 @@ function InventoryAdmin({
         <TabsContent value="costs" className="grid gap-4 pt-4">
           <Card>
             <CardContent className="grid grid-cols-[repeat(auto-fit,minmax(180px,1fr))] gap-3 p-4">
-              <Field label="Category"><Select value={costForm.categoryId} onValueChange={(value) => setCostForm({ ...costForm, categoryId: value })}><SelectTrigger><SelectValue placeholder="Choose category" /></SelectTrigger><SelectContent>{snapshot.costCategories.map((category) => <SelectItem key={category.id} value={String(category.id)}>{category.name}</SelectItem>)}</SelectContent></Select></Field>
+              <Field label="Category"><Select value={costForm.categoryId} onValueChange={(value) => setCostForm({ ...costForm, categoryId: value })}><SelectTrigger><SelectValue placeholder="Choose category" /></SelectTrigger><SelectContent>{activeCostCategories.map((category) => <SelectItem key={category.id} value={String(category.id)}>{category.name}</SelectItem>)}</SelectContent></Select></Field>
               <Field label="Cost name"><Input value={costForm.costName} onChange={(event) => setCostForm({ ...costForm, costName: event.target.value })} /></Field>
               <Field label="Amount"><Input value={costForm.amount} onChange={(event) => setCostForm({ ...costForm, amount: event.target.value })} /></Field>
               <Field label="Payment method"><Input value={costForm.paymentMethod} onChange={(event) => setCostForm({ ...costForm, paymentMethod: event.target.value })} /></Field>
@@ -1765,23 +1879,32 @@ function InventoryAdmin({
         </TabsContent>
 
         <TabsContent value="settings" className="grid gap-4 pt-4">
-          <Card>
-            <CardHeader><CardTitle>Import Recipes</CardTitle><CardDescription>Choose a recipe CSV and review the import summary after it finishes.</CardDescription></CardHeader>
-            <CardContent className="flex flex-wrap gap-2"><Button onClick={importInventoryCsv}>Import Recipe CSV</Button><Button variant="secondary" onClick={refreshData}>Refresh Inventory</Button></CardContent>
-          </Card>
-          <div className="grid gap-4 xl:grid-cols-2">
+          <div className="grid gap-4 xl:grid-cols-3">
             <Card>
               <CardHeader><CardTitle>Inventory Categories</CardTitle></CardHeader>
               <CardContent className="grid gap-3">
                 <div className="grid grid-cols-[1fr_auto] gap-2"><Input value={categoryName} onChange={(event) => setCategoryName(event.target.value)} placeholder="Example: Beverage" /><Button onClick={addCategory} disabled={!categoryName.trim()}>Add Category</Button></div>
-                <div className="flex flex-wrap gap-2">{snapshot.categories.map((category) => <Badge key={category.id} variant="secondary">{category.name}</Badge>)}</div>
+                <EditableSettingList items={activeCategories} onSave={(item, name) => window.yamzo?.inventory.saveCategory({ id: item.id, name, active: true }).then(refreshData)} onRemove={removeCategory} />
               </CardContent>
             </Card>
             <Card>
               <CardHeader><CardTitle>Cost Categories</CardTitle></CardHeader>
               <CardContent className="grid gap-3">
                 <div className="grid grid-cols-[1fr_auto] gap-2"><Input value={costCategoryName} onChange={(event) => setCostCategoryName(event.target.value)} placeholder="Example: Marketing" /><Button onClick={addCostCategory} disabled={!costCategoryName.trim()}>Add Cost Category</Button></div>
-                <div className="flex flex-wrap gap-2">{snapshot.costCategories.map((category) => <Badge key={category.id} variant="secondary">{category.name}</Badge>)}</div>
+                <EditableSettingList items={activeCostCategories} onSave={(item, name) => window.yamzo?.inventory.saveCostCategory({ id: item.id, name, active: true }).then(refreshData)} onRemove={removeCostCategory} />
+              </CardContent>
+            </Card>
+            <Card>
+              <CardHeader><CardTitle>Base Units</CardTitle><CardDescription>Use measurable stock units only.</CardDescription></CardHeader>
+              <CardContent className="grid gap-3">
+                <div className="grid grid-cols-[1fr_92px_auto] gap-2">
+                  <Input value={unitForm.name} onChange={(event) => setUnitForm({ ...unitForm, name: event.target.value })} placeholder="Kilogram" />
+                  <Input value={unitForm.shortName} onChange={(event) => setUnitForm({ ...unitForm, shortName: event.target.value })} placeholder="kg" />
+                  <Button onClick={addUnit} disabled={!unitForm.name.trim() || !unitForm.shortName.trim()}>Add Unit</Button>
+                </div>
+                <div className="grid gap-2">
+                  {activeUnits.map((unit) => <EditableUnitRow key={unit.id} unit={unit} onSave={async (name, shortName) => { await window.yamzo?.inventory.saveUnit({ id: unit.id, name, shortName, active: true }); await refreshData(); }} onRemove={() => removeUnit(unit)} />)}
+                </div>
               </CardContent>
             </Card>
           </div>
@@ -1802,37 +1925,96 @@ function InventoryItemSelect({ label, value, items, onChange }: { label: string;
   );
 }
 
-function InventoryListRow({ title, meta, badge }: { title: string; meta: string; badge?: string }) {
+function EditableSettingList<T extends { id: number; name: string }>({ items, onSave, onRemove }: { items: T[]; onSave: (item: T, name: string) => Promise<unknown> | void; onRemove: (item: T) => Promise<void> | void }) {
   return (
-    <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-lg border bg-white px-3 py-2">
-      <span className="min-w-0"><strong className="block truncate">{title}</strong><small className="text-muted-foreground">{meta}</small></span>
-      {badge && <Badge variant={badge.includes("Out") || badge.includes("Not") ? "destructive" : "secondary"}>{badge}</Badge>}
+    <div className="grid gap-2">
+      {items.length === 0 ? <p className="rounded-lg border border-dashed p-3 text-sm text-muted-foreground">No entries yet.</p> : items.map((item) => (
+        <EditableNameRow key={item.id} item={item} onSave={onSave} onRemove={onRemove} />
+      ))}
+    </div>
+  );
+}
+
+function EditableNameRow<T extends { id: number; name: string }>({ item, onSave, onRemove }: { item: T; onSave: (item: T, name: string) => Promise<unknown> | void; onRemove: (item: T) => Promise<void> | void }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(item.name);
+
+  useEffect(() => setDraft(item.name), [item.name]);
+
+  if (editing) {
+    return (
+      <div className="grid grid-cols-[1fr_auto_auto] items-center gap-2 rounded-lg border bg-card p-2">
+        <Input value={draft} onChange={(event) => setDraft(event.target.value)} />
+        <Button size="sm" onClick={async () => { await onSave(item, draft.trim()); setEditing(false); }}>Save</Button>
+        <Button size="sm" variant="secondary" onClick={() => { setDraft(item.name); setEditing(false); }}>Cancel</Button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-2 rounded-lg border bg-card px-3 py-2">
+      <strong className="truncate">{item.name}</strong>
+      <Button size="sm" variant="secondary" onClick={() => setEditing(true)}>Edit</Button>
+      <Button size="sm" variant="destructive" onClick={() => onRemove(item)}>Remove</Button>
+    </div>
+  );
+}
+
+function EditableUnitRow({ unit, onSave, onRemove }: { unit: InventoryUnit; onSave: (name: string, shortName: string) => Promise<void>; onRemove: () => Promise<void> | void }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState({ name: unit.name, shortName: unit.shortName });
+
+  useEffect(() => setDraft({ name: unit.name, shortName: unit.shortName }), [unit.name, unit.shortName]);
+
+  if (editing) {
+    return (
+      <div className="grid grid-cols-[1fr_92px_auto_auto] items-center gap-2 rounded-lg border bg-card p-2">
+        <Input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} />
+        <Input value={draft.shortName} onChange={(event) => setDraft({ ...draft, shortName: event.target.value })} />
+        <Button size="sm" onClick={async () => { await onSave(draft.name.trim(), draft.shortName.trim()); setEditing(false); }}>Save</Button>
+        <Button size="sm" variant="secondary" onClick={() => { setDraft({ name: unit.name, shortName: unit.shortName }); setEditing(false); }}>Cancel</Button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="grid grid-cols-[minmax(0,1fr)_auto_auto_auto] items-center gap-2 rounded-lg border bg-card px-3 py-2">
+      <strong className="truncate">{unit.name}</strong>
+      <Badge variant="secondary">{unit.shortName}</Badge>
+      <Button size="sm" variant="secondary" onClick={() => setEditing(true)}>Edit</Button>
+      <Button size="sm" variant="destructive" onClick={onRemove}>Remove</Button>
+    </div>
+  );
+}
+
+function DateRangeControl({ value, onChange }: { value: { start: string; end: string }; onChange: (value: { start: string; end: string }) => void }) {
+  return (
+    <div className="grid gap-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
+      <Field label="Start date"><Input type="date" value={value.start} onChange={(event) => onChange({ ...value, start: event.target.value })} /></Field>
+      <Field label="End date"><Input type="date" value={value.end} onChange={(event) => onChange({ ...value, end: event.target.value })} /></Field>
+      <Button variant="secondary" onClick={() => onChange({ start: "", end: "" })}>Clear Dates</Button>
     </div>
   );
 }
 
 function InventoryTable({ headers, rows }: { headers: string[]; rows: string[][] }) {
   return (
-    <Card>
-      <CardContent className="p-0">
-        {rows.length === 0 ? (
-          <p className="p-4 text-sm text-muted-foreground">No records yet.</p>
-        ) : (
-          <div className="overflow-auto">
-            <table className="w-full min-w-[760px] border-collapse text-sm">
-              <thead className="bg-muted/60 text-left">
-                <tr>{headers.map((header) => <th className="border-b px-4 py-3 font-semibold" key={header}>{header}</th>)}</tr>
-              </thead>
-              <tbody>
-                {rows.map((row, rowIndex) => (
-                  <tr className="border-b last:border-b-0" key={`${row.join("-")}-${rowIndex}`}>{row.map((cell, cellIndex) => <td className="px-4 py-3" key={`${cell}-${cellIndex}`}>{cell}</td>)}</tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </CardContent>
-    </Card>
+    <div className="rounded-xl border bg-card">
+      {rows.length === 0 ? (
+        <p className="p-4 text-sm text-muted-foreground">No records yet.</p>
+      ) : (
+        <div className="overflow-auto">
+          <Table className="min-w-[760px]">
+            <TableHeader><TableRow>{headers.map((header) => <TableHead key={header}>{header}</TableHead>)}</TableRow></TableHeader>
+            <TableBody>
+              {rows.map((row, rowIndex) => (
+                <TableRow key={`${row.join("-")}-${rowIndex}`}>{row.map((cell, cellIndex) => <TableCell key={`${cell}-${cellIndex}`}>{cell}</TableCell>)}</TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -2216,6 +2398,25 @@ function downloadTextFile(filename: string, content: string) {
   link.click();
   link.remove();
   URL.revokeObjectURL(url);
+}
+
+function exportCsvRows(filename: string, rows: string[][]) {
+  downloadTextFile(filename, rows.map((line) => line.map(csvCell).join(",")).join("\n"));
+}
+
+function withinDateRange(value: string, range: { start: string; end: string }): boolean {
+  if (!range.start && !range.end) return true;
+  const date = parseSqliteTimestamp(value);
+  if (Number.isNaN(date.getTime())) return true;
+  if (range.start) {
+    const start = new Date(`${range.start}T00:00:00`);
+    if (date < start) return false;
+  }
+  if (range.end) {
+    const end = new Date(`${range.end}T23:59:59`);
+    if (date > end) return false;
+  }
+  return true;
 }
 
 function csvCell(value: string): string {
