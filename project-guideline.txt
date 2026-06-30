@@ -1,0 +1,361 @@
+I have made a repo at [HunterZSYT/pos-yamzo](https://github.com/HunterZSYT/pos-yamzo). Connect to this repo. We are building a local Windows POS system for Yamzo restaurant.
+
+Main goal:
+Build a simple, local, installable Windows POS app. I will first test it on my laptop. Later, I should be able to push it to GitHub, then download/clone it on the restaurant POS computer and install/run it locally.
+
+Use a local-first setup:
+
+* No cloud database for now.
+* Use SQLite locally.
+* Store database, settings, logo, QR, tokens, and printer config on the local computer.
+* Do not commit local database, credentials, tokens, or secrets to GitHub.
+
+Preferred stack:
+Use Electron + React + Node.js + SQLite unless there is a strong reason to choose something else. The app should be packageable as a Windows installer/exe.
+
+Important local files:
+
+* Menu CSV path: `E:\Yamzo\POS\Yamzo - menu old.csv`
+* Google/Gmail credential notes path: `E:\Yamzo\POS\yamzo_google_creds.txt`
+* Do not commit these files or any secrets.
+
+Printer:
+
+* Printer: Xprinter XP-80T thermal receipt printer
+* Paper: 80mm thermal paper
+* Connection: currently connected to laptop
+* Supports ESC/POS
+* Add printer settings and test print option.
+* Support USB/Windows printer flow first. Bluetooth can be optional.
+
+Login:
+Create local login.
+Default:
+
+* Username: `admin`
+* Password: `1234`
+
+Admin must be able to change password later.
+Store password hashed, not plain text.
+
+UI priority:
+The POS will be used by normal restaurant staff, so the UI must be very simple.
+Design for rush-hour use:
+
+* Big buttons
+* Clear labels
+* Few clicks
+* No complicated screens
+* Current order/cart always visible
+* Admin/settings separate from normal cashier screen
+* Confirm dangerous actions like delete/void/cancel
+
+Daily staff flow:
+
+1. Login
+2. New Order
+3. Choose dine-in / takeaway / parcel / delivery / external manual order
+4. Add items
+5. Send to Kitchen if needed
+6. Add more items later if needed
+7. Apply discount if needed
+8. Settle payment
+9. Print final receipt
+
+Restaurant order behavior:
+This is not a KFC-style upfront payment system. It must support running/open restaurant orders.
+
+Order requirements:
+
+* Create open order
+* Dine-in table number
+* Takeaway/parcel/delivery
+* Add items
+* Add item/order notes
+* Send items to kitchen
+* Add more items later
+* Print only newly added items as addition KOT
+* Void/cancel items with reason
+* Apply discount
+* Settle payment
+* Print final receipt
+* Reprint receipt
+* Keep full order history
+
+External/manual orders:
+Yamzo receives orders from Foodpanda, Foodie, and other external sources. These are not connected to the POS. At the end of shift, staff will manually enter those orders.
+
+Add order source support:
+
+* In-house
+* Takeaway
+* Parcel
+* Delivery
+* Foodpanda
+* Foodie
+* Other
+
+External/manual orders should:
+
+* Be quick to enter
+* Not require kitchen print
+* Appear in order history
+* Appear in sales reports
+* Be separated in analytics by source
+
+Menu management:
+Import menu from CSV.
+Ignore non-food rows like:
+
+* Front Page
+* 1st Page
+* 2nd Page
+* Sauce List
+* Empty rows
+
+Admin menu screen should allow:
+
+* CSV import
+* Add item
+* Edit item
+* Edit price
+* Search item
+* Mark available/unavailable
+* Delete/archive item
+* Optional category
+
+Printing:
+Create a proper print system with print queue/log.
+
+Print types:
+
+* Kitchen Order Ticket / KOT
+* Addition KOT
+* Void/cancel KOT
+* Parcel/takeaway slip
+* Final customer receipt
+* Reprint receipt
+* Test print
+
+Kitchen print should show:
+
+* Yamzo Kitchen Order
+* Order number
+* Table/order type/source
+* Time
+* Quantity
+* Item name
+* Item notes
+* No prices needed
+
+Final receipt should show:
+
+* Logo if enabled
+* Restaurant name
+* Address/phone if enabled
+* Order number
+* Date/time
+* Order type/table/source
+* Items with quantity, price, total
+* Subtotal
+* Discount
+* Grand total
+* Payment method
+* QR code if enabled
+* Footer thank-you message
+
+Add print_jobs table with:
+
+* type
+* content
+* printer
+* status: pending / printed / failed / retry
+* error message
+* timestamps
+
+If printing fails, keep the job and allow retry/reprint.
+
+Receipt branding/admin settings:
+Receipt is important. Add an admin section called “Receipt Settings” or “Restaurant Branding.”
+
+Admin should be able to:
+
+* Upload logo
+* Upload QR code image
+* Edit restaurant name
+* Edit address
+* Edit phone
+* Edit email/website/social text
+* Edit receipt footer message
+* Edit VAT/BIN/trade license text if needed
+* Enable/disable logo
+* Enable/disable QR
+* Enable/disable address/phone/footer
+* Preview receipt
+* Print test receipt
+
+Store logo and QR locally in app data, not inside Git.
+
+Payments:
+Support:
+
+* Cash
+* bKash
+* Nagad
+* Card
+* Other/Split if simple
+
+Dashboard/reports:
+Add a simple admin dashboard:
+
+* Today’s sales
+* Total orders
+* Open orders
+* Settled orders
+* Payment breakdown
+* Discount total
+* Void/cancel total
+* Sales by source
+* External platform sales
+* Top selling items
+* Date filter: today, yesterday, last 7 days, custom
+
+Gmail notification:
+Add optional Gmail notification settings in admin.
+Keep disabled by default.
+
+Admin should be able to:
+
+* Enable/disable email notifications
+* Set recipient email
+* Send daily sales summary
+* Optionally send notification for every settled order
+* Send test email
+* Connect/reconnect Gmail auth
+* Clear Gmail auth
+
+Daily sales email should include:
+
+* Date
+* Total sales
+* Total orders
+* Payment breakdown
+* Source breakdown
+* Discount total
+* Void/cancel total
+* Top selling items
+
+Use local OAuth/token storage.
+Do not commit Gmail credentials, client secret, token, or local config.
+
+Inventory future option:
+Do not build full inventory now.
+Add an admin checkbox:
+
+* “Track Inventory”
+
+Default: off.
+
+Later, if enabled, we will add recipe-based inventory:
+
+* Ingredients
+* Recipes
+* Stock in/out
+* Wastage
+* Low stock
+* Auto deduction based on orders
+
+For now, only create the setting/scaffold safely.
+
+Suggested database tables:
+
+* users
+* menu_items
+* orders
+* order_items
+* order_sources
+* kitchen_tickets
+* kitchen_ticket_items
+* payments
+* print_jobs
+* settings
+* branding_assets
+* email_settings
+* audit_logs if useful
+
+GitHub/install/deployment:
+The repo must be clean and production-deployable, not just a demo.
+
+Add scripts:
+
+* `npm run dev`
+* `npm run build`
+* `npm run package`
+* `npm run dist`
+* `npm run test`
+
+Add documentation:
+
+1. `README.md`
+2. `POS_INSTALLATION_GUIDE.md`
+
+The installation guide should explain:
+
+* How to install on POS computer
+* How to login with admin / 1234
+* How to change password
+* How to import menu CSV
+* How to configure printer
+* How to test print
+* How to upload logo and QR
+* How to setup Gmail notification
+* Where local data is stored
+* What files must not be committed
+
+Important update rule:
+Future GitHub updates must not delete restaurant data. Keep code separate from local data.
+
+Testing:
+Add and run tests for:
+
+* Default admin login
+* Password change
+* Menu CSV import
+* Create order
+* Add item
+* Send to kitchen creates KOT and print job
+* Add more items creates addition KOT
+* Discount calculation
+* Settle order
+* External/manual order
+* Order history
+* Sales dashboard summary
+* Receipt branding settings
+* Print job creation
+* Inventory toggle
+
+Development process:
+First inspect the repo.
+Then make a short plan.
+Build in small milestones:
+
+1. App foundation
+2. SQLite and login
+3. Simple POS UI
+4. Menu import/manage
+5. Orders/running orders
+6. External manual orders
+7. KOT and print queue
+8. Receipt branding
+9. Settlement and order history
+10. Dashboard and Gmail summary
+11. Windows packaging
+
+After each milestone, tell me:
+
+* What changed
+* What command you ran
+* Whether it passed or failed
+* What I should test manually
+
+Start by inspecting the repo and setting up the safest first milestone. Do not build everything in one huge change.

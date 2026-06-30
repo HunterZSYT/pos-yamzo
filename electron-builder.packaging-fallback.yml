@@ -1,0 +1,17 @@
+appId: com.yamzo.pos
+productName: Yamzo POS
+electronDist: E:\Yamzo\POS\release\win-unpacked.tmp
+directories:
+  output: release-packaged
+files:
+  - dist/**/*
+  - dist-electron/**/*
+  - resources/**/*
+  - package.json
+extraResources:
+  - from: resources/printer-setup
+    to: printer-setup
+win:
+  icon: resources/icons/yamzo.ico
+  target:
+    - nsis
