@@ -1224,9 +1224,27 @@ function RecipeEditorDialog({
   onSaved: () => Promise<void>;
 }) {
   const [rows, setRows] = useState<Array<{ inventoryItemId: string; quantityBase: string; unitLabel: string }>>([]);
+  const [error, setError] = useState("");
+  const itemOptions = useMemo(() => {
+    const byId = new Map<number, { id: number; name: string; unitShortName: string }>();
+    for (const item of items) {
+      byId.set(item.id, { id: item.id, name: item.name, unitShortName: item.unitShortName });
+    }
+    for (const ingredient of recipe?.ingredients ?? []) {
+      if (!byId.has(ingredient.inventoryItemId)) {
+        byId.set(ingredient.inventoryItemId, {
+          id: ingredient.inventoryItemId,
+          name: ingredient.itemName,
+          unitShortName: ingredient.unitLabel || "g"
+        });
+      }
+    }
+    return Array.from(byId.values()).sort((left, right) => left.name.localeCompare(right.name));
+  }, [items, recipe]);
 
   useEffect(() => {
     if (!recipe) return;
+    setError("");
     setRows(recipe.ingredients.map((ingredient) => ({
       inventoryItemId: String(ingredient.inventoryItemId),
       quantityBase: String(ingredient.quantityBase),
@@ -1235,7 +1253,7 @@ function RecipeEditorDialog({
   }, [recipe]);
 
   function addRow() {
-    const firstItem = items[0];
+    const firstItem = itemOptions[0];
     if (!firstItem) return;
     setRows((current) => [...current, { inventoryItemId: String(firstItem.id), quantityBase: "", unitLabel: firstItem.unitShortName }]);
   }
@@ -1246,34 +1264,43 @@ function RecipeEditorDialog({
       .map((row) => ({
         inventoryItemId: Number(row.inventoryItemId),
         quantityBase: Number(row.quantityBase || 0),
-        unitLabel: row.unitLabel.trim() || items.find((item) => item.id === Number(row.inventoryItemId))?.unitShortName || "g"
+        unitLabel: row.unitLabel.trim() || itemOptions.find((item) => item.id === Number(row.inventoryItemId))?.unitShortName || "g"
       }))
       .filter((row) => row.inventoryItemId && row.quantityBase > 0);
-    await window.yamzo?.inventory.saveRecipe({ menuItemId: recipe.menuItemId, ingredients });
-    await onSaved();
+    if (ingredients.length === 0) {
+      setError("Add at least one ingredient with an amount greater than 0.");
+      return;
+    }
+    try {
+      await window.yamzo?.inventory.saveRecipe({ menuItemId: recipe.menuItemId, ingredients });
+      await onSaved();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not save recipe.");
+    }
   }
 
   return (
     <Dialog open={Boolean(recipe)} onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="max-h-[86vh] max-w-4xl overflow-hidden p-0">
+      <DialogContent className="max-h-[86vh] w-[min(920px,calc(100vw-32px))] !max-w-[920px] overflow-hidden p-0">
         <DialogHeader className="border-b px-6 py-5">
           <DialogTitle>{recipe ? `Edit recipe - ${recipe.menuItemName}` : "Edit recipe"}</DialogTitle>
           <DialogDescription>Add ingredients from existing inventory items and enter the quantity used per order.</DialogDescription>
         </DialogHeader>
-        <div className="grid max-h-[58vh] gap-3 overflow-auto px-6 py-4">
+        <div className="grid max-h-[58vh] gap-3 overflow-y-auto overflow-x-hidden px-6 py-4">
+          {error && <p className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</p>}
           {rows.length === 0 && <p className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">No ingredients added.</p>}
           {rows.map((row, index) => {
-            const selectedItem = items.find((item) => item.id === Number(row.inventoryItemId));
+            const selectedItem = itemOptions.find((item) => item.id === Number(row.inventoryItemId));
             return (
-              <div className="grid gap-3 rounded-xl border bg-card p-4 md:grid-cols-[minmax(0,1fr)_140px_120px_auto] md:items-end" key={`${row.inventoryItemId}-${index}`}>
+              <div className="grid gap-3 rounded-xl border bg-card p-4 lg:grid-cols-[minmax(220px,1fr)_160px_120px_auto] lg:items-end" key={`${row.inventoryItemId}-${index}`}>
                 <div className="grid gap-2">
                   <Label>Ingredient</Label>
                   <Select
                     value={row.inventoryItemId}
-                    onValueChange={(value) => setRows((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, inventoryItemId: value, unitLabel: items.find((inventoryItem) => inventoryItem.id === Number(value))?.unitShortName || item.unitLabel } : item))}
+                    onValueChange={(value) => setRows((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, inventoryItemId: value, unitLabel: itemOptions.find((inventoryItem) => inventoryItem.id === Number(value))?.unitShortName || item.unitLabel } : item))}
                   >
-                    <SelectTrigger><SelectValue placeholder="Choose ingredient" /></SelectTrigger>
-                    <SelectContent>{items.map((item) => <SelectItem key={item.id} value={String(item.id)}>{item.name}</SelectItem>)}</SelectContent>
+                    <SelectTrigger className="w-full min-w-0"><SelectValue placeholder="Choose ingredient" /></SelectTrigger>
+                    <SelectContent>{itemOptions.map((item) => <SelectItem key={item.id} value={String(item.id)}>{item.name}</SelectItem>)}</SelectContent>
                   </Select>
                 </div>
                 <div className="grid gap-2">
@@ -1284,13 +1311,13 @@ function RecipeEditorDialog({
                   <Label>Unit</Label>
                   <Input value={row.unitLabel || selectedItem?.unitShortName || "g"} onChange={(event) => setRows((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, unitLabel: event.target.value } : item))} />
                 </div>
-                <Button variant="secondary" onClick={() => setRows((current) => current.filter((_, itemIndex) => itemIndex !== index))}>Remove</Button>
+                <Button className="w-full lg:w-auto" variant="secondary" onClick={() => setRows((current) => current.filter((_, itemIndex) => itemIndex !== index))}>Remove</Button>
               </div>
             );
           })}
         </div>
         <DialogFooter className="border-t px-6 py-4">
-          <Button variant="secondary" onClick={addRow} disabled={items.length === 0}>Add Ingredient</Button>
+          <Button variant="secondary" onClick={addRow} disabled={itemOptions.length === 0}>Add Ingredient</Button>
           <Button variant="secondary" onClick={onClose}>Cancel</Button>
           <Button onClick={saveRecipe}>Save Recipe</Button>
         </DialogFooter>

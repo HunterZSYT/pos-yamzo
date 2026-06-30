@@ -180,7 +180,10 @@ export function saveMenuRecipe(
       quantityBase: Math.max(0, Number(ingredient.quantityBase)),
       unitLabel: cleanText(ingredient.unitLabel || "g")
     }))
-    .filter((ingredient) => Number.isInteger(ingredient.inventoryItemId) && ingredient.inventoryItemId > 0);
+    .filter((ingredient) => Number.isInteger(ingredient.inventoryItemId) && ingredient.inventoryItemId > 0 && ingredient.quantityBase > 0);
+  if (cleanIngredients.length === 0) {
+    throw new Error("Add at least one ingredient with an amount greater than zero.");
+  }
   const tx = db.transaction(() => {
     const existing = db.prepare("SELECT id FROM menu_item_recipes WHERE menu_item_id = ?").get(menuItem.id) as { id: number } | undefined;
     const recipeId = existing
@@ -446,12 +449,13 @@ export function listMenuRecipes(db: Database.Database): MenuRecipe[] {
     }
     const cost = getMenuItemRawCost(db, menuItem.id);
     const profit = menuItem.price - cost.rawCost;
+    const hasIngredients = cost.ingredients.length > 0;
     return {
       id: recipe.id,
       menuItemId: menuItem.id,
       menuItemName: menuItem.name,
       sellingPrice: menuItem.price,
-      status: "available",
+      status: hasIngredients ? "available" : "missing",
       rawCost: roundMoney(cost.rawCost),
       estimatedProfit: roundMoney(profit),
       profitMargin: menuItem.price > 0 ? Math.round((profit / menuItem.price) * 100) : 0,
@@ -629,7 +633,7 @@ function getMenuItemRawCost(db: Database.Database, menuItemId: number): { hasRec
             COALESCE((SELECT price_per_base FROM inventory_price_history WHERE inventory_item_id = ii.id AND active = 1 ORDER BY datetime(effective_at) DESC, id DESC LIMIT 1), 0) AS latest_price
      FROM recipe_ingredients ri
      JOIN inventory_items ii ON ii.id = ri.inventory_item_id
-     WHERE ri.recipe_id = ?
+     WHERE ri.recipe_id = ? AND ri.quantity_base > 0
      ORDER BY ii.name`
   ).all(recipe.id) as Array<{ id: number; inventory_item_id: number; item_name: string; quantity_base: number; unit_label: string; latest_price: number }>;
   const ingredients = rows.map((row) => ({
