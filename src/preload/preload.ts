@@ -18,6 +18,8 @@ const api = {
     importCsv: (csvPath: string) => ipcRenderer.invoke("inventory:importCsv", csvPath),
     saveItem: (input: { id?: number; name: string; categoryId?: number | null; baseUnitId: number; lowStockThreshold?: number; active?: boolean }) =>
       ipcRenderer.invoke("inventory:saveItem", input),
+    saveRecipe: (input: { menuItemId: number; ingredients: Array<{ inventoryItemId: number; quantityBase: number; unitLabel: string }> }) =>
+      ipcRenderer.invoke("inventory:saveRecipe", input),
     saveCategory: (input: { id?: number; name: string; active?: boolean }) => ipcRenderer.invoke("inventory:saveCategory", input),
     addRestock: (input: { inventoryItemId: number; quantity: number; unitLabel?: string; totalCost?: number; supplierName?: string | null; responsiblePerson?: string | null; note?: string | null; entryDate?: string | null }) =>
       ipcRenderer.invoke("inventory:addRestock", input),
@@ -83,7 +85,9 @@ const api = {
     getTotalTables: () => ipcRenderer.invoke("settings:getTotalTables"),
     setTotalTables: (totalTables: number) => ipcRenderer.invoke("settings:setTotalTables", totalTables),
     getHostNames: () => ipcRenderer.invoke("settings:getHostNames"),
-    setHostNames: (hostNames: string[]) => ipcRenderer.invoke("settings:setHostNames", hostNames)
+    setHostNames: (hostNames: string[]) => ipcRenderer.invoke("settings:setHostNames", hostNames),
+    getMenuCategories: () => ipcRenderer.invoke("settings:getMenuCategories"),
+    setMenuCategories: (categories: string[]) => ipcRenderer.invoke("settings:setMenuCategories", categories)
   },
   email: {
     getSettings: () => ipcRenderer.invoke("email:getSettings"),

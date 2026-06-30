@@ -36,18 +36,21 @@ import {
   listInventorySnapshot,
   saveCostCategory,
   saveInventoryCategory,
-  saveInventoryItem
+  saveInventoryItem,
+  saveMenuRecipe
 } from "./domain/inventory.js";
 import { archiveMenuItem, deleteMenuItem, importMenuCsv, listMenuItems, saveMenuItem } from "./services/menuImport.js";
 import {
   getBrandingSettings,
   getHostNames,
   getInventoryTracking,
+  getMenuCategories,
   getPrinterName,
   getTotalTables,
   setBrandingSettings,
   setHostNames,
   setInventoryTracking,
+  setMenuCategories,
   setPrinterName,
   setTotalTables
 } from "./services/settings.js";
@@ -79,6 +82,7 @@ export function registerIpc(db: Database.Database): void {
   });
   ipcMain.handle("inventory:importCsv", (_event, csvPath: string) => importRecipeInventoryCsv(db, csvPath));
   ipcMain.handle("inventory:saveItem", (_event, input) => saveInventoryItem(db, input));
+  ipcMain.handle("inventory:saveRecipe", (_event, input) => saveMenuRecipe(db, input));
   ipcMain.handle("inventory:saveCategory", (_event, input) => saveInventoryCategory(db, input));
   ipcMain.handle("inventory:addRestock", (_event, input) => addRestockEntry(db, input));
   ipcMain.handle("inventory:addPrice", (_event, input) => addPriceRecord(db, input));
@@ -183,6 +187,11 @@ export function registerIpc(db: Database.Database): void {
   ipcMain.handle("settings:setHostNames", (_event, hostNames: string[]) => {
     setHostNames(db, hostNames);
     recordActivity(db, "host_names_updated", { count: hostNames.length }, "admin");
+  });
+  ipcMain.handle("settings:getMenuCategories", () => getMenuCategories(db));
+  ipcMain.handle("settings:setMenuCategories", (_event, categories: string[]) => {
+    setMenuCategories(db, categories);
+    recordActivity(db, "menu_categories_updated", { count: categories.length }, "admin");
   });
   ipcMain.handle("email:getSettings", () => getEmailSettings(db));
   ipcMain.handle("email:saveSettings", (_event, settings) => {

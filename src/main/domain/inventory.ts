@@ -12,6 +12,7 @@ import type {
   InventoryUnit,
   MenuRecipe,
   PriceHistoryRecord,
+  RecipeIngredientInput,
   RestockEntry,
   SalesProfitSummary
 } from "../../shared/types.js";
@@ -159,6 +160,37 @@ export function saveInventoryItem(
   return getInventoryItem(db, id);
 }
 
+export function saveMenuRecipe(
+  db: Database.Database,
+  input: { menuItemId: number; ingredients: RecipeIngredientInput[] },
+  actor = "admin"
+): MenuRecipe {
+  const menuItem = db.prepare("SELECT id, name FROM menu_items WHERE id = ? AND archived = 0").get(input.menuItemId) as { id: number; name: string } | undefined;
+  if (!menuItem) throw new Error("Menu item not found.");
+  const cleanIngredients = input.ingredients
+    .map((ingredient) => ({
+      inventoryItemId: Number(ingredient.inventoryItemId),
+      quantityBase: Math.max(0, Number(ingredient.quantityBase)),
+      unitLabel: cleanText(ingredient.unitLabel || "g")
+    }))
+    .filter((ingredient) => Number.isInteger(ingredient.inventoryItemId) && ingredient.inventoryItemId > 0);
+  const tx = db.transaction(() => {
+    const existing = db.prepare("SELECT id FROM menu_item_recipes WHERE menu_item_id = ?").get(menuItem.id) as { id: number } | undefined;
+    const recipeId = existing
+      ? existing.id
+      : Number(db.prepare("INSERT INTO menu_item_recipes (menu_item_id) VALUES (?)").run(menuItem.id).lastInsertRowid);
+    db.prepare("UPDATE menu_item_recipes SET active = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(recipeId);
+    db.prepare("DELETE FROM recipe_ingredients WHERE recipe_id = ?").run(recipeId);
+    const insert = db.prepare("INSERT INTO recipe_ingredients (recipe_id, inventory_item_id, quantity_base, unit_label) VALUES (?, ?, ?, ?)");
+    for (const ingredient of cleanIngredients) {
+      insert.run(recipeId, ingredient.inventoryItemId, ingredient.quantityBase, ingredient.unitLabel);
+    }
+  });
+  tx();
+  recordActivity(db, "recipe_updated", { entityType: "menu_item", entityId: String(menuItem.id), itemName: menuItem.name, ingredientCount: cleanIngredients.length }, actor);
+  return listMenuRecipes(db).find((recipe) => recipe.menuItemId === menuItem.id)!;
+}
+
 export function saveInventoryCategory(db: Database.Database, input: { id?: number; name: string; active?: boolean }, actor = "admin"): InventoryCategory {
   const name = cleanText(input.name);
   if (!name) throw new Error("Category name is required.");
@@ -303,6 +335,18 @@ export function createOrderCostSnapshot(db: Database.Database, orderId: number, 
   });
   tx();
   recordActivity(db, "order_cost_snapshot_created", { entityType: "order", entityId: String(orderId), revenue, rawCost, missingRecipeCount }, actor);
+}
+
+export function reverseOrderCostSnapshot(db: Database.Database, orderId: number, actor = "system"): void {
+  const existing = db.prepare("SELECT id FROM order_cost_snapshots WHERE order_id = ?").get(orderId) as { id: number } | undefined;
+  if (!existing) return;
+  const tx = db.transaction(() => {
+    db.prepare("DELETE FROM inventory_adjustments WHERE order_id = ? AND reason = 'Order usage'").run(orderId);
+    db.prepare("DELETE FROM order_item_cost_snapshots WHERE order_id = ?").run(orderId);
+    db.prepare("DELETE FROM order_cost_snapshots WHERE order_id = ?").run(orderId);
+  });
+  tx();
+  recordActivity(db, "order_cost_snapshot_reversed", { entityType: "order", entityId: String(orderId) }, actor);
 }
 
 export function listInventoryCategories(db: Database.Database): InventoryCategory[] {

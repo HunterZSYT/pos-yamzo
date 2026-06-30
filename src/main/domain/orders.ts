@@ -4,7 +4,7 @@ import { calculateOrderTotals } from "./pricing.js";
 import { enqueuePrintJob } from "../services/printQueue.js";
 import { buildAuditCopy, buildKitchenTicket, buildReceipt } from "../services/receipts.js";
 import { getBrandingSettings, getPrinterName } from "../services/settings.js";
-import { createOrderCostSnapshot } from "./inventory.js";
+import { createOrderCostSnapshot, reverseOrderCostSnapshot } from "./inventory.js";
 
 export function createOrder(
   db: Database.Database,
@@ -161,10 +161,17 @@ export function deleteOrder(db: Database.Database, orderId: number, reason = "")
   if (!order) {
     throw new Error("Order not found.");
   }
-  db.prepare(
-    "INSERT INTO audit_logs (action, entity_type, entity_id, details) VALUES ('delete_order', 'order', ?, ?)"
-  ).run(String(orderId), JSON.stringify({ reason: reason.trim() || null }));
-  db.prepare("UPDATE orders SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(orderId);
+  const tx = db.transaction(() => {
+    if (order.status === "settled") {
+      db.prepare("DELETE FROM payments WHERE order_id = ?").run(orderId);
+      reverseOrderCostSnapshot(db, orderId);
+    }
+    db.prepare(
+      "INSERT INTO audit_logs (action, entity_type, entity_id, details) VALUES ('delete_order', 'order', ?, ?)"
+    ).run(String(orderId), JSON.stringify({ reason: reason.trim() || null, fromStatus: order.status }));
+    db.prepare("UPDATE orders SET status = 'cancelled', settled_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(orderId);
+  });
+  tx();
   return getOrderSummary(db, orderId);
 }
 
@@ -178,6 +185,7 @@ export function reopenOrder(db: Database.Database, orderId: number): OrderSummar
   }
   const tx = db.transaction(() => {
     db.prepare("DELETE FROM payments WHERE order_id = ?").run(orderId);
+    reverseOrderCostSnapshot(db, orderId);
     const kitchenStatus = orderHasKitchenPrintedItems(db, orderId) ? "kitchen_sent" : "open";
     db.prepare("UPDATE orders SET status = ?, settled_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(kitchenStatus, orderId);
     db.prepare(

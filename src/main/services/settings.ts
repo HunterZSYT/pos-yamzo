@@ -4,6 +4,7 @@ import type { BrandingSettings } from "../../shared/types.js";
 const DEFAULT_LOGO_PATH = "yamzo://default-logo";
 const DEFAULT_QR_PATH = "yamzo://review-qr";
 const DEFAULT_HOST_NAMES = ["Cashier"];
+const DEFAULT_MENU_CATEGORIES = ["Seafood", "Momo", "Fish & Chips", "Pasta", "Rice", "Soup", "Snacks", "Sauce", "Drinks", "Other"];
 
 export function getSetting<T>(db: Database.Database, key: string, fallback: T): T {
   const row = db.prepare("SELECT value FROM settings WHERE key = ?").get(key) as { value: string } | undefined;
@@ -82,4 +83,17 @@ export function getHostNames(db: Database.Database): string[] {
 export function setHostNames(db: Database.Database, hostNames: string[]): void {
   const cleaned = Array.from(new Set(hostNames.map((host) => host.trim()).filter(Boolean)));
   setSetting(db, "hostNames", cleaned.length ? cleaned : DEFAULT_HOST_NAMES);
+}
+
+export function getMenuCategories(db: Database.Database): string[] {
+  const saved = getSetting<string[]>(db, "menuCategories", DEFAULT_MENU_CATEGORIES);
+  const fromMenu = db.prepare("SELECT DISTINCT category FROM menu_items WHERE archived = 0 AND category IS NOT NULL AND trim(category) <> '' ORDER BY category").all() as Array<{ category: string }>;
+  const merged = [...saved, ...fromMenu.map((row) => row.category)];
+  const cleaned = Array.from(new Set(merged.map((category) => category.trim()).filter(Boolean)));
+  return cleaned.length ? cleaned : DEFAULT_MENU_CATEGORIES;
+}
+
+export function setMenuCategories(db: Database.Database, categories: string[]): void {
+  const cleaned = Array.from(new Set(categories.map((category) => category.trim()).filter(Boolean)));
+  setSetting(db, "menuCategories", cleaned.length ? cleaned : DEFAULT_MENU_CATEGORIES);
 }

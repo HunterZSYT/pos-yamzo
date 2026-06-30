@@ -175,6 +175,12 @@ export interface RecipeIngredient {
   rawCost: number;
 }
 
+export interface RecipeIngredientInput {
+  inventoryItemId: number;
+  quantityBase: number;
+  unitLabel: string;
+}
+
 export interface MenuRecipe {
   id: number;
   menuItemId: number;

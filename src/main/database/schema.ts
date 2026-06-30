@@ -336,16 +336,13 @@ function seedInventoryDefaults(db: Database.Database): void {
     ["Kilogram", "kg"],
     ["Milliliter", "ml"],
     ["Liter", "l"],
-    ["Piece", "pc"],
-    ["Packet", "packet"],
-    ["Portion", "portion"],
-    ["Teaspoon", "tsp"],
-    ["Tablespoon", "tbsp"]
+    ["Piece", "pc"]
   ];
   const unitInsert = db.prepare("INSERT OR IGNORE INTO inventory_units (name, short_name) VALUES (?, ?)");
   for (const [name, shortName] of units) {
     unitInsert.run(name, shortName);
   }
+  db.prepare("UPDATE inventory_units SET active = 0 WHERE short_name NOT IN ('g', 'kg', 'ml', 'l', 'pc')").run();
 
   const inventoryCategories = ["Seafood", "Meat", "Vegetable", "Spice", "Sauce", "Dairy", "Dry Goods", "Packaging", "Other"];
   const categoryInsert = db.prepare("INSERT OR IGNORE INTO inventory_categories (name) VALUES (?)");

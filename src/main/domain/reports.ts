@@ -2,7 +2,7 @@ import type Database from "better-sqlite3";
 import type { SalesSummary } from "../../shared/types.js";
 
 export function getSalesSummary(db: Database.Database, start?: string, end?: string): SalesSummary {
-  const where = start && end ? "WHERE o.created_at BETWEEN ? AND ?" : "";
+  const where = start && end ? "WHERE o.settled_at BETWEEN ? AND ? AND o.status = 'settled'" : "WHERE o.status = 'settled'";
   const params = start && end ? [start, end] : [];
   const orders = db.prepare(`SELECT status, source, discount FROM orders o ${where}`).all(...params) as Array<{
     status: string;
@@ -17,7 +17,7 @@ export function getSalesSummary(db: Database.Database, start?: string, end?: str
       `SELECT oi.name, SUM(oi.quantity) AS quantity, SUM(oi.quantity * oi.unit_price) AS total
        FROM order_items oi
        JOIN orders o ON o.id = oi.order_id
-       ${where ? `${where} AND` : "WHERE"} oi.status = 'active'
+       ${where} AND oi.status = 'active'
        GROUP BY oi.name
        ORDER BY quantity DESC
        LIMIT 10`
@@ -27,7 +27,7 @@ export function getSalesSummary(db: Database.Database, start?: string, end?: str
   return {
     totalSales: payments.reduce((sum, payment) => sum + payment.amount, 0),
     totalOrders: orders.length,
-    openOrders: orders.filter((order) => order.status === "open" || order.status === "kitchen_sent").length,
+    openOrders: getOpenOrderCount(db),
     settledOrders: orders.filter((order) => order.status === "settled").length,
     discountTotal: orders.reduce((sum, order) => sum + order.discount, 0),
     voidTotal: getVoidTotal(db, where, params),
@@ -44,10 +44,15 @@ function getVoidTotal(db: Database.Database, where: string, params: string[]): n
       `SELECT COALESCE(SUM(oi.quantity * oi.unit_price), 0) AS total
        FROM order_items oi
        JOIN orders o ON o.id = oi.order_id
-       ${where ? `${where} AND` : "WHERE"} oi.status = 'voided'`
+       ${where} AND oi.status = 'voided'`
     )
     .get(...params) as { total: number };
   return row.total ?? 0;
+}
+
+function getOpenOrderCount(db: Database.Database): number {
+  const row = db.prepare("SELECT COUNT(*) AS count FROM orders WHERE status IN ('open', 'kitchen_sent')").get() as { count: number };
+  return row.count;
 }
 
 function groupMoney<T extends Record<string, string | number>>(rows: T[], key: keyof T): Record<string, number> {

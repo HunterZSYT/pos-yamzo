@@ -326,6 +326,32 @@ describe("Yamzo POS core", () => {
     fs.unlinkSync(file);
   });
 
+  it("counts sales and inventory only for completed orders", () => {
+    const database = freshDb();
+    database.prepare("INSERT INTO menu_items (name, price) VALUES ('Chicken Momo', 240)").run();
+    const file = path.join(os.tmpdir(), `yamzo-recipes-${Date.now()}.csv`);
+    fs.writeFileSync(file, "recipe number,recipe name,item serial no,item names,item quantity GM\n1,Chicken Momo,1,Chicken,100 g\n");
+    importRecipeInventoryCsv(database, file);
+    const chicken = listInventorySnapshot(database).items.find((item) => item.name === "Chicken")!;
+    addRestockEntry(database, { inventoryItemId: chicken.id, quantity: 1000, totalCost: 1000 });
+    const menuItem = listMenuItems(database).find((item) => item.name === "Chicken Momo")!;
+    const cancelled = createOrder(database, { source: "in_house", tableNumber: "Table 2" });
+    addOrderItem(database, cancelled.id, { menuItemId: menuItem.id, quantity: 1 });
+    deleteOrder(database, cancelled.id, "Customer cancelled");
+    expect(getSalesSummary(database).totalSales).toBe(0);
+    expect(getSalesSummary(database).topItems).toEqual([]);
+
+    const completed = createOrder(database, { source: "in_house", tableNumber: "Table 3" });
+    addOrderItem(database, completed.id, { menuItemId: menuItem.id, quantity: 1 });
+    settleOrder(database, completed.id, "cash");
+    expect(getSalesSummary(database).totalSales).toBe(240);
+    expect(database.prepare("SELECT COUNT(*) AS count FROM inventory_adjustments WHERE order_id = ?").get(completed.id)).toMatchObject({ count: 1 });
+    reopenOrder(database, completed.id);
+    expect(getSalesSummary(database).totalSales).toBe(0);
+    expect(database.prepare("SELECT COUNT(*) AS count FROM inventory_adjustments WHERE order_id = ?").get(completed.id)).toMatchObject({ count: 0 });
+    fs.unlinkSync(file);
+  });
+
   it("stores Gmail settings locally, builds summary email, clears token path, and escapes print HTML", () => {
     const database = freshDb();
     saveEmailSettings(database, {
