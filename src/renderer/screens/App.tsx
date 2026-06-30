@@ -253,8 +253,16 @@ export function App() {
       if (!groups.has(category)) groups.set(category, []);
       groups.get(category)?.push(item);
     }
-    return Array.from(groups.entries()).sort(([left], [right]) => left.localeCompare(right));
-  }, [menu, menuSearch]);
+    const ordered: Array<[string, MenuItem[]]> = [];
+    for (const category of menuCategories) {
+      const items = groups.get(category);
+      if (items) {
+        ordered.push([category, items]);
+        groups.delete(category);
+      }
+    }
+    return [...ordered, ...Array.from(groups.entries()).sort(([left], [right]) => left.localeCompare(right))];
+  }, [menu, menuCategories, menuSearch]);
 
   async function refreshData() {
     if (!window.yamzo) return;
@@ -2043,6 +2051,35 @@ function MenuAdmin({
   downloadSampleCsv: () => void;
   refreshData: () => void;
 }) {
+  const [dragCategory, setDragCategory] = useState<string | null>(null);
+
+  function moveCategory(index: number, direction: -1 | 1) {
+    const nextIndex = index + direction;
+    if (nextIndex < 0 || nextIndex >= categories.length) return;
+    const next = [...categories];
+    const [item] = next.splice(index, 1);
+    next.splice(nextIndex, 0, item);
+    saveCategories(next);
+  }
+
+  function dropCategory(targetCategory: string) {
+    if (!dragCategory || dragCategory === targetCategory) {
+      setDragCategory(null);
+      return;
+    }
+    const next = [...categories];
+    const from = next.indexOf(dragCategory);
+    const to = next.indexOf(targetCategory);
+    if (from < 0 || to < 0) {
+      setDragCategory(null);
+      return;
+    }
+    const [item] = next.splice(from, 1);
+    next.splice(to, 0, item);
+    saveCategories(next);
+    setDragCategory(null);
+  }
+
   return (
     <div className="grid gap-4 pt-4">
       <Tabs defaultValue="items">
@@ -2079,9 +2116,20 @@ function MenuAdmin({
                 <Button variant="secondary" disabled={!categoryDraft.trim()} onClick={() => saveCategories([...categories, categoryDraft])}>Add Category</Button>
               </div>
               <div className="grid gap-2">
-                {categories.map((category) => (
-                  <div className="grid grid-cols-[1fr_auto] items-center gap-2 rounded-lg border bg-white px-3 py-2" key={category}>
-                    <span className="font-medium">{category}</span>
+                {categories.map((category, index) => (
+                  <div
+                    className={`grid grid-cols-[auto_minmax(0,1fr)_auto_auto_auto] items-center gap-2 rounded-lg border bg-white px-3 py-2 transition ${dragCategory === category ? "border-primary bg-primary/5 shadow-sm" : ""}`}
+                    draggable
+                    key={category}
+                    onDragStart={() => setDragCategory(category)}
+                    onDragOver={(event) => event.preventDefault()}
+                    onDrop={() => dropCategory(category)}
+                    onDragEnd={() => setDragCategory(null)}
+                  >
+                    <span className="cursor-grab select-none text-muted-foreground" title="Drag to reorder">::</span>
+                    <span className="min-w-0 truncate font-medium">{category}</span>
+                    <Button variant="secondary" size="sm" disabled={index === 0} onClick={() => moveCategory(index, -1)}>Up</Button>
+                    <Button variant="secondary" size="sm" disabled={index === categories.length - 1} onClick={() => moveCategory(index, 1)}>Down</Button>
                     <Button variant="secondary" size="sm" disabled={categories.length === 1} onClick={() => saveCategories(categories.filter((item) => item !== category))}>Remove</Button>
                   </div>
                 ))}
