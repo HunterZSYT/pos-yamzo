@@ -28,6 +28,16 @@ import {
   updateOrderNote
 } from "./domain/orders.js";
 import { getSalesSummary } from "./domain/reports.js";
+import {
+  addCostRecord,
+  addPriceRecord,
+  addRestockEntry,
+  importRecipeInventoryCsv,
+  listInventorySnapshot,
+  saveCostCategory,
+  saveInventoryCategory,
+  saveInventoryItem
+} from "./domain/inventory.js";
 import { archiveMenuItem, deleteMenuItem, importMenuCsv, listMenuItems, saveMenuItem } from "./services/menuImport.js";
 import {
   getBrandingSettings,
@@ -55,6 +65,25 @@ export function registerIpc(db: Database.Database): void {
   });
   ipcMain.handle("audit:list", (_event, limit?: number) => listActivityLogs(db, limit));
   ipcMain.handle("audit:protectedAccess", (_event, input) => recordProtectedPanelAccess(db, input));
+  ipcMain.handle("inventory:snapshot", () => listInventorySnapshot(db));
+  ipcMain.handle("inventory:chooseAndImportCsv", async () => {
+    const picked = await dialog.showOpenDialog({
+      title: "Choose recipe or inventory CSV",
+      properties: ["openFile"],
+      filters: [{ name: "CSV files", extensions: ["csv"] }]
+    });
+    if (picked.canceled || !picked.filePaths[0]) {
+      return { recipesImported: 0, recipesUpdated: 0, inventoryItemsCreated: 0, menuItemsCreated: 0, rowsSkipped: 0, errors: [], cancelled: true };
+    }
+    return importRecipeInventoryCsv(db, picked.filePaths[0]);
+  });
+  ipcMain.handle("inventory:importCsv", (_event, csvPath: string) => importRecipeInventoryCsv(db, csvPath));
+  ipcMain.handle("inventory:saveItem", (_event, input) => saveInventoryItem(db, input));
+  ipcMain.handle("inventory:saveCategory", (_event, input) => saveInventoryCategory(db, input));
+  ipcMain.handle("inventory:addRestock", (_event, input) => addRestockEntry(db, input));
+  ipcMain.handle("inventory:addPrice", (_event, input) => addPriceRecord(db, input));
+  ipcMain.handle("inventory:saveCostCategory", (_event, input) => saveCostCategory(db, input));
+  ipcMain.handle("inventory:addCost", (_event, input) => addCostRecord(db, input));
   ipcMain.handle("menu:list", () => listMenuItems(db));
   ipcMain.handle("menu:importCsv", (_event, csvPath: string) => importMenuCsv(db, csvPath));
   ipcMain.handle("menu:chooseAndImportCsv", async () => {

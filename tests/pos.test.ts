@@ -25,6 +25,7 @@ import {
 } from "../src/main/domain/orders";
 import { reprintKitchenCopy, reprintReceipt, voidOrderItem } from "../src/main/domain/orders";
 import { getSalesSummary } from "../src/main/domain/reports";
+import { addCostRecord, addPriceRecord, addRestockEntry, importRecipeInventoryCsv, listInventorySnapshot } from "../src/main/domain/inventory";
 import { archiveMenuItem, deleteMenuItem, importMenuCsv, listMenuItems, parsePrice, saveMenuItem } from "../src/main/services/menuImport";
 import { getBrandingSettings, getHostNames, getTotalTables, setBrandingSettings, setHostNames, setInventoryTracking, getSetting, setPrinterName, setTotalTables } from "../src/main/services/settings";
 import { buildDailySalesEmail, clearGmailAuth, getEmailSettings, saveEmailSettings } from "../src/main/services/email";
@@ -270,6 +271,59 @@ describe("Yamzo POS core", () => {
       title: "Admin panel opened",
       status: "success"
     });
+  });
+
+  it("imports recipe inventory CSV data and builds inventory status", () => {
+    const database = freshDb();
+    database.prepare("INSERT INTO menu_items (name, price) VALUES ('Chicken Momo', 240)").run();
+    const file = path.join(os.tmpdir(), `yamzo-recipes-${Date.now()}.csv`);
+    fs.writeFileSync(
+      file,
+      [
+        "recipe number,recipe name,item serial no,item names,item quantity GM",
+        '1,Chicken Momo,1,"Chicken, raw",100 g',
+        ",,2,Bengali spice,2 g",
+        "2,Green Sauce,1,Green chilli,25 g",
+        ",,2,Garlic,5 g"
+      ].join("\n")
+    );
+    const result = importRecipeInventoryCsv(database, file);
+    expect(result.recipesImported).toBe(2);
+    expect(result.inventoryItemsCreated).toBe(4);
+    expect(result.menuItemsCreated).toBe(1);
+    const snapshot = listInventorySnapshot(database);
+    expect(snapshot.items.map((item) => item.name)).toContain("Chicken, raw");
+    expect(snapshot.recipes.find((recipe) => recipe.menuItemName === "Chicken Momo")?.status).toBe("available");
+    expect(snapshot.status.inventoryItemCount).toBe(4);
+    expect(snapshot.status.totalInventoryValue).toBeGreaterThan(0);
+    fs.unlinkSync(file);
+  });
+
+  it("records restocks, price history, cost records, and order cost snapshots", () => {
+    const database = freshDb();
+    database.prepare("INSERT INTO menu_items (name, price) VALUES ('Chicken Momo', 240)").run();
+    const file = path.join(os.tmpdir(), `yamzo-recipes-${Date.now()}.csv`);
+    fs.writeFileSync(file, "recipe number,recipe name,item serial no,item names,item quantity GM\n1,Chicken Momo,1,Chicken,100 g\n,,2,Salt,2 g\n");
+    importRecipeInventoryCsv(database, file);
+    const snapshot = listInventorySnapshot(database);
+    const chicken = snapshot.items.find((item) => item.name === "Chicken");
+    expect(chicken).toBeTruthy();
+    addRestockEntry(database, { inventoryItemId: chicken!.id, quantity: 1000, totalCost: 900, responsiblePerson: "Cashier" });
+    addPriceRecord(database, { inventoryItemId: chicken!.id, pricePerBase: 1, responsiblePerson: "Cashier" });
+    addCostRecord(database, { categoryId: snapshot.costCategories[0].id, costName: "Electricity", amount: 500, paymentMethod: "cash" });
+    const menuItem = listMenuItems(database).find((item) => item.name === "Chicken Momo")!;
+    const order = createOrder(database, { source: "in_house", tableNumber: "Table 1" });
+    addOrderItem(database, order.id, { menuItemId: menuItem.id, quantity: 2 });
+    settleOrder(database, order.id, "cash");
+    const costSnapshot = database.prepare("SELECT revenue, raw_cost, gross_profit FROM order_cost_snapshots WHERE order_id = ?").get(order.id) as { revenue: number; raw_cost: number; gross_profit: number };
+    expect(costSnapshot.revenue).toBe(480);
+    expect(costSnapshot.raw_cost).toBeGreaterThan(0);
+    expect(costSnapshot.gross_profit).toBeLessThan(480);
+    const after = listInventorySnapshot(database);
+    expect(after.profit.revenue).toBe(480);
+    expect(after.profit.otherCost).toBe(500);
+    expect(after.items.find((item) => item.id === chicken!.id)!.currentStock).toBeLessThan(chicken!.currentStock + 1000);
+    fs.unlinkSync(file);
   });
 
   it("stores Gmail settings locally, builds summary email, clears token path, and escapes print HTML", () => {

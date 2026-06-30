@@ -16,6 +16,7 @@
     "package": "node scripts/package-windows.mjs",
     "dist": "node scripts/package-windows.mjs --installer",
     "smoke:packaged": "node scripts/smoke-packaged.mjs",
+    "inventory:import-sample": "npm run build:electron && node scripts/import-inventory-sample.mjs recipes_item_level_only.csv",
     "test": "vitest run",
     "lint": "tsc --noEmit"
   },

@@ -125,6 +125,34 @@ function describeActivity(action: string, details: AuditDetails): Pick<ActivityL
   if (action === "inventory_tracking_setting_updated") {
     return { title: "Inventory tracking setting updated", description: `Track Inventory is ${details.enabled ? "on" : "off"}.`, status: "info" };
   }
+  if (action === "inventory_csv_imported") {
+    return {
+      title: "Inventory CSV imported",
+      description: `${Number(details.recipesImported ?? 0)} recipes imported, ${Number(details.recipesUpdated ?? 0)} updated, ${Number(details.inventoryItemsCreated ?? 0)} inventory items created.`,
+      status: Number(details.errors?.toString?.().length ?? 0) > 0 ? "failed" : "success"
+    };
+  }
+  if (action.startsWith("inventory_item_")) {
+    return { title: inventoryTitle(action), description: String(details.itemName ?? details.name ?? "Inventory item updated."), status: "info" };
+  }
+  if (action.startsWith("inventory_category_")) {
+    return { title: inventoryTitle(action), description: String(details.name ?? "Inventory category updated."), status: "info" };
+  }
+  if (action === "inventory_restock_created") {
+    return { title: "Restock entry added", description: `${String(details.itemName ?? "Inventory item")} | ${String(details.quantity ?? "")}`, status: "success" };
+  }
+  if (action === "inventory_price_record_created") {
+    return { title: "Inventory price record added", description: `${String(details.itemName ?? "Inventory item")} | ${String(details.pricePerBase ?? "")} per base unit`, status: "success" };
+  }
+  if (action.startsWith("cost_category_")) {
+    return { title: inventoryTitle(action), description: String(details.name ?? "Cost category updated."), status: "info" };
+  }
+  if (action === "cost_record_created") {
+    return { title: "Cost record added", description: `${String(details.costName ?? "Cost")} | ${String(details.amount ?? "")} TK`, status: "success" };
+  }
+  if (action === "order_cost_snapshot_created") {
+    return { title: "Order cost snapshot saved", description: `Revenue ${String(details.revenue ?? 0)} TK | Raw cost ${String(details.rawCost ?? 0)} TK`, status: "info" };
+  }
   if (action === "table_count_updated") {
     return { title: "Table count updated", description: `${Number(details.totalTables ?? 0)} tables configured.`, status: "info" };
   }
@@ -151,6 +179,18 @@ function friendlyPanel(panel: string): string {
 
 function friendlyAction(action: string): string {
   return action.replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function inventoryTitle(action: string): string {
+  const labels: Record<string, string> = {
+    inventory_item_created: "Inventory item added",
+    inventory_item_updated: "Inventory item updated",
+    inventory_category_created: "Inventory category added",
+    inventory_category_updated: "Inventory category updated",
+    cost_category_created: "Cost category added",
+    cost_category_updated: "Cost category updated"
+  };
+  return labels[action] ?? friendlyAction(action);
 }
 
 function reasonText(details: AuditDetails): string {

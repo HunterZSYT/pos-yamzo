@@ -4,6 +4,7 @@ import { calculateOrderTotals } from "./pricing.js";
 import { enqueuePrintJob } from "../services/printQueue.js";
 import { buildAuditCopy, buildKitchenTicket, buildReceipt } from "../services/receipts.js";
 import { getBrandingSettings, getPrinterName } from "../services/settings.js";
+import { createOrderCostSnapshot } from "./inventory.js";
 
 export function createOrder(
   db: Database.Database,
@@ -259,6 +260,7 @@ export function settleOrder(db: Database.Database, orderId: number, method: Paym
   const branding = getBrandingSettings(db);
   const tx = db.transaction(() => {
     db.prepare("INSERT INTO payments (order_id, method, amount) VALUES (?, ?, ?)").run(orderId, method, paidAmount);
+    createOrderCostSnapshot(db, orderId);
     db.prepare("UPDATE orders SET status = 'settled', settled_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(orderId);
     enqueuePrintJob(db, "receipt", buildReceipt(db, orderId, branding, "RECEIPT", { paid: true, method, amount: paidAmount, reference, host }), getPrinterName(db) || null);
   });

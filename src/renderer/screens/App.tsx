@@ -24,6 +24,7 @@ import type {
   BrandingSettings,
   EmailSettings,
   ActivityLog,
+  InventorySnapshot,
   MenuImportResult,
   MenuItem,
   OrderDetail,
@@ -37,7 +38,7 @@ import type {
 import { demoMenu, demoOrders, demoSummary } from "../data/demo";
 
 type Screen = "newOrder" | "editOrder" | "openOrders" | "completedOrders" | "cancelledOrders" | "reports" | "admin";
-type AdminTab = "menu" | "receipt" | "printer" | "email" | "app" | "adminSettings" | "activity";
+type AdminTab = "menu" | "inventory" | "receipt" | "printer" | "email" | "app" | "adminSettings" | "activity";
 type DiscountMode = "tk" | "percent";
 type OrderLane = "newOrder" | "openOrders";
 type PrintConfirm = { type: "kitchen" | "bill"; orderId: number; orderNumber: string } | null;
@@ -93,6 +94,37 @@ const emptyBranding: BrandingSettings = {
   qrPath: "yamzo://review-qr"
 };
 
+const emptyInventorySnapshot: InventorySnapshot = {
+  categories: [],
+  units: [],
+  items: [],
+  recipes: [],
+  restocks: [],
+  priceHistory: [],
+  costCategories: [],
+  costRecords: [],
+  status: {
+    totalInventoryValue: 0,
+    lowStockCount: 0,
+    outOfStockCount: 0,
+    missingRecipeCount: 0,
+    recipeAvailableCount: 0,
+    inventoryItemCount: 0,
+    recentRestocks: [],
+    lowStockItems: [],
+    missingRecipes: []
+  },
+  profit: {
+    revenue: 0,
+    rawCost: 0,
+    otherCost: 0,
+    grossProfit: 0,
+    netProfit: 0,
+    missingRecipeCount: 0,
+    topProfitItems: []
+  }
+};
+
 const PROTECTED_ACCESS_MS = 30 * 60 * 1000;
 
 export function App() {
@@ -114,6 +146,7 @@ export function App() {
   const [emailSettings, setEmailSettings] = useState<EmailSettings>(emptyEmailSettings);
   const [branding, setBranding] = useState<BrandingSettings>(emptyBranding);
   const [trackInventory, setTrackInventory] = useState(false);
+  const [inventorySnapshot, setInventorySnapshot] = useState<InventorySnapshot>(emptyInventorySnapshot);
   const [totalTables, setTotalTables] = useState(10);
   const [hostNames, setHostNames] = useState<string[]>(["Cashier"]);
   const [selectedHost, setSelectedHost] = useState("Cashier");
@@ -194,7 +227,7 @@ export function App() {
 
   async function refreshData() {
     if (!window.yamzo) return;
-    const [menuRows, openRows, historyRows, sales, jobs, email, receipt, inventory, printerName, tableCount, hosts, activity] = await Promise.all([
+    const [menuRows, openRows, historyRows, sales, jobs, email, receipt, inventory, inventoryData, printerName, tableCount, hosts, activity] = await Promise.all([
       window.yamzo.menu.list(),
       window.yamzo.orders.open(),
       window.yamzo.orders.history(),
@@ -203,6 +236,7 @@ export function App() {
       window.yamzo.email.getSettings(),
       window.yamzo.settings.getBranding(),
       window.yamzo.settings.getInventoryTracking(),
+      window.yamzo.inventory.snapshot(),
       window.yamzo.settings.getPrinterName(),
       window.yamzo.settings.getTotalTables(),
       window.yamzo.settings.getHostNames(),
@@ -217,6 +251,7 @@ export function App() {
     setEmailSettings(email);
     setBranding({ ...emptyBranding, ...receipt });
     setTrackInventory(Boolean(inventory));
+    setInventorySnapshot(inventoryData ?? emptyInventorySnapshot);
     setSelectedPrinter(printerName);
     setTotalTables(tableCount);
     setHostNames(hosts);
@@ -923,8 +958,9 @@ export function App() {
         <ContentShell title="Admin" description="Business summary and restaurant settings." action={<Button variant="secondary" onClick={refreshData}>Refresh</Button>}>
           <BusinessSummary summary={summary} />
           <Tabs value={adminTab} onValueChange={(value) => setAdminTab(value as AdminTab)} className="min-h-0">
-            <TabsList className="grid w-full max-w-5xl grid-cols-7">
+            <TabsList className="grid w-full max-w-6xl grid-cols-4 lg:grid-cols-8">
               <TabsTrigger value="menu">Menu Items</TabsTrigger>
+              <TabsTrigger value="inventory">Inventory</TabsTrigger>
               <TabsTrigger value="receipt">Receipt Settings</TabsTrigger>
               <TabsTrigger value="printer">Printer Settings</TabsTrigger>
               <TabsTrigger value="email">Email Notifications</TabsTrigger>
@@ -933,6 +969,7 @@ export function App() {
               <TabsTrigger value="activity">Activity Log</TabsTrigger>
             </TabsList>
             <TabsContent value="menu"><MenuAdmin menu={menu} menuForm={menuForm} setMenuForm={setMenuForm} saveMenuForm={saveMenuForm} importMenuCsv={importMenuCsv} downloadSampleCsv={downloadSampleCsv} refreshData={refreshData} /></TabsContent>
+            <TabsContent value="inventory"><InventoryAdmin snapshot={inventorySnapshot} refreshData={refreshData} setMessage={setMessage} /></TabsContent>
             <TabsContent value="receipt"><ReceiptAdmin branding={branding} setBranding={setBranding} chooseReceiptImage={chooseReceiptImage} setMessage={setMessage} /></TabsContent>
             <TabsContent value="printer"><PrinterAdmin selectedPrinter={selectedPrinter} setSelectedPrinter={setSelectedPrinter} printers={printers} failedPrintJobs={failedPrintJobs} refreshData={refreshData} setMessage={setMessage} /></TabsContent>
             <TabsContent value="email"><EmailAdmin emailSettings={emailSettings} setEmailSettings={setEmailSettings} emailPreview={emailPreview} setEmailPreview={setEmailPreview} showEmailAdvanced={showEmailAdvanced} setShowEmailAdvanced={setShowEmailAdvanced} setMessage={setMessage} /></TabsContent>
@@ -1234,6 +1271,349 @@ function Metric({ label, value }: { label: string; value: string | number }) {
 
 function ReportBlock({ title, rows }: { title: string; rows: string[] }) {
   return <Card><CardHeader><CardTitle>{title}</CardTitle></CardHeader><CardContent className="grid gap-2">{rows.length === 0 ? <p className="text-sm text-muted-foreground">No data yet.</p> : rows.map((row) => <span key={row} className="text-sm">{row}</span>)}</CardContent></Card>;
+}
+
+function InventoryAdmin({ snapshot, refreshData, setMessage }: { snapshot: InventorySnapshot; refreshData: () => Promise<void>; setMessage: (message: string) => void }) {
+  const firstItem = snapshot.items[0];
+  const firstUnit = snapshot.units[0];
+  const firstCategory = snapshot.categories[0];
+  const firstCostCategory = snapshot.costCategories[0];
+  const [itemForm, setItemForm] = useState({
+    name: "",
+    categoryId: firstCategory?.id ? String(firstCategory.id) : "",
+    baseUnitId: firstUnit?.id ? String(firstUnit.id) : "",
+    lowStockThreshold: "1000"
+  });
+  const [restockForm, setRestockForm] = useState({
+    inventoryItemId: firstItem?.id ? String(firstItem.id) : "",
+    quantity: "",
+    totalCost: "",
+    supplierName: "",
+    responsiblePerson: "",
+    note: ""
+  });
+  const [priceForm, setPriceForm] = useState({
+    inventoryItemId: firstItem?.id ? String(firstItem.id) : "",
+    pricePerBase: "",
+    responsiblePerson: "",
+    note: ""
+  });
+  const [costForm, setCostForm] = useState({
+    categoryId: firstCostCategory?.id ? String(firstCostCategory.id) : "",
+    costName: "",
+    amount: "",
+    paymentMethod: "cash",
+    responsiblePerson: "",
+    note: ""
+  });
+  const [categoryName, setCategoryName] = useState("");
+  const [costCategoryName, setCostCategoryName] = useState("");
+
+  useEffect(() => {
+    if (!itemForm.baseUnitId && snapshot.units[0]) setItemForm((current) => ({ ...current, baseUnitId: String(snapshot.units[0].id) }));
+    if (!itemForm.categoryId && snapshot.categories[0]) setItemForm((current) => ({ ...current, categoryId: String(snapshot.categories[0].id) }));
+    if (!restockForm.inventoryItemId && snapshot.items[0]) setRestockForm((current) => ({ ...current, inventoryItemId: String(snapshot.items[0].id) }));
+    if (!priceForm.inventoryItemId && snapshot.items[0]) setPriceForm((current) => ({ ...current, inventoryItemId: String(snapshot.items[0].id) }));
+    if (!costForm.categoryId && snapshot.costCategories[0]) setCostForm((current) => ({ ...current, categoryId: String(snapshot.costCategories[0].id) }));
+  }, [snapshot]);
+
+  async function importInventoryCsv() {
+    const result = await window.yamzo?.inventory.chooseAndImportCsv();
+    if (!result) return;
+    if (result.cancelled) {
+      setMessage("Inventory import cancelled.");
+      return;
+    }
+    setMessage(`${result.recipesImported} recipes imported, ${result.recipesUpdated} updated, ${result.inventoryItemsCreated} inventory items created, ${result.menuItemsCreated} menu items added.`);
+    await refreshData();
+  }
+
+  async function saveItem() {
+    if (!itemForm.name.trim()) {
+      setMessage("Inventory item name is required.");
+      return;
+    }
+    await window.yamzo?.inventory.saveItem({
+      name: itemForm.name,
+      categoryId: itemForm.categoryId ? Number(itemForm.categoryId) : null,
+      baseUnitId: Number(itemForm.baseUnitId),
+      lowStockThreshold: Number(itemForm.lowStockThreshold || 0),
+      active: true
+    });
+    setItemForm({ ...itemForm, name: "" });
+    setMessage("Inventory item saved.");
+    await refreshData();
+  }
+
+  async function addRestock() {
+    await window.yamzo?.inventory.addRestock({
+      inventoryItemId: Number(restockForm.inventoryItemId),
+      quantity: Number(restockForm.quantity || 0),
+      totalCost: Number(restockForm.totalCost || 0),
+      supplierName: restockForm.supplierName || null,
+      responsiblePerson: restockForm.responsiblePerson || null,
+      note: restockForm.note || null
+    });
+    setRestockForm({ ...restockForm, quantity: "", totalCost: "", supplierName: "", note: "" });
+    setMessage("Restock entry saved.");
+    await refreshData();
+  }
+
+  async function addPrice() {
+    await window.yamzo?.inventory.addPrice({
+      inventoryItemId: Number(priceForm.inventoryItemId),
+      pricePerBase: Number(priceForm.pricePerBase || 0),
+      responsiblePerson: priceForm.responsiblePerson || null,
+      note: priceForm.note || null
+    });
+    setPriceForm({ ...priceForm, pricePerBase: "", note: "" });
+    setMessage("Price record saved.");
+    await refreshData();
+  }
+
+  async function addCost() {
+    await window.yamzo?.inventory.addCost({
+      categoryId: costForm.categoryId ? Number(costForm.categoryId) : null,
+      costName: costForm.costName,
+      amount: Number(costForm.amount || 0),
+      paymentMethod: costForm.paymentMethod,
+      responsiblePerson: costForm.responsiblePerson || null,
+      note: costForm.note || null
+    });
+    setCostForm({ ...costForm, costName: "", amount: "", note: "" });
+    setMessage("Cost record saved.");
+    await refreshData();
+  }
+
+  async function addCategory() {
+    await window.yamzo?.inventory.saveCategory({ name: categoryName, active: true });
+    setCategoryName("");
+    setMessage("Inventory category saved.");
+    await refreshData();
+  }
+
+  async function addCostCategory() {
+    await window.yamzo?.inventory.saveCostCategory({ name: costCategoryName, active: true });
+    setCostCategoryName("");
+    setMessage("Cost category saved.");
+    await refreshData();
+  }
+
+  return (
+    <div className="grid gap-4 pt-4">
+      <div className="grid grid-cols-[repeat(auto-fit,minmax(180px,1fr))] gap-3">
+        <Metric label="Inventory Value" value={money(snapshot.status.totalInventoryValue)} />
+        <Metric label="Inventory Items" value={snapshot.status.inventoryItemCount} />
+        <Metric label="Recipes Ready" value={snapshot.status.recipeAvailableCount} />
+        <Metric label="Missing Recipes" value={snapshot.status.missingRecipeCount} />
+        <Metric label="Low Stock" value={snapshot.status.lowStockCount} />
+        <Metric label="Net Profit Estimate" value={money(snapshot.profit.netProfit)} />
+      </div>
+      <Tabs defaultValue="status">
+        <TabsList className="grid w-full grid-cols-4 lg:grid-cols-8">
+          <TabsTrigger value="status">Status</TabsTrigger>
+          <TabsTrigger value="recipes">Recipes</TabsTrigger>
+          <TabsTrigger value="items">Items</TabsTrigger>
+          <TabsTrigger value="restock">Restock</TabsTrigger>
+          <TabsTrigger value="prices">Prices</TabsTrigger>
+          <TabsTrigger value="costs">Costs</TabsTrigger>
+          <TabsTrigger value="profit">Profit</TabsTrigger>
+          <TabsTrigger value="settings">Settings</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="status" className="grid gap-4 pt-4">
+          <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+            <Card>
+              <CardHeader><CardTitle>Low Stock</CardTitle><CardDescription>Items that need attention.</CardDescription></CardHeader>
+              <CardContent className="grid gap-2">
+                {snapshot.status.lowStockItems.length === 0 ? <p className="text-sm text-muted-foreground">No low stock items.</p> : snapshot.status.lowStockItems.map((item) => (
+                  <InventoryListRow key={item.id} title={item.name} meta={`${formatQuantity(item.currentStock)} ${item.unitShortName} left | ${item.categoryName ?? "Other"}`} badge={item.status === "out" ? "Out of Stock" : "Low Stock"} />
+                ))}
+              </CardContent>
+            </Card>
+            <Card>
+              <CardHeader><CardTitle>Missing Recipes</CardTitle><CardDescription>Menu items without ingredient recipes.</CardDescription></CardHeader>
+              <CardContent className="grid gap-2">
+                {snapshot.status.missingRecipes.length === 0 ? <p className="text-sm text-muted-foreground">All menu items have recipes.</p> : snapshot.status.missingRecipes.map((item) => (
+                  <InventoryListRow key={item.menuItemId} title={item.name} meta={money(item.price)} badge="Recipe Not Available" />
+                ))}
+              </CardContent>
+            </Card>
+          </div>
+          <Card>
+            <CardHeader><CardTitle>Recent Restocks</CardTitle></CardHeader>
+            <CardContent className="grid gap-2">
+              {snapshot.status.recentRestocks.length === 0 ? <p className="text-sm text-muted-foreground">No restocks recorded yet.</p> : snapshot.status.recentRestocks.map((entry) => (
+                <InventoryListRow key={entry.id} title={entry.itemName} meta={`${formatQuantity(entry.quantityBase)} ${entry.unitLabel} | ${money(entry.totalCost)} | ${formatDate(entry.entryDate)}`} />
+              ))}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="recipes" className="grid gap-3 pt-4">
+          {snapshot.recipes.map((recipe) => (
+            <Card key={recipe.menuItemId} size="sm">
+              <CardContent className="grid gap-3 p-4 lg:grid-cols-[minmax(0,1fr)_180px_180px_180px] lg:items-center">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2"><strong>{recipe.menuItemName}</strong><Badge variant={recipe.status === "available" ? "default" : "destructive"}>{recipe.status === "available" ? "Recipe Available" : "Recipe Not Available"}</Badge></div>
+                  <p className="text-sm text-muted-foreground">{recipe.ingredients.length === 0 ? "No ingredients added." : recipe.ingredients.map((item) => item.itemName).join(", ")}</p>
+                </div>
+                <span>Raw cost: <strong>{money(recipe.rawCost)}</strong></span>
+                <span>Profit: <strong>{money(recipe.estimatedProfit)}</strong></span>
+                <span>Margin: <strong>{recipe.profitMargin}%</strong></span>
+              </CardContent>
+            </Card>
+          ))}
+        </TabsContent>
+
+        <TabsContent value="items" className="grid gap-4 pt-4">
+          <Card>
+            <CardContent className="grid grid-cols-[repeat(auto-fit,minmax(180px,1fr))] gap-3 p-4">
+              <Field label="Item name"><Input value={itemForm.name} onChange={(event) => setItemForm({ ...itemForm, name: event.target.value })} /></Field>
+              <Field label="Category"><Select value={itemForm.categoryId} onValueChange={(value) => setItemForm({ ...itemForm, categoryId: value })}><SelectTrigger><SelectValue placeholder="Choose category" /></SelectTrigger><SelectContent>{snapshot.categories.map((category) => <SelectItem key={category.id} value={String(category.id)}>{category.name}</SelectItem>)}</SelectContent></Select></Field>
+              <Field label="Base unit"><Select value={itemForm.baseUnitId} onValueChange={(value) => setItemForm({ ...itemForm, baseUnitId: value })}><SelectTrigger><SelectValue placeholder="Choose unit" /></SelectTrigger><SelectContent>{snapshot.units.map((unit) => <SelectItem key={unit.id} value={String(unit.id)}>{unit.name}</SelectItem>)}</SelectContent></Select></Field>
+              <Field label="Low stock warning"><Input value={itemForm.lowStockThreshold} onChange={(event) => setItemForm({ ...itemForm, lowStockThreshold: event.target.value })} /></Field>
+              <Button className="self-end" onClick={saveItem}>Save Item</Button>
+            </CardContent>
+          </Card>
+          <InventoryTable
+            headers={["Item", "Category", "Stock", "Latest Price", "Value", "Status"]}
+            rows={snapshot.items.map((item) => [
+              item.name,
+              item.categoryName ?? "Other",
+              `${formatQuantity(item.currentStock)} ${item.unitShortName}`,
+              `${formatQuantity(item.latestPrice)} / ${item.unitShortName}`,
+              money(item.estimatedValue),
+              item.status === "ok" ? "OK" : item.status === "low" ? "Low Stock" : "Out of Stock"
+            ])}
+          />
+        </TabsContent>
+
+        <TabsContent value="restock" className="grid gap-4 pt-4">
+          <Card>
+            <CardContent className="grid grid-cols-[repeat(auto-fit,minmax(180px,1fr))] gap-3 p-4">
+              <InventoryItemSelect label="Item" value={restockForm.inventoryItemId} items={snapshot.items} onChange={(value) => setRestockForm({ ...restockForm, inventoryItemId: value })} />
+              <Field label="Quantity"><Input value={restockForm.quantity} onChange={(event) => setRestockForm({ ...restockForm, quantity: event.target.value })} /></Field>
+              <Field label="Total cost"><Input value={restockForm.totalCost} onChange={(event) => setRestockForm({ ...restockForm, totalCost: event.target.value })} /></Field>
+              <Field label="Supplier"><Input value={restockForm.supplierName} onChange={(event) => setRestockForm({ ...restockForm, supplierName: event.target.value })} /></Field>
+              <Field label="Person responsible"><Input value={restockForm.responsiblePerson} onChange={(event) => setRestockForm({ ...restockForm, responsiblePerson: event.target.value })} /></Field>
+              <Field label="Note"><Input value={restockForm.note} onChange={(event) => setRestockForm({ ...restockForm, note: event.target.value })} /></Field>
+              <Button className="self-end" onClick={addRestock} disabled={!restockForm.inventoryItemId}>Add Restock</Button>
+            </CardContent>
+          </Card>
+          <InventoryTable headers={["Date", "Item", "Quantity", "Cost", "Person", "Supplier"]} rows={snapshot.restocks.map((entry) => [formatDate(entry.entryDate), entry.itemName, `${formatQuantity(entry.quantityBase)} ${entry.unitLabel}`, money(entry.totalCost), entry.responsiblePerson ?? "-", entry.supplierName ?? "-"])} />
+        </TabsContent>
+
+        <TabsContent value="prices" className="grid gap-4 pt-4">
+          <Card>
+            <CardContent className="grid grid-cols-[repeat(auto-fit,minmax(180px,1fr))] gap-3 p-4">
+              <InventoryItemSelect label="Item" value={priceForm.inventoryItemId} items={snapshot.items} onChange={(value) => setPriceForm({ ...priceForm, inventoryItemId: value })} />
+              <Field label="Price per base unit"><Input value={priceForm.pricePerBase} onChange={(event) => setPriceForm({ ...priceForm, pricePerBase: event.target.value })} /></Field>
+              <Field label="Person responsible"><Input value={priceForm.responsiblePerson} onChange={(event) => setPriceForm({ ...priceForm, responsiblePerson: event.target.value })} /></Field>
+              <Field label="Note"><Input value={priceForm.note} onChange={(event) => setPriceForm({ ...priceForm, note: event.target.value })} /></Field>
+              <Button className="self-end" onClick={addPrice} disabled={!priceForm.inventoryItemId}>Add Price Record</Button>
+            </CardContent>
+          </Card>
+          <InventoryTable headers={["Date", "Item", "Price", "Person", "Note"]} rows={snapshot.priceHistory.map((entry) => [formatDate(entry.effectiveAt), entry.itemName, String(entry.pricePerBase), entry.responsiblePerson ?? "-", entry.note ?? "-"])} />
+        </TabsContent>
+
+        <TabsContent value="costs" className="grid gap-4 pt-4">
+          <Card>
+            <CardContent className="grid grid-cols-[repeat(auto-fit,minmax(180px,1fr))] gap-3 p-4">
+              <Field label="Category"><Select value={costForm.categoryId} onValueChange={(value) => setCostForm({ ...costForm, categoryId: value })}><SelectTrigger><SelectValue placeholder="Choose category" /></SelectTrigger><SelectContent>{snapshot.costCategories.map((category) => <SelectItem key={category.id} value={String(category.id)}>{category.name}</SelectItem>)}</SelectContent></Select></Field>
+              <Field label="Cost name"><Input value={costForm.costName} onChange={(event) => setCostForm({ ...costForm, costName: event.target.value })} /></Field>
+              <Field label="Amount"><Input value={costForm.amount} onChange={(event) => setCostForm({ ...costForm, amount: event.target.value })} /></Field>
+              <Field label="Payment method"><Input value={costForm.paymentMethod} onChange={(event) => setCostForm({ ...costForm, paymentMethod: event.target.value })} /></Field>
+              <Field label="Person responsible"><Input value={costForm.responsiblePerson} onChange={(event) => setCostForm({ ...costForm, responsiblePerson: event.target.value })} /></Field>
+              <Field label="Note"><Input value={costForm.note} onChange={(event) => setCostForm({ ...costForm, note: event.target.value })} /></Field>
+              <Button className="self-end" onClick={addCost}>Add Cost Record</Button>
+            </CardContent>
+          </Card>
+          <InventoryTable headers={["Date", "Category", "Cost", "Amount", "Person", "Note"]} rows={snapshot.costRecords.map((entry) => [formatDate(entry.costDate), entry.categoryName ?? "Other", entry.costName, money(entry.amount), entry.responsiblePerson ?? "-", entry.note ?? "-"])} />
+        </TabsContent>
+
+        <TabsContent value="profit" className="grid gap-4 pt-4">
+          <div className="grid grid-cols-[repeat(auto-fit,minmax(180px,1fr))] gap-3">
+            <Metric label="Revenue" value={money(snapshot.profit.revenue)} />
+            <Metric label="Raw Cost" value={money(snapshot.profit.rawCost)} />
+            <Metric label="Gross Profit" value={money(snapshot.profit.grossProfit)} />
+            <Metric label="Other Costs" value={money(snapshot.profit.otherCost)} />
+            <Metric label="Net Profit" value={money(snapshot.profit.netProfit)} />
+            <Metric label="Missing Recipes" value={snapshot.profit.missingRecipeCount} />
+          </div>
+          <InventoryTable headers={["Item", "Revenue", "Raw Cost", "Profit"]} rows={snapshot.profit.topProfitItems.map((item) => [item.name, money(item.revenue), money(item.rawCost), money(item.profit)])} />
+        </TabsContent>
+
+        <TabsContent value="settings" className="grid gap-4 pt-4">
+          <Card>
+            <CardHeader><CardTitle>Import Recipes</CardTitle><CardDescription>Choose a recipe CSV and review the import summary after it finishes.</CardDescription></CardHeader>
+            <CardContent className="flex flex-wrap gap-2"><Button onClick={importInventoryCsv}>Import Recipe CSV</Button><Button variant="secondary" onClick={refreshData}>Refresh Inventory</Button></CardContent>
+          </Card>
+          <div className="grid gap-4 xl:grid-cols-2">
+            <Card>
+              <CardHeader><CardTitle>Inventory Categories</CardTitle></CardHeader>
+              <CardContent className="grid gap-3">
+                <div className="grid grid-cols-[1fr_auto] gap-2"><Input value={categoryName} onChange={(event) => setCategoryName(event.target.value)} placeholder="Example: Beverage" /><Button onClick={addCategory} disabled={!categoryName.trim()}>Add Category</Button></div>
+                <div className="flex flex-wrap gap-2">{snapshot.categories.map((category) => <Badge key={category.id} variant="secondary">{category.name}</Badge>)}</div>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardHeader><CardTitle>Cost Categories</CardTitle></CardHeader>
+              <CardContent className="grid gap-3">
+                <div className="grid grid-cols-[1fr_auto] gap-2"><Input value={costCategoryName} onChange={(event) => setCostCategoryName(event.target.value)} placeholder="Example: Marketing" /><Button onClick={addCostCategory} disabled={!costCategoryName.trim()}>Add Cost Category</Button></div>
+                <div className="flex flex-wrap gap-2">{snapshot.costCategories.map((category) => <Badge key={category.id} variant="secondary">{category.name}</Badge>)}</div>
+              </CardContent>
+            </Card>
+          </div>
+        </TabsContent>
+      </Tabs>
+    </div>
+  );
+}
+
+function InventoryItemSelect({ label, value, items, onChange }: { label: string; value: string; items: InventorySnapshot["items"]; onChange: (value: string) => void }) {
+  return (
+    <Field label={label}>
+      <Select value={value} onValueChange={onChange}>
+        <SelectTrigger><SelectValue placeholder="Choose item" /></SelectTrigger>
+        <SelectContent>{items.map((item) => <SelectItem key={item.id} value={String(item.id)}>{item.name}</SelectItem>)}</SelectContent>
+      </Select>
+    </Field>
+  );
+}
+
+function InventoryListRow({ title, meta, badge }: { title: string; meta: string; badge?: string }) {
+  return (
+    <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-lg border bg-white px-3 py-2">
+      <span className="min-w-0"><strong className="block truncate">{title}</strong><small className="text-muted-foreground">{meta}</small></span>
+      {badge && <Badge variant={badge.includes("Out") || badge.includes("Not") ? "destructive" : "secondary"}>{badge}</Badge>}
+    </div>
+  );
+}
+
+function InventoryTable({ headers, rows }: { headers: string[]; rows: string[][] }) {
+  return (
+    <Card>
+      <CardContent className="p-0">
+        {rows.length === 0 ? (
+          <p className="p-4 text-sm text-muted-foreground">No records yet.</p>
+        ) : (
+          <div className="overflow-auto">
+            <table className="w-full min-w-[760px] border-collapse text-sm">
+              <thead className="bg-muted/60 text-left">
+                <tr>{headers.map((header) => <th className="border-b px-4 py-3 font-semibold" key={header}>{header}</th>)}</tr>
+              </thead>
+              <tbody>
+                {rows.map((row, rowIndex) => (
+                  <tr className="border-b last:border-b-0" key={`${row.join("-")}-${rowIndex}`}>{row.map((cell, cellIndex) => <td className="px-4 py-3" key={`${cell}-${cellIndex}`}>{cell}</td>)}</tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
 }
 
 function MenuAdmin({ menu, menuForm, setMenuForm, saveMenuForm, importMenuCsv, downloadSampleCsv, refreshData }: { menu: MenuItem[]; menuForm: { id: number; name: string; price: string; category: string; available: boolean }; setMenuForm: (value: { id: number; name: string; price: string; category: string; available: boolean }) => void; saveMenuForm: () => void; importMenuCsv: () => void; downloadSampleCsv: () => void; refreshData: () => void }) {
@@ -1543,4 +1923,9 @@ function parseSqliteTimestamp(value: string): Date {
 
 function money(value: number): string {
   return `${Math.round(value)} TK`;
+}
+
+function formatQuantity(value: number): string {
+  if (Number.isInteger(value)) return String(value);
+  return value.toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
 }

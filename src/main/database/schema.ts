@@ -141,6 +141,151 @@ export function migrate(db: Database.Database): void {
       details TEXT,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
+
+    CREATE TABLE IF NOT EXISTS inventory_categories (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE,
+      active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS inventory_units (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE,
+      short_name TEXT NOT NULL UNIQUE,
+      active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS inventory_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE,
+      category_id INTEGER REFERENCES inventory_categories(id),
+      base_unit_id INTEGER NOT NULL REFERENCES inventory_units(id),
+      low_stock_threshold REAL NOT NULL DEFAULT 0,
+      active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS inventory_restock_entries (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      inventory_item_id INTEGER NOT NULL REFERENCES inventory_items(id),
+      quantity_base REAL NOT NULL,
+      unit_label TEXT NOT NULL,
+      total_cost REAL NOT NULL DEFAULT 0,
+      price_per_base REAL NOT NULL DEFAULT 0,
+      supplier_name TEXT,
+      responsible_person TEXT,
+      note TEXT,
+      entry_date TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS inventory_price_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      inventory_item_id INTEGER NOT NULL REFERENCES inventory_items(id),
+      price_per_base REAL NOT NULL,
+      effective_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      responsible_person TEXT,
+      note TEXT,
+      active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS menu_item_recipes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      menu_item_id INTEGER NOT NULL UNIQUE REFERENCES menu_items(id),
+      active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS recipe_ingredients (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      recipe_id INTEGER NOT NULL REFERENCES menu_item_recipes(id) ON DELETE CASCADE,
+      inventory_item_id INTEGER NOT NULL REFERENCES inventory_items(id),
+      quantity_base REAL NOT NULL,
+      unit_label TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(recipe_id, inventory_item_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS inventory_adjustments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      inventory_item_id INTEGER NOT NULL REFERENCES inventory_items(id),
+      quantity_delta REAL NOT NULL,
+      reason TEXT NOT NULL,
+      order_id INTEGER REFERENCES orders(id),
+      order_item_id INTEGER REFERENCES order_items(id),
+      note TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS cost_categories (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE,
+      active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS cost_records (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      cost_category_id INTEGER REFERENCES cost_categories(id),
+      cost_name TEXT NOT NULL,
+      amount REAL NOT NULL,
+      payment_method TEXT,
+      responsible_person TEXT,
+      note TEXT,
+      cost_date TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS order_item_cost_snapshots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      order_id INTEGER NOT NULL REFERENCES orders(id),
+      order_item_id INTEGER NOT NULL UNIQUE REFERENCES order_items(id),
+      menu_item_id INTEGER NOT NULL REFERENCES menu_items(id),
+      quantity INTEGER NOT NULL,
+      revenue REAL NOT NULL,
+      raw_cost REAL NOT NULL,
+      profit REAL NOT NULL,
+      details_json TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS order_cost_snapshots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      order_id INTEGER NOT NULL UNIQUE REFERENCES orders(id),
+      revenue REAL NOT NULL,
+      raw_cost REAL NOT NULL,
+      other_cost REAL NOT NULL DEFAULT 0,
+      gross_profit REAL NOT NULL,
+      net_profit REAL NOT NULL,
+      missing_recipe_count INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS inventory_settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_inventory_items_category ON inventory_items(category_id);
+    CREATE INDEX IF NOT EXISTS idx_inventory_restock_item_date ON inventory_restock_entries(inventory_item_id, entry_date);
+    CREATE INDEX IF NOT EXISTS idx_inventory_price_item_date ON inventory_price_history(inventory_item_id, effective_at);
+    CREATE INDEX IF NOT EXISTS idx_recipe_ingredients_recipe ON recipe_ingredients(recipe_id);
+    CREATE INDEX IF NOT EXISTS idx_inventory_adjustments_item_date ON inventory_adjustments(inventory_item_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_inventory_adjustments_order ON inventory_adjustments(order_id);
+    CREATE INDEX IF NOT EXISTS idx_cost_records_date ON cost_records(cost_date);
+    CREATE INDEX IF NOT EXISTS idx_order_cost_snapshots_order ON order_cost_snapshots(order_id);
+    CREATE INDEX IF NOT EXISTS idx_audit_logs_created ON audit_logs(created_at);
+    CREATE INDEX IF NOT EXISTS idx_audit_logs_action ON audit_logs(action);
+    CREATE INDEX IF NOT EXISTS idx_audit_logs_entity ON audit_logs(entity_type, entity_id);
   `);
 
   ensureColumn(db, "order_items", "parcel", "INTEGER NOT NULL DEFAULT 0");
@@ -181,6 +326,40 @@ function seedDefaults(db: Database.Database): void {
   applyOneTimeBrandingDefaults(db);
 
   db.prepare("INSERT OR IGNORE INTO email_settings (id) VALUES (1)").run();
+
+  seedInventoryDefaults(db);
+}
+
+function seedInventoryDefaults(db: Database.Database): void {
+  const units = [
+    ["Gram", "g"],
+    ["Kilogram", "kg"],
+    ["Milliliter", "ml"],
+    ["Liter", "l"],
+    ["Piece", "pc"],
+    ["Packet", "packet"],
+    ["Portion", "portion"],
+    ["Teaspoon", "tsp"],
+    ["Tablespoon", "tbsp"]
+  ];
+  const unitInsert = db.prepare("INSERT OR IGNORE INTO inventory_units (name, short_name) VALUES (?, ?)");
+  for (const [name, shortName] of units) {
+    unitInsert.run(name, shortName);
+  }
+
+  const inventoryCategories = ["Seafood", "Meat", "Vegetable", "Spice", "Sauce", "Dairy", "Dry Goods", "Packaging", "Other"];
+  const categoryInsert = db.prepare("INSERT OR IGNORE INTO inventory_categories (name) VALUES (?)");
+  for (const name of inventoryCategories) {
+    categoryInsert.run(name);
+  }
+
+  const costCategories = ["Staff Salary", "Electricity", "Gas", "Water", "Rent", "Maintenance", "Packaging", "Delivery Expense", "Cleaning", "Other"];
+  const costInsert = db.prepare("INSERT OR IGNORE INTO cost_categories (name) VALUES (?)");
+  for (const name of costCategories) {
+    costInsert.run(name);
+  }
+
+  db.prepare("INSERT OR IGNORE INTO inventory_settings (key, value) VALUES ('lowStockDefault', ?)").run(JSON.stringify(1000));
 }
 
 function applyOneTimeBrandingDefaults(db: Database.Database): void {

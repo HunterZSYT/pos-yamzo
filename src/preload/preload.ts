@@ -12,6 +12,21 @@ const api = {
     protectedAccess: (input: { panel: string; success: boolean; method: "password" | "master_key" | "recent_access"; actor?: string }) =>
       ipcRenderer.invoke("audit:protectedAccess", input)
   },
+  inventory: {
+    snapshot: () => ipcRenderer.invoke("inventory:snapshot"),
+    chooseAndImportCsv: () => ipcRenderer.invoke("inventory:chooseAndImportCsv"),
+    importCsv: (csvPath: string) => ipcRenderer.invoke("inventory:importCsv", csvPath),
+    saveItem: (input: { id?: number; name: string; categoryId?: number | null; baseUnitId: number; lowStockThreshold?: number; active?: boolean }) =>
+      ipcRenderer.invoke("inventory:saveItem", input),
+    saveCategory: (input: { id?: number; name: string; active?: boolean }) => ipcRenderer.invoke("inventory:saveCategory", input),
+    addRestock: (input: { inventoryItemId: number; quantity: number; unitLabel?: string; totalCost?: number; supplierName?: string | null; responsiblePerson?: string | null; note?: string | null; entryDate?: string | null }) =>
+      ipcRenderer.invoke("inventory:addRestock", input),
+    addPrice: (input: { inventoryItemId: number; pricePerBase: number; effectiveAt?: string | null; responsiblePerson?: string | null; note?: string | null }) =>
+      ipcRenderer.invoke("inventory:addPrice", input),
+    saveCostCategory: (input: { id?: number; name: string; active?: boolean }) => ipcRenderer.invoke("inventory:saveCostCategory", input),
+    addCost: (input: { categoryId?: number | null; costName: string; amount: number; paymentMethod?: string | null; responsiblePerson?: string | null; note?: string | null; costDate?: string | null }) =>
+      ipcRenderer.invoke("inventory:addCost", input)
+  },
   menu: {
     list: () => ipcRenderer.invoke("menu:list"),
     importCsv: (csvPath: string) => ipcRenderer.invoke("menu:importCsv", csvPath),

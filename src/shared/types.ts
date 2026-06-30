@@ -136,6 +136,144 @@ export interface ActivityLog {
   createdAt: string;
 }
 
+export interface InventoryCategory {
+  id: number;
+  name: string;
+  active: boolean;
+}
+
+export interface InventoryUnit {
+  id: number;
+  name: string;
+  shortName: string;
+  active: boolean;
+}
+
+export interface InventoryItem {
+  id: number;
+  name: string;
+  categoryId: number | null;
+  categoryName: string | null;
+  baseUnitId: number;
+  unitName: string;
+  unitShortName: string;
+  currentStock: number;
+  latestPrice: number;
+  estimatedValue: number;
+  lowStockThreshold: number;
+  status: "ok" | "low" | "out";
+  active: boolean;
+}
+
+export interface RecipeIngredient {
+  id: number;
+  inventoryItemId: number;
+  itemName: string;
+  quantityBase: number;
+  unitLabel: string;
+  latestPrice: number;
+  rawCost: number;
+}
+
+export interface MenuRecipe {
+  id: number;
+  menuItemId: number;
+  menuItemName: string;
+  sellingPrice: number;
+  status: "available" | "missing";
+  rawCost: number;
+  estimatedProfit: number;
+  profitMargin: number;
+  ingredients: RecipeIngredient[];
+}
+
+export interface RestockEntry {
+  id: number;
+  inventoryItemId: number;
+  itemName: string;
+  quantityBase: number;
+  unitLabel: string;
+  totalCost: number;
+  pricePerBase: number;
+  supplierName: string | null;
+  responsiblePerson: string | null;
+  note: string | null;
+  entryDate: string;
+}
+
+export interface PriceHistoryRecord {
+  id: number;
+  inventoryItemId: number;
+  itemName: string;
+  pricePerBase: number;
+  effectiveAt: string;
+  responsiblePerson: string | null;
+  note: string | null;
+}
+
+export interface CostCategory {
+  id: number;
+  name: string;
+  active: boolean;
+}
+
+export interface CostRecord {
+  id: number;
+  categoryId: number | null;
+  categoryName: string | null;
+  costName: string;
+  amount: number;
+  paymentMethod: string | null;
+  responsiblePerson: string | null;
+  note: string | null;
+  costDate: string;
+}
+
+export interface InventoryImportResult {
+  recipesImported: number;
+  recipesUpdated: number;
+  inventoryItemsCreated: number;
+  menuItemsCreated: number;
+  rowsSkipped: number;
+  errors: string[];
+  cancelled?: boolean;
+}
+
+export interface InventoryStatusSummary {
+  totalInventoryValue: number;
+  lowStockCount: number;
+  outOfStockCount: number;
+  missingRecipeCount: number;
+  recipeAvailableCount: number;
+  inventoryItemCount: number;
+  recentRestocks: RestockEntry[];
+  lowStockItems: InventoryItem[];
+  missingRecipes: Array<{ menuItemId: number; name: string; price: number }>;
+}
+
+export interface SalesProfitSummary {
+  revenue: number;
+  rawCost: number;
+  otherCost: number;
+  grossProfit: number;
+  netProfit: number;
+  missingRecipeCount: number;
+  topProfitItems: Array<{ name: string; revenue: number; rawCost: number; profit: number }>;
+}
+
+export interface InventorySnapshot {
+  categories: InventoryCategory[];
+  units: InventoryUnit[];
+  items: InventoryItem[];
+  recipes: MenuRecipe[];
+  restocks: RestockEntry[];
+  priceHistory: PriceHistoryRecord[];
+  costCategories: CostCategory[];
+  costRecords: CostRecord[];
+  status: InventoryStatusSummary;
+  profit: SalesProfitSummary;
+}
+
 export interface ReceiptPaymentInfo {
   paid: boolean;
   method: PaymentMethod;
