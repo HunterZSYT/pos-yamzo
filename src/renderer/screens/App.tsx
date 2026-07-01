@@ -1693,6 +1693,13 @@ function InventoryAdmin({
     await refreshData();
   }
 
+  async function deleteRestock(entry: RestockEntry) {
+    if (!window.confirm(`Delete this restock entry for ${entry.itemName}?`)) return;
+    await window.yamzo?.inventory.deleteRestock(entry.id);
+    setMessage("Restock entry deleted.");
+    await refreshData();
+  }
+
   async function addCost() {
     await window.yamzo?.inventory.addCost({
       categoryId: costForm.categoryId ? Number(costForm.categoryId) : null,
@@ -1885,7 +1892,7 @@ function InventoryAdmin({
               <Button className="self-end" onClick={addRestock} disabled={!restockForm.inventoryItemId}>Add Restock</Button>
             </CardContent>
           </Card>
-          <RestockEntryTable entries={snapshot.restocks} onEdit={setRestockEdit} />
+          <RestockEntryTable entries={snapshot.restocks} onEdit={setRestockEdit} onDelete={deleteRestock} />
         </TabsContent>
 
         <TabsContent value="orders" className="pt-4">
@@ -2062,7 +2069,7 @@ function InventoryItemEditorDialog({
   );
 }
 
-function RestockEntryTable({ entries, onEdit }: { entries: RestockEntry[]; onEdit: (entry: RestockEntry) => void }) {
+function RestockEntryTable({ entries, onEdit, onDelete }: { entries: RestockEntry[]; onEdit: (entry: RestockEntry) => void; onDelete: (entry: RestockEntry) => void }) {
   return (
     <div className="rounded-xl border bg-card">
       {entries.length === 0 ? (
@@ -2082,7 +2089,12 @@ function RestockEntryTable({ entries, onEdit }: { entries: RestockEntry[]; onEdi
                   <TableCell>{money(entry.totalCost)}</TableCell>
                   <TableCell>{entry.responsiblePerson ?? "-"}</TableCell>
                   <TableCell>{entry.supplierName ?? "-"}</TableCell>
-                  <TableCell className="text-right"><Button size="sm" variant="secondary" onClick={() => onEdit(entry)}>Edit</Button></TableCell>
+                  <TableCell className="text-right">
+                    <div className="flex justify-end gap-2">
+                      <Button size="sm" variant="secondary" onClick={() => onEdit(entry)}>Edit</Button>
+                      <Button size="sm" variant="destructive" onClick={() => onDelete(entry)}>Delete</Button>
+                    </div>
+                  </TableCell>
                 </TableRow>
               ))}
             </TableBody>

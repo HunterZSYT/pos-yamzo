@@ -25,7 +25,7 @@ import {
 } from "../src/main/domain/orders";
 import { reprintKitchenCopy, reprintReceipt, voidOrderItem } from "../src/main/domain/orders";
 import { getSalesSummary } from "../src/main/domain/reports";
-import { addCostRecord, addPriceRecord, addRestockEntry, importRecipeInventoryCsv, listInventorySnapshot } from "../src/main/domain/inventory";
+import { addCostRecord, addPriceRecord, addRestockEntry, deleteRestockEntry, importRecipeInventoryCsv, listInventorySnapshot } from "../src/main/domain/inventory";
 import { archiveMenuItem, deleteMenuItem, importMenuCsv, listMenuItems, parsePrice, saveMenuItem } from "../src/main/services/menuImport";
 import { getBrandingSettings, getHostNames, getTotalTables, setBrandingSettings, setHostNames, setInventoryTracking, getSetting, setPrinterName, setTotalTables } from "../src/main/services/settings";
 import { buildDailySalesEmail, clearGmailAuth, getEmailSettings, saveEmailSettings } from "../src/main/services/email";
@@ -308,8 +308,11 @@ describe("Yamzo POS core", () => {
     const snapshot = listInventorySnapshot(database);
     const chicken = snapshot.items.find((item) => item.name === "Chicken");
     expect(chicken).toBeTruthy();
-    addRestockEntry(database, { inventoryItemId: chicken!.id, quantity: 1000, totalCost: 900, responsiblePerson: "Cashier" });
+    const restock = addRestockEntry(database, { inventoryItemId: chicken!.id, quantity: 1000, totalCost: 900, responsiblePerson: "Cashier" });
     addPriceRecord(database, { inventoryItemId: chicken!.id, pricePerBase: 1, responsiblePerson: "Cashier" });
+    deleteRestockEntry(database, restock.id);
+    expect(listInventorySnapshot(database).restocks.some((entry) => entry.id === restock.id)).toBe(false);
+    addRestockEntry(database, { inventoryItemId: chicken!.id, quantity: 1000, totalCost: 900, responsiblePerson: "Cashier" });
     addCostRecord(database, { categoryId: snapshot.costCategories[0].id, costName: "Electricity", amount: 500, paymentMethod: "cash" });
     const menuItem = listMenuItems(database).find((item) => item.name === "Chicken Momo")!;
     const order = createOrder(database, { source: "in_house", tableNumber: "Table 1" });

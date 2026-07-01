@@ -17,6 +17,9 @@ try {
     db.prepare("DELETE FROM kitchen_ticket_items").run();
     db.prepare("DELETE FROM kitchen_tickets").run();
     db.prepare("DELETE FROM payments").run();
+    db.prepare("DELETE FROM inventory_adjustments WHERE order_id IS NOT NULL OR order_item_id IS NOT NULL").run();
+    db.prepare("DELETE FROM order_item_cost_snapshots").run();
+    db.prepare("DELETE FROM order_cost_snapshots").run();
     db.prepare("DELETE FROM order_items").run();
     db.prepare("DELETE FROM orders").run();
     db.prepare("DELETE FROM print_jobs").run();

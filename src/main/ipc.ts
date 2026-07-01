@@ -32,8 +32,9 @@ import {
   addCostRecord,
   addPriceRecord,
   addRestockEntry,
-  importRecipeInventoryCsv,
   deleteInventoryItem,
+  deleteRestockEntry,
+  importRecipeInventoryCsv,
   listInventorySnapshot,
   removeCostCategory,
   removeInventoryCategory,
@@ -96,6 +97,7 @@ export function registerIpc(db: Database.Database): void {
   ipcMain.handle("inventory:removeUnit", (_event, id: number) => removeInventoryUnit(db, id));
   ipcMain.handle("inventory:addRestock", (_event, input) => addRestockEntry(db, input));
   ipcMain.handle("inventory:updateRestock", (_event, input) => updateRestockEntry(db, input));
+  ipcMain.handle("inventory:deleteRestock", (_event, id: number) => deleteRestockEntry(db, id));
   ipcMain.handle("inventory:addPrice", (_event, input) => addPriceRecord(db, input));
   ipcMain.handle("inventory:saveCostCategory", (_event, input) => saveCostCategory(db, input));
   ipcMain.handle("inventory:removeCostCategory", (_event, id: number) => removeCostCategory(db, id));

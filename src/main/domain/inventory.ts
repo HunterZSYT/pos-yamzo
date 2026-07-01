@@ -325,6 +325,24 @@ export function updateRestockEntry(
   return listRestockEntries(db, 200).find((entry) => entry.id === input.id)!;
 }
 
+export function deleteRestockEntry(db: Database.Database, id: number, actor = "admin"): void {
+  const existing = db.prepare(
+    `SELECT re.id, re.inventory_item_id, re.quantity_base, ii.name AS item_name
+     FROM inventory_restock_entries re
+     JOIN inventory_items ii ON ii.id = re.inventory_item_id
+     WHERE re.id = ?`
+  ).get(id) as { id: number; inventory_item_id: number; quantity_base: number; item_name: string } | undefined;
+  if (!existing) throw new Error("Restock entry not found.");
+  db.prepare("DELETE FROM inventory_restock_entries WHERE id = ?").run(id);
+  recordActivity(db, "inventory_restock_deleted", {
+    entityType: "inventory_restock",
+    entityId: String(id),
+    inventoryItemId: existing.inventory_item_id,
+    itemName: existing.item_name,
+    quantity: existing.quantity_base
+  }, actor);
+}
+
 export function addPriceRecord(
   db: Database.Database,
   input: { inventoryItemId: number; pricePerBase: number; effectiveAt?: string | null; responsiblePerson?: string | null; note?: string | null },

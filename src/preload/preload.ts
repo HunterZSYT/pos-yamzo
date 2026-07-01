@@ -29,6 +29,7 @@ const api = {
       ipcRenderer.invoke("inventory:addRestock", input),
     updateRestock: (input: { id: number; inventoryItemId: number; quantity: number; unitLabel?: string; totalCost?: number; supplierName?: string | null; responsiblePerson?: string | null; note?: string | null }) =>
       ipcRenderer.invoke("inventory:updateRestock", input),
+    deleteRestock: (id: number) => ipcRenderer.invoke("inventory:deleteRestock", id),
     addPrice: (input: { inventoryItemId: number; pricePerBase: number; effectiveAt?: string | null; responsiblePerson?: string | null; note?: string | null }) =>
       ipcRenderer.invoke("inventory:addPrice", input),
     saveCostCategory: (input: { id?: number; name: string; active?: boolean }) => ipcRenderer.invoke("inventory:saveCostCategory", input),
