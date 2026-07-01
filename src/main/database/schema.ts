@@ -292,7 +292,7 @@ export function migrate(db: Database.Database): void {
   ensureColumn(db, "orders", "first_kitchen_sent_at", "TEXT");
   ensureColumn(db, "orders", "kitchen_completed_at", "TEXT");
   ensureColumn(db, "kitchen_tickets", "completed_at", "TEXT");
-  ensureColumn(db, "inventory_restock_entries", "updated_at", "TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP");
+  ensureColumn(db, "inventory_restock_entries", "updated_at", "TEXT");
 
   seedDefaults(db);
 }
