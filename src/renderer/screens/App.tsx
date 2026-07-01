@@ -1272,10 +1272,6 @@ function RecipeEditorDialog({
         };
       })
       .filter((row) => row.inventoryItemId && row.quantityBase > 0);
-    if (ingredients.length === 0) {
-      setError("Add at least one ingredient with an amount greater than 0.");
-      return;
-    }
     try {
       await window.yamzo?.inventory.saveRecipe({ menuItemId: recipe.menuItemId, ingredients });
       await onSaved();
@@ -1541,23 +1537,104 @@ function BusinessSummary({ summary }: { summary: SalesSummary }) {
 
 function ReportsPanel({ summary, inventory }: { summary: SalesSummary; inventory: InventorySnapshot }) {
   const [reportRange, setReportRange] = useState({ start: "", end: "" });
+  const [reportSummary, setReportSummary] = useState(summary);
   const missingRecipeRows = inventory.status.missingRecipes.map((item) => [item.name, money(item.price), "Recipe not available"]);
 
-  function exportMissingRecipes() {
-    exportCsvRows("yamzo-missing-recipes.csv", [["Menu item", "Selling price", "Status"], ...missingRecipeRows]);
+  useEffect(() => {
+    let cancelled = false;
+    async function loadRangeSummary() {
+      const next = await window.yamzo?.reports.sales(rangeStartForSql(reportRange.start), rangeEndForSql(reportRange.end));
+      if (!cancelled) setReportSummary(next ?? summary);
+    }
+    void loadRangeSummary();
+    return () => {
+      cancelled = true;
+    };
+  }, [reportRange.start, reportRange.end, summary]);
+
+  function applyPreset(preset: "today" | "yesterday" | "7days" | "1month") {
+    const today = startOfLocalDay(new Date());
+    const start = new Date(today);
+    const end = new Date(today);
+    if (preset === "yesterday") {
+      start.setDate(start.getDate() - 1);
+      end.setDate(end.getDate() - 1);
+    }
+    if (preset === "7days") {
+      start.setDate(start.getDate() - 6);
+    }
+    if (preset === "1month") {
+      start.setMonth(start.getMonth() - 1);
+    }
+    setReportRange({ start: dateInputValue(start), end: dateInputValue(end) });
+  }
+
+  function exportSalesPdf() {
+    const lines = [
+      ["Total Sales", money(reportSummary.totalSales)],
+      ["Total Orders", String(reportSummary.totalOrders)],
+      ["Open Orders", String(reportSummary.openOrders)],
+      ["Discounts", money(reportSummary.discountTotal)],
+      ["Void Total", money(reportSummary.voidTotal)],
+      ["Average Order Time", reportSummary.averageKitchenMinutes ? `${reportSummary.averageKitchenMinutes} min` : "--"]
+    ];
+    const topItems = reportSummary.topItems.map((item) => [item.name, `${item.quantity} sold`, money(item.total)]);
+    const payments = Object.entries(reportSummary.paymentBreakdown).map(([name, value]) => [labelize(name), money(value)]);
+    const popup = window.open("", "_blank", "width=920,height=900");
+    if (!popup) return;
+    const period = reportRange.start || reportRange.end ? `${reportRange.start || "Start"} to ${reportRange.end || "End"}` : "All completed sales";
+    popup.document.write(`
+      <html>
+        <head>
+          <title>Yamzo Sales Report</title>
+          <style>
+            body { font-family: Arial, sans-serif; margin: 32px; color: #111; }
+            h1 { margin: 0 0 4px; font-size: 24px; }
+            .muted { color: #666; margin-bottom: 24px; }
+            table { width: 100%; border-collapse: collapse; margin: 16px 0 28px; }
+            th, td { border-bottom: 1px solid #ddd; padding: 10px 8px; text-align: left; }
+            th { background: #f5f5f5; }
+            .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+            @media print { button { display: none; } body { margin: 18mm; } }
+          </style>
+        </head>
+        <body>
+          <button onclick="window.print()">Save / Print PDF</button>
+          <h1>Yamzo Sales Report</h1>
+          <div class="muted">${escapeHtml(period)}</div>
+          <h2>Summary</h2>
+          ${htmlTable(["Metric", "Value"], lines)}
+          <div class="grid">
+            <section><h2>Top Selling Items</h2>${htmlTable(["Item", "Quantity", "Sales"], topItems)}</section>
+            <section><h2>Payment Breakdown</h2>${htmlTable(["Method", "Amount"], payments)}</section>
+          </div>
+        </body>
+      </html>
+    `);
+    popup.document.close();
+    popup.focus();
+    popup.print();
   }
 
   return (
     <div className="grid gap-4">
       <Card>
-        <CardContent className="grid gap-3 p-4 lg:grid-cols-[1fr_auto] lg:items-end">
-          <DateRangeControl value={reportRange} onChange={setReportRange} />
-          <Button variant="secondary" onClick={exportMissingRecipes}>Export Missing Recipes</Button>
+        <CardContent className="grid gap-3 p-4">
+          <div className="flex flex-wrap gap-2">
+            <Button variant="secondary" size="sm" onClick={() => applyPreset("today")}>Today</Button>
+            <Button variant="secondary" size="sm" onClick={() => applyPreset("yesterday")}>Yesterday</Button>
+            <Button variant="secondary" size="sm" onClick={() => applyPreset("7days")}>7 Days</Button>
+            <Button variant="secondary" size="sm" onClick={() => applyPreset("1month")}>1 Month</Button>
+          </div>
+          <div className="grid gap-3 lg:grid-cols-[1fr_auto] lg:items-end">
+            <DateRangeControl value={reportRange} onChange={setReportRange} />
+            <Button variant="secondary" onClick={exportSalesPdf}>Export Sales PDF</Button>
+          </div>
         </CardContent>
       </Card>
-      <BusinessSummary summary={summary} />
+      <BusinessSummary summary={reportSummary} />
       <div className="grid grid-cols-[repeat(auto-fit,minmax(180px,1fr))] gap-3">
-        <Metric label="Revenue" value={money(inventory.profit.revenue)} />
+        <Metric label="Revenue" value={money(reportSummary.totalSales)} />
         <Metric label="Raw Cost" value={money(inventory.profit.rawCost)} />
         <Metric label="Other Costs" value={money(inventory.profit.otherCost)} />
         <Metric label="Gross Profit" value={money(inventory.profit.grossProfit)} />
@@ -2792,6 +2869,35 @@ function withinDateRange(value: string, range: { start: string; end: string }): 
     if (date > end) return false;
   }
   return true;
+}
+
+function startOfLocalDay(date: Date): Date {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+}
+
+function dateInputValue(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function rangeStartForSql(value: string): string | undefined {
+  return value ? `${value} 00:00:00` : undefined;
+}
+
+function rangeEndForSql(value: string): string | undefined {
+  return value ? `${value} 23:59:59` : undefined;
+}
+
+function htmlTable(headers: string[], rows: string[][]): string {
+  const head = headers.map((header) => `<th>${escapeHtml(header)}</th>`).join("");
+  const body = rows.length
+    ? rows
+        .map((row) => `<tr>${row.map((cell) => `<td>${escapeHtml(cell)}</td>`).join("")}</tr>`)
+        .join("")
+    : `<tr><td colspan="${headers.length}">No data.</td></tr>`;
+  return `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
 }
 
 function csvCell(value: string): string {

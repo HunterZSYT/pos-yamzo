@@ -25,7 +25,7 @@ import {
 } from "../src/main/domain/orders";
 import { reprintKitchenCopy, reprintReceipt, voidOrderItem } from "../src/main/domain/orders";
 import { getSalesSummary } from "../src/main/domain/reports";
-import { addCostRecord, addPriceRecord, addRestockEntry, deleteRestockEntry, importRecipeInventoryCsv, listInventorySnapshot } from "../src/main/domain/inventory";
+import { addCostRecord, addPriceRecord, addRestockEntry, deleteRestockEntry, importRecipeInventoryCsv, listInventorySnapshot, saveMenuRecipe } from "../src/main/domain/inventory";
 import { archiveMenuItem, deleteMenuItem, importMenuCsv, listMenuItems, parsePrice, saveMenuItem } from "../src/main/services/menuImport";
 import { getBrandingSettings, getHostNames, getTotalTables, setBrandingSettings, setHostNames, setInventoryTracking, getSetting, setPrinterName, setTotalTables } from "../src/main/services/settings";
 import { buildDailySalesEmail, clearGmailAuth, getEmailSettings, saveEmailSettings } from "../src/main/services/email";
@@ -293,9 +293,12 @@ describe("Yamzo POS core", () => {
     expect(result.menuItemsCreated).toBe(1);
     const snapshot = listInventorySnapshot(database);
     expect(snapshot.items.map((item) => item.name)).toContain("Chicken, raw");
-    expect(snapshot.recipes.find((recipe) => recipe.menuItemName === "Chicken Momo")?.status).toBe("available");
+    const chickenMomoRecipe = snapshot.recipes.find((recipe) => recipe.menuItemName === "Chicken Momo");
+    expect(chickenMomoRecipe?.status).toBe("available");
     expect(snapshot.status.inventoryItemCount).toBe(4);
     expect(snapshot.status.totalInventoryValue).toBeGreaterThan(0);
+    saveMenuRecipe(database, { menuItemId: chickenMomoRecipe!.menuItemId, ingredients: [] });
+    expect(listInventorySnapshot(database).recipes.find((recipe) => recipe.menuItemId === chickenMomoRecipe!.menuItemId)?.status).toBe("missing");
     fs.unlinkSync(file);
   });
 

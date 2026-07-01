@@ -183,11 +183,15 @@ export function saveMenuRecipe(
       unitLabel: cleanText(ingredient.unitLabel || "g")
     }))
     .filter((ingredient) => Number.isInteger(ingredient.inventoryItemId) && ingredient.inventoryItemId > 0 && ingredient.quantityBase > 0);
-  if (cleanIngredients.length === 0) {
-    throw new Error("Add at least one ingredient with an amount greater than zero.");
-  }
   const tx = db.transaction(() => {
     const existing = db.prepare("SELECT id FROM menu_item_recipes WHERE menu_item_id = ?").get(menuItem.id) as { id: number } | undefined;
+    if (cleanIngredients.length === 0) {
+      if (existing) {
+        db.prepare("DELETE FROM recipe_ingredients WHERE recipe_id = ?").run(existing.id);
+        db.prepare("UPDATE menu_item_recipes SET active = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(existing.id);
+      }
+      return;
+    }
     const recipeId = existing
       ? existing.id
       : Number(db.prepare("INSERT INTO menu_item_recipes (menu_item_id) VALUES (?)").run(menuItem.id).lastInsertRowid);
@@ -199,7 +203,7 @@ export function saveMenuRecipe(
     }
   });
   tx();
-  recordActivity(db, "recipe_updated", { entityType: "menu_item", entityId: String(menuItem.id), itemName: menuItem.name, ingredientCount: cleanIngredients.length }, actor);
+  recordActivity(db, cleanIngredients.length === 0 ? "recipe_removed" : "recipe_updated", { entityType: "menu_item", entityId: String(menuItem.id), itemName: menuItem.name, ingredientCount: cleanIngredients.length }, actor);
   return listMenuRecipes(db).find((recipe) => recipe.menuItemId === menuItem.id)!;
 }
 
