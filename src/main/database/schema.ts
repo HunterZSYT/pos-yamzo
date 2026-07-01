@@ -42,6 +42,16 @@ export function migrate(db: Database.Database): void {
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
 
+    CREATE TABLE IF NOT EXISTS menu_item_prices (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      menu_item_id INTEGER NOT NULL REFERENCES menu_items(id) ON DELETE CASCADE,
+      menu_type_key TEXT NOT NULL,
+      price INTEGER NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(menu_item_id, menu_type_key)
+    );
+
     CREATE TABLE IF NOT EXISTS orders (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       order_number TEXT NOT NULL UNIQUE,
@@ -172,6 +182,8 @@ export function migrate(db: Database.Database): void {
     CREATE TABLE IF NOT EXISTS inventory_restock_entries (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       inventory_item_id INTEGER NOT NULL REFERENCES inventory_items(id),
+      item_type TEXT NOT NULL DEFAULT 'raw',
+      recipe_id INTEGER REFERENCES menu_item_recipes(id),
       quantity_base REAL NOT NULL,
       unit_label TEXT NOT NULL,
       total_cost REAL NOT NULL DEFAULT 0,
@@ -180,6 +192,18 @@ export function migrate(db: Database.Database): void {
       responsible_person TEXT,
       note TEXT,
       entry_date TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS inventory_physical_counts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      inventory_item_id INTEGER NOT NULL REFERENCES inventory_items(id),
+      quantity_base REAL NOT NULL,
+      unit_label TEXT NOT NULL,
+      responsible_person TEXT,
+      note TEXT,
+      count_date TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      source TEXT NOT NULL DEFAULT 'manual',
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
 
@@ -198,6 +222,7 @@ export function migrate(db: Database.Database): void {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       menu_item_id INTEGER NOT NULL UNIQUE REFERENCES menu_items(id),
       active INTEGER NOT NULL DEFAULT 1,
+      restock_enabled INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
@@ -276,7 +301,9 @@ export function migrate(db: Database.Database): void {
     );
 
     CREATE INDEX IF NOT EXISTS idx_inventory_items_category ON inventory_items(category_id);
+    CREATE INDEX IF NOT EXISTS idx_menu_item_prices_item_type ON menu_item_prices(menu_item_id, menu_type_key);
     CREATE INDEX IF NOT EXISTS idx_inventory_restock_item_date ON inventory_restock_entries(inventory_item_id, entry_date);
+    CREATE INDEX IF NOT EXISTS idx_inventory_physical_counts_item_date ON inventory_physical_counts(inventory_item_id, count_date);
     CREATE INDEX IF NOT EXISTS idx_inventory_price_item_date ON inventory_price_history(inventory_item_id, effective_at);
     CREATE INDEX IF NOT EXISTS idx_recipe_ingredients_recipe ON recipe_ingredients(recipe_id);
     CREATE INDEX IF NOT EXISTS idx_inventory_adjustments_item_date ON inventory_adjustments(inventory_item_id, created_at);
@@ -293,6 +320,9 @@ export function migrate(db: Database.Database): void {
   ensureColumn(db, "orders", "kitchen_completed_at", "TEXT");
   ensureColumn(db, "kitchen_tickets", "completed_at", "TEXT");
   ensureColumn(db, "inventory_restock_entries", "updated_at", "TEXT");
+  ensureColumn(db, "inventory_restock_entries", "item_type", "TEXT NOT NULL DEFAULT 'raw'");
+  ensureColumn(db, "inventory_restock_entries", "recipe_id", "INTEGER");
+  ensureColumn(db, "menu_item_recipes", "restock_enabled", "INTEGER NOT NULL DEFAULT 0");
 
   seedDefaults(db);
 }

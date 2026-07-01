@@ -1,11 +1,4 @@
-export type OrderSource =
-  | "in_house"
-  | "takeaway"
-  | "parcel"
-  | "delivery"
-  | "foodpanda"
-  | "foodie"
-  | "other";
+export type OrderSource = string;
 
 export type OrderStatus = "open" | "kitchen_sent" | "settled" | "cancelled";
 export type PaymentMethod = "cash" | "bkash" | "nagad" | "card" | "other" | "split";
@@ -33,6 +26,7 @@ export interface MenuItem {
   id: number;
   name: string;
   price: number;
+  menuPrices?: Record<string, number>;
   category: string | null;
   available: boolean;
   archived: boolean;
@@ -49,7 +43,17 @@ export interface MenuImportResult {
   imported: number;
   updated: number;
   skipped: number;
+  replaced?: number;
+  menuTypes?: string[];
   cancelled?: boolean;
+}
+
+export interface MenuTypeSetting {
+  key: string;
+  label: string;
+  tablesEnabled: boolean;
+  commissionPercent: number;
+  active: boolean;
 }
 
 export interface OrderItemInput {
@@ -110,6 +114,7 @@ export interface SalesSummary {
   settledOrders: number;
   discountTotal: number;
   voidTotal: number;
+  commissionTotal: number;
   paymentBreakdown: Record<string, number>;
   sourceBreakdown: Record<string, number>;
   topItems: Array<{ name: string; quantity: number; total: number }>;
@@ -194,6 +199,7 @@ export interface MenuRecipe {
   menuItemName: string;
   sellingPrice: number;
   status: "available" | "missing";
+  restockEnabled: boolean;
   rawCost: number;
   estimatedProfit: number;
   profitMargin: number;
@@ -204,6 +210,9 @@ export interface RestockEntry {
   id: number;
   inventoryItemId: number;
   itemName: string;
+  itemType: "raw" | "recipe";
+  recipeId: number | null;
+  recipeName: string | null;
   quantityBase: number;
   unitLabel: string;
   totalCost: number;
@@ -241,6 +250,27 @@ export interface CostRecord {
   responsiblePerson: string | null;
   note: string | null;
   costDate: string;
+}
+
+export interface PhysicalCountEntry {
+  id: number;
+  inventoryItemId: number;
+  itemName: string;
+  quantityBase: number;
+  unitLabel: string;
+  responsiblePerson: string | null;
+  note: string | null;
+  countDate: string;
+  source: "manual" | "restock";
+}
+
+export interface InventoryItemImportResult {
+  imported: number;
+  updated: number;
+  skipped: number;
+  deleted: number;
+  errors: string[];
+  cancelled?: boolean;
 }
 
 export interface InventoryImportResult {
@@ -321,6 +351,7 @@ export interface InventorySnapshot {
   items: InventoryItem[];
   recipes: MenuRecipe[];
   restocks: RestockEntry[];
+  physicalCounts: PhysicalCountEntry[];
   priceHistory: PriceHistoryRecord[];
   costCategories: CostCategory[];
   costRecords: CostRecord[];

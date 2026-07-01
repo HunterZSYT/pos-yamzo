@@ -6,6 +6,7 @@ import {
   applyDiscount,
   createOrder,
   clearOrderHistory,
+  deleteClosedOrderRecord,
   deleteOrder,
   getOrderDetail,
   listOpenOrders,
@@ -31,9 +32,11 @@ import { getSalesSummary } from "./domain/reports.js";
 import {
   addCostRecord,
   addPriceRecord,
+  addPhysicalCount,
   addRestockEntry,
   deleteInventoryItem,
   deleteRestockEntry,
+  importInventoryItemsCsv,
   importRecipeInventoryCsv,
   listInventorySnapshot,
   removeCostCategory,
@@ -44,6 +47,7 @@ import {
   saveInventoryItem,
   saveInventoryUnit,
   saveMenuRecipe,
+  setRecipeRestockEnabled,
   updateRestockEntry
 } from "./domain/inventory.js";
 import { archiveMenuItem, deleteMenuItem, importMenuCsv, listMenuItems, saveMenuItem } from "./services/menuImport.js";
@@ -52,12 +56,14 @@ import {
   getHostNames,
   getInventoryTracking,
   getMenuCategories,
+  getMenuTypes,
   getPrinterName,
   getTotalTables,
   setBrandingSettings,
   setHostNames,
   setInventoryTracking,
   setMenuCategories,
+  setMenuTypes,
   setPrinterName,
   setTotalTables
 } from "./services/settings.js";
@@ -88,9 +94,22 @@ export function registerIpc(db: Database.Database): void {
     return importRecipeInventoryCsv(db, picked.filePaths[0]);
   });
   ipcMain.handle("inventory:importCsv", (_event, csvPath: string) => importRecipeInventoryCsv(db, csvPath));
+  ipcMain.handle("inventory:chooseAndImportItemsCsv", async () => {
+    const picked = await dialog.showOpenDialog({
+      title: "Choose inventory items CSV",
+      properties: ["openFile"],
+      filters: [{ name: "CSV files", extensions: ["csv"] }]
+    });
+    if (picked.canceled || !picked.filePaths[0]) {
+      return { imported: 0, updated: 0, skipped: 0, deleted: 0, errors: [], cancelled: true };
+    }
+    return importInventoryItemsCsv(db, picked.filePaths[0]);
+  });
+  ipcMain.handle("inventory:importItemsCsv", (_event, csvPath: string) => importInventoryItemsCsv(db, csvPath));
   ipcMain.handle("inventory:saveItem", (_event, input) => saveInventoryItem(db, input));
   ipcMain.handle("inventory:deleteItem", (_event, id: number) => deleteInventoryItem(db, id));
   ipcMain.handle("inventory:saveRecipe", (_event, input) => saveMenuRecipe(db, input));
+  ipcMain.handle("inventory:setRecipeRestockEnabled", (_event, menuItemId: number, enabled: boolean) => setRecipeRestockEnabled(db, menuItemId, enabled));
   ipcMain.handle("inventory:saveCategory", (_event, input) => saveInventoryCategory(db, input));
   ipcMain.handle("inventory:removeCategory", (_event, id: number) => removeInventoryCategory(db, id));
   ipcMain.handle("inventory:saveUnit", (_event, input) => saveInventoryUnit(db, input));
@@ -98,6 +117,7 @@ export function registerIpc(db: Database.Database): void {
   ipcMain.handle("inventory:addRestock", (_event, input) => addRestockEntry(db, input));
   ipcMain.handle("inventory:updateRestock", (_event, input) => updateRestockEntry(db, input));
   ipcMain.handle("inventory:deleteRestock", (_event, id: number) => deleteRestockEntry(db, id));
+  ipcMain.handle("inventory:addPhysicalCount", (_event, input) => addPhysicalCount(db, input));
   ipcMain.handle("inventory:addPrice", (_event, input) => addPriceRecord(db, input));
   ipcMain.handle("inventory:saveCostCategory", (_event, input) => saveCostCategory(db, input));
   ipcMain.handle("inventory:removeCostCategory", (_event, id: number) => removeCostCategory(db, id));
@@ -150,6 +170,7 @@ export function registerIpc(db: Database.Database): void {
   ipcMain.handle("orders:open", () => listOpenOrders(db));
   ipcMain.handle("orders:history", () => listOrderHistory(db));
   ipcMain.handle("orders:clearHistory", () => clearOrderHistory(db));
+  ipcMain.handle("orders:deleteClosedRecord", (_event, orderId: number) => deleteClosedOrderRecord(db, orderId));
   ipcMain.handle("orders:reprintKitchen", (_event, orderId: number) => reprintKitchenCopy(db, orderId));
   ipcMain.handle("orders:reprintReceipt", (_event, orderId: number) => reprintReceipt(db, orderId));
   ipcMain.handle("orders:printBill", (_event, orderId: number, paymentInfo) => printBillCopy(db, orderId, paymentInfo));
@@ -206,6 +227,11 @@ export function registerIpc(db: Database.Database): void {
   ipcMain.handle("settings:setMenuCategories", (_event, categories: string[]) => {
     setMenuCategories(db, categories);
     recordActivity(db, "menu_categories_updated", { count: categories.length }, "admin");
+  });
+  ipcMain.handle("settings:getMenuTypes", () => getMenuTypes(db));
+  ipcMain.handle("settings:setMenuTypes", (_event, menuTypes) => {
+    setMenuTypes(db, menuTypes);
+    recordActivity(db, "menu_types_updated", { count: menuTypes.length }, "admin");
   });
   ipcMain.handle("email:getSettings", () => getEmailSettings(db));
   ipcMain.handle("email:saveSettings", (_event, settings) => {

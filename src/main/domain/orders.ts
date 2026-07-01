@@ -3,7 +3,7 @@ import type { OrderBatch, OrderDetail, OrderItemInput, OrderLine, OrderSource, O
 import { calculateOrderTotals } from "./pricing.js";
 import { enqueuePrintJob } from "../services/printQueue.js";
 import { buildAuditCopy, buildKitchenTicket, buildReceipt } from "../services/receipts.js";
-import { getBrandingSettings, getPrinterName } from "../services/settings.js";
+import { getBrandingSettings, getMenuTypes, getPrinterName } from "../services/settings.js";
 import { createOrderCostSnapshot, reverseOrderCostSnapshot } from "./inventory.js";
 
 export function createOrder(
@@ -21,7 +21,7 @@ export function addOrderItem(db: Database.Database, orderId: number, input: Orde
   if (!Number.isInteger(input.quantity) || input.quantity <= 0) {
     throw new Error("Quantity must be a positive whole number.");
   }
-  const order = db.prepare("SELECT status FROM orders WHERE id = ?").get(orderId) as { status: string } | undefined;
+  const order = db.prepare("SELECT status, source FROM orders WHERE id = ?").get(orderId) as { status: string; source: string } | undefined;
   if (!order) {
     throw new Error("Order not found.");
   }
@@ -35,12 +35,13 @@ export function addOrderItem(db: Database.Database, orderId: number, input: Orde
     throw new Error("Menu item not found.");
   }
 
+  const sourcePrice = db.prepare("SELECT price FROM menu_item_prices WHERE menu_item_id = ? AND menu_type_key = ?").get(item.id, order.source) as { price: number } | undefined;
   const result = db
     .prepare(
       `INSERT INTO order_items (order_id, menu_item_id, name, quantity, unit_price, note, parcel)
        VALUES (?, ?, ?, ?, ?, ?, ?)`
     )
-    .run(orderId, item.id, item.name, input.quantity, item.price, input.note ?? null, input.parcel ? 1 : 0);
+    .run(orderId, item.id, item.name, input.quantity, sourcePrice?.price ?? item.price, input.note ?? null, input.parcel ? 1 : 0);
   touchOrder(db, orderId);
   return Number(result.lastInsertRowid);
 }
@@ -118,9 +119,11 @@ export function updateOrderInfo(
   input: { source: OrderSource; tableNumber?: string | null; note?: string | null }
 ): OrderSummary {
   assertEditableOrder(db, orderId);
+  const menuType = getMenuTypes(db).find((type) => type.key === input.source);
+  const tablesEnabled = menuType?.tablesEnabled ?? input.source === "in_house";
   db.prepare("UPDATE orders SET source = ?, table_number = ?, note = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(
     input.source,
-    input.source === "in_house" ? input.tableNumber?.trim() || null : null,
+    tablesEnabled ? input.tableNumber?.trim() || null : null,
     input.note?.trim() || null,
     orderId
   );
@@ -354,6 +357,30 @@ export function clearOrderHistory(db: Database.Database): number {
       "INSERT INTO audit_logs (action, entity_type, entity_id, details) VALUES ('clear_order_history', 'orders', 'closed', ?)"
     ).run(JSON.stringify({ deletedOrders: orderIds.length }));
     return orderIds.length;
+  });
+  return tx();
+}
+
+export function deleteClosedOrderRecord(db: Database.Database, orderId: number): number {
+  const row = db.prepare("SELECT status FROM orders WHERE id = ?").get(orderId) as { status: string } | undefined;
+  if (!row) {
+    return 0;
+  }
+  if (row.status !== "settled" && row.status !== "cancelled") {
+    throw new Error("Only completed or cancelled order history can be deleted.");
+  }
+  const tx = db.transaction(() => {
+    db.prepare("DELETE FROM payments WHERE order_id = ?").run(orderId);
+    db.prepare("DELETE FROM kitchen_ticket_items WHERE ticket_id IN (SELECT id FROM kitchen_tickets WHERE order_id = ?)").run(orderId);
+    db.prepare("DELETE FROM kitchen_tickets WHERE order_id = ?").run(orderId);
+    db.prepare("DELETE FROM order_item_cost_snapshots WHERE order_id = ?").run(orderId);
+    db.prepare("DELETE FROM order_cost_snapshots WHERE order_id = ?").run(orderId);
+    db.prepare("DELETE FROM order_items WHERE order_id = ?").run(orderId);
+    const result = db.prepare("DELETE FROM orders WHERE id = ?").run(orderId);
+    db.prepare(
+      "INSERT INTO audit_logs (action, entity_type, entity_id, details) VALUES ('delete_order_history_record', 'order', ?, ?)"
+    ).run(String(orderId), JSON.stringify({ fromStatus: row.status }));
+    return result.changes;
   });
   return tx();
 }

@@ -1,0 +1,267 @@
+recipe number,recipe name,item serial no,item names,item quantity needed GM
+1,Fried Calamari,1,Squid raw,95 g
+1,Fried Calamari,2,Bengali spice,2 g
+1,Fried Calamari,3,Salt & pepper,1 g
+1,Fried Calamari,4,"Garlic, chopped",2 g
+1,Fried Calamari,5,Egg,1/2 pc
+1,Fried Calamari,6,Maida / flour,60 g
+2,Grilled Calamari,1,"Squid, raw",105 g
+2,Grilled Calamari,2,Bengali spice,2 g
+2,Grilled Calamari,3,Salt & pepper,1 g
+2,Grilled Calamari,4,"Garlic, chopped",2 g
+2,Grilled Calamari,5,Egg,1/2 pc
+2,Grilled Calamari,6,Maida / flour,as needed
+2,Grilled Calamari,7,Cajun sauce,as needed
+2,Grilled Calamari,8,Lemon + mustard sauce,as needed
+3,Golden Fish Fingers,1,Dory fish,100 g
+3,Golden Fish Fingers,2,Bengali spice,4 g
+3,Golden Fish Fingers,3,Salt & pepper,2 g
+3,Golden Fish Fingers,4,"Garlic, chopped",2 g
+3,Golden Fish Fingers,5,Egg,1 tbsp
+3,Golden Fish Fingers,6,Lemon + mustard,5 g
+3,Golden Fish Fingers,7,Breadcrumb,50 g
+4,Fish Nuggets,1,Dory fish,75 g
+4,Fish Nuggets,2,Bengali spices,4 g
+4,Fish Nuggets,3,Salt & pepper,2 g
+4,Fish Nuggets,4,Garlic,2 g
+4,Fish Nuggets,5,Lemon + mustard,5 g
+4,Fish Nuggets,6,Maida / flour,50 g
+4,Fish Nuggets,7,Egg,1 tbsp
+5,Octopus Fry,1,Octopus,75 g
+5,Octopus Fry,2,Bengali spice,4 g
+5,Octopus Fry,3,Salt & pepper,2 g
+5,Octopus Fry,4,Lemon + mustard,5 g
+5,Octopus Fry,5,Maida / flour,50 g
+5,Octopus Fry,6,Egg,1 tbsp
+6,BBQ Octopus,1,Octopus,75 g
+6,BBQ Octopus,2,Bengali spice,4 g
+6,BBQ Octopus,3,Salt & pepper,2 g
+6,BBQ Octopus,4,Lemon + mustard,5 g
+6,BBQ Octopus,5,Egg,1 tbsp
+6,BBQ Octopus,6,Garlic,2 g
+6,BBQ Octopus,7,BBQ sauce,10 g
+6,BBQ Octopus,8,Chili sauce,50 g
+7,Signature Octopus Masala,1,Octopus,75 g
+7,Signature Octopus Masala,2,Masala,100 g
+7,Signature Octopus Masala,3,Garlic,2 g
+7,Signature Octopus Masala,4,Tomato,50 g
+7,Signature Octopus Masala,5,Mushroom,1/2 pc
+7,Signature Octopus Masala,6,Onion,1/2 pc
+7,Signature Octopus Masala,7,Salt & pepper,10 g
+8,Prawn Tempura,1,Prawn,5 pcs
+8,Prawn Tempura,2,Bengali spice,4 g
+8,Prawn Tempura,3,Salt & pepper,2 g
+8,Prawn Tempura,4,"Garlic, chopped",2 g
+8,Prawn Tempura,5,Lemon + mustard,5 g
+8,Prawn Tempura,6,Tempura powder,as needed
+9,New York Fish & Chips,1,Dory fish,130 g
+9,New York Fish & Chips,2,Bengali spice,4 g
+9,New York Fish & Chips,3,Salt & pepper,6 g
+9,New York Fish & Chips,4,Lemon + mustard,5 g
+9,New York Fish & Chips,5,"Garlic, chopped",2 g
+9,New York Fish & Chips,6,Batter mix,50 g
+9,New York Fish & Chips,7,French fries,50 g
+9,New York Fish & Chips,8,Tartar sauce,as needed
+10,Danish Fish & Chips,1,Dory fish,130 g
+10,Danish Fish & Chips,2,Bengali spice,4 g
+10,Danish Fish & Chips,3,Salt & pepper,6 g
+10,Danish Fish & Chips,4,Lemon + mustard,5 g
+10,Danish Fish & Chips,5,"Garlic, chopped",2 g
+10,Danish Fish & Chips,6,Batter mix,50 g
+10,Danish Fish & Chips,7,Cheese,20 g
+10,Danish Fish & Chips,8,French fries,50 g
+10,Danish Fish & Chips,9,Tartar sauce,as needed
+11,Loitta,1,Loitta fish,100 g
+11,Loitta,2,Salt & pepper,4 g
+11,Loitta,3,Lemon + mustard,10 g
+11,Loitta,4,Garlic + ginger,4 g
+11,Loitta,5,Maida / flour,50 g
+12,Hot Fry Crab,1,Crab,1 pc
+12,Hot Fry Crab,2,Bengali spice,6 g
+12,Hot Fry Crab,3,Salt & pepper,4 g
+12,Hot Fry Crab,4,Lemon + mustard,5 g
+12,Hot Fry Crab,5,Maida / flour,50 g
+12,Hot Fry Crab,6,Garlic,2 g
+12,Hot Fry Crab,7,Ketchup,as needed
+13,Signature Crab Masala,1,Crab,1 pc
+13,Signature Crab Masala,2,Bengali spice,6 g
+13,Signature Crab Masala,3,Salt & pepper,4 g
+13,Signature Crab Masala,4,Masala,100 g
+13,Signature Crab Masala,5,Sour yogurt,as needed
+13,Signature Crab Masala,6,Mushroom,1/2 pc
+13,Signature Crab Masala,7,Tomato,1/4 pc
+13,Signature Crab Masala,8,Onion,1/2 pc
+14,Spicy Crab Masala,1,Crab,1 pc
+14,Spicy Crab Masala,2,Sour yogurt,10 g
+14,Spicy Crab Masala,3,Masala,100 g
+14,Spicy Crab Masala,4,Onion,1/2 pc
+15,Chicken Momo,1,Chicken,120 g
+15,Chicken Momo,2,Masala,as needed
+15,Chicken Momo,3,Green sauce,1 cup
+15,Chicken Momo,4,Chili oil,1 cup
+15,Chicken Momo,5,Momo wrapper / patti,6 pcs
+16,Chicken Cheese Momo,1,Chicken,120 g
+16,Chicken Cheese Momo,2,Masala,as needed
+16,Chicken Cheese Momo,3,Cheese,36 g
+16,Chicken Cheese Momo,4,Green sauce,1 cup
+16,Chicken Cheese Momo,5,Chili oil,as needed
+16,Chicken Cheese Momo,6,Momo wrapper / patti,6 pcs
+17,Naga Chicken Momo,1,Chicken,120 g
+17,Naga Chicken Momo,2,Masala,as needed
+17,Naga Chicken Momo,3,Naga chili,6 pcs
+17,Naga Chicken Momo,4,Green sauce,as needed
+17,Naga Chicken Momo,5,Chili oil,as needed
+17,Naga Chicken Momo,6,Momo wrapper / patti,6 pcs
+18,Twin Flavours Momo,1,Chicken,50 g
+18,Twin Flavours Momo,2,Prawn,6 pcs
+18,Twin Flavours Momo,3,Masala,as needed
+18,Twin Flavours Momo,4,Green sauce,as needed
+18,Twin Flavours Momo,5,Chili sauce,as needed
+18,Twin Flavours Momo,6,Momo wrapper / patti,6 pcs
+19,Dumpling with Chili Soup,1,Chicken momo / dumpling,6 pcs
+19,Dumpling with Chili Soup,2,Chili sauce,150 g
+19,Dumpling with Chili Soup,3,Salt & pepper,20 g
+20,Cream Chili Pasta - Seafood,1,Dory fish,80 g
+20,Cream Chili Pasta - Seafood,2,Crab,1/2 pc
+20,Cream Chili Pasta - Seafood,3,Base sauce,180 g
+20,Cream Chili Pasta - Seafood,4,Cajun sauce,30 g
+20,Cream Chili Pasta - Seafood,5,Garlic,3 g
+20,Cream Chili Pasta - Seafood,6,Lemongrass,10 g
+20,Cream Chili Pasta - Seafood,7,Prawn,2 pcs
+20,Cream Chili Pasta - Seafood,8,Squid,20 g
+20,Cream Chili Pasta - Seafood,9,Pasta,100 g
+20,Cream Chili Pasta - Seafood,10,Salt & pepper,15 g
+21,Creamy Chicken Mushroom Pasta,1,Pasta,100 g
+21,Creamy Chicken Mushroom Pasta,2,Milk,200 g
+21,Creamy Chicken Mushroom Pasta,3,Cream,150 g
+21,Creamy Chicken Mushroom Pasta,4,Salt + pepper + sugar,30 g
+21,Creamy Chicken Mushroom Pasta,5,Chicken,100 g
+21,Creamy Chicken Mushroom Pasta,6,Mushroom,1/2 pc
+22,Chicken Chow Mein,1,Noodles,2 packets
+22,Chicken Chow Mein,2,Chicken,100 g
+22,Chicken Chow Mein,3,Vegetables,as needed
+22,Chicken Chow Mein,4,Egg,1 pc
+22,Chicken Chow Mein,5,Tomato sauce,50 g
+22,Chicken Chow Mein,6,Soy sauce,as needed
+22,Chicken Chow Mein,7,Salt + pepper + sugar,as needed
+23,Danish Fish & Chips - Bit Spicy,1,Dory fish,150 g
+23,Danish Fish & Chips - Bit Spicy,2,Cheese,20 g
+23,Danish Fish & Chips - Bit Spicy,3,Chips spice,5 g
+23,Danish Fish & Chips - Bit Spicy,4,Salt & pepper,1 g
+23,Danish Fish & Chips - Bit Spicy,5,Batter mix,as needed
+23,Danish Fish & Chips - Bit Spicy,6,Soda water,as needed
+24,Swim Fish & Chips,1,Dory fish,150 g
+24,Swim Fish & Chips,2,Cheese,20 g
+24,Swim Fish & Chips,3,Onion,1 g
+24,Swim Fish & Chips,4,Salt & pepper,1 g
+24,Swim Fish & Chips,5,Batter mix,as needed
+24,Swim Fish & Chips,6,Soda water,as needed
+25,Fish & Chips Bento / Classic Style,1,Dory fish,150 g
+25,Fish & Chips Bento / Classic Style,2,Salt & pepper,1 g
+25,Fish & Chips Bento / Classic Style,3,Batter mix,as needed
+25,Fish & Chips Bento / Classic Style,4,Soda water,as needed
+25,Fish & Chips Bento / Classic Style,5,Fries,80 g
+26,Bengali Fish & Chips,1,Dory fish,150 g
+26,Bengali Fish & Chips,2,Salt & pepper,1 g
+26,Bengali Fish & Chips,3,Batter mix,as needed
+26,Bengali Fish & Chips,4,Soda water,as needed
+26,Bengali Fish & Chips,5,Fries,as needed
+26,Bengali Fish & Chips,6,Bengali spice,5 g
+26,Bengali Fish & Chips,7,Tartar sauce,as needed
+27,Crispy Chicken Drumstick,1,Chicken drumstick,1 pc
+27,Crispy Chicken Drumstick,2,Bengali spice,4 g
+27,Crispy Chicken Drumstick,3,Salt & pepper,4 g
+27,Crispy Chicken Drumstick,4,Fish + ginger-garlic paste,8 g
+27,Crispy Chicken Drumstick,5,Maida / flour,50 g
+28,Chicken Nanban,1,Chicken,100 g
+28,Chicken Nanban,2,Salt & pepper,5 g
+28,Chicken Nanban,3,Green chili,1 pc
+28,Chicken Nanban,4,Egg,1 pc
+28,Chicken Nanban,5,Tartar sauce,as needed
+29,Chicken Popcorn,1,Chicken,100 g
+29,Chicken Popcorn,2,Salt + pepper + chili flakes,15 g
+29,Chicken Popcorn,3,Maida / flour,50 g
+29,Chicken Popcorn,4,Tomato sauce,as needed
+30,Chicken Tempura,1,Chicken,100 g
+30,Chicken Tempura,2,Salt & pepper,5 g
+30,Chicken Tempura,3,Bengali spice,5 g
+30,Chicken Tempura,4,Batter mix,40 g
+30,Chicken Tempura,5,Chicken powder,5 g
+30,Chicken Tempura,6,Maida / flour,as needed
+30,Chicken Tempura,7,Mayonnaise,as needed
+31,Masala French Fries,1,French fries,100 g
+31,Masala French Fries,2,Chips spice,as needed
+31,Masala French Fries,3,Tomato sauce,as needed
+32,Chicken Singara,1,Ready-to-cook chicken,100 g
+32,Chicken Singara,2,Maida wrapper / patti,as needed
+32,Chicken Singara,3,Cooking oil,as needed
+33,Mutton Singara,1,Ready-to-cook mutton,80 g
+33,Mutton Singara,2,Maida wrapper / patti,as needed
+33,Mutton Singara,3,Cooking oil,as needed
+34,Naga Singara,1,Vegetable + naga mix,10 g
+34,Naga Singara,2,Maida wrapper / patti,as needed
+34,Naga Singara,3,Cooking oil,as needed
+35,Garlic Chicken Fried Rice,1,Rice,100 g
+35,Garlic Chicken Fried Rice,2,Chicken,100 g
+35,Garlic Chicken Fried Rice,3,Egg,2 pcs
+35,Garlic Chicken Fried Rice,4,Butter + ginger,15 g
+35,Garlic Chicken Fried Rice,5,Salt & pepper,10 g
+36,Seafood Rice Bowl,1,Rice,100 g
+36,Seafood Rice Bowl,2,Crab,1/2 pc
+36,Seafood Rice Bowl,3,Sauce,25 g
+36,Seafood Rice Bowl,4,Prawn,2 pcs
+36,Seafood Rice Bowl,5,Squid,20 g
+36,Seafood Rice Bowl,6,Dory fish,20 g
+36,Seafood Rice Bowl,7,Lemongrass,10 g
+36,Seafood Rice Bowl,8,Salt + pepper + sauce,20 g
+36,Seafood Rice Bowl,9,Cheese,30 g
+37,Set Menu 1,1,Rice,100 g
+37,Set Menu 1,2,Vegetables,100 g
+37,Set Menu 1,3,Egg,1 pc
+37,Set Menu 1,4,Masala,60 g
+37,Set Menu 1,5,Chicken,75 g
+37,Set Menu 1,6,Salt & pepper,20 g
+38,Signature Seafood Soup,1,Squid,25 g
+38,Signature Seafood Soup,2,Prawn,2 pcs
+38,Signature Seafood Soup,3,Crab,1/2 pc
+38,Signature Seafood Soup,4,Dory fish,20 g
+38,Signature Seafood Soup,5,Salt & pepper,15 g
+38,Signature Seafood Soup,6,Lemon + coriander,5 g
+39,Thai Thick Soup,1,Chicken,50 g
+39,Thai Thick Soup,2,Prawn,2 pcs
+39,Thai Thick Soup,3,Mushroom,1 pc
+39,Thai Thick Soup,4,Chili sauce,100 g
+39,Thai Thick Soup,5,Salt & pepper,5 g
+39,Thai Thick Soup,6,Lemon juice + lemongrass + coriander,as needed
+39,Thai Thick Soup,7,Egg,1 pc
+40,Cream & Mushroom Soup,1,Mushroom,48 g
+40,Cream & Mushroom Soup,2,Cream,50 g
+40,Cream & Mushroom Soup,3,Milk,250 g
+40,Cream & Mushroom Soup,4,Salt & pepper,10 g
+40,Cream & Mushroom Soup,5,Butter,5 g
+41,Garlic Mushroom,1,Mushroom,1 full can
+41,Garlic Mushroom,2,Garlic,10 g
+41,Garlic Mushroom,3,Butter,5 g
+41,Garlic Mushroom,4,Coriander + salt & pepper,as needed
+42,Chili Oil,1,Lemongrass,250 g
+42,Chili Oil,2,Kashmiri powder,1 packet
+42,Chili Oil,3,Onion,1000 g
+42,Chili Oil,4,Salt & pepper,30 g
+42,Chili Oil,5,Oil,1000 g
+42,Chili Oil,6,Prawn,100 g
+42,Chili Oil,7,Sugar,20 g
+43,Masala Base,1,Onion,2000 g
+43,Masala Base,2,Oil,3000 g
+43,Masala Base,3,Kashmiri powder,2 packets
+43,Masala Base,4,Curry powder,2 packets
+43,Masala Base,5,Garam masala,500 g
+44,Green Sauce,1,Coriander,500 g
+44,Green Sauce,2,Mint leaf,250 g
+44,Green Sauce,3,Yogurt,250 g
+44,Green Sauce,4,Sugar,100 g
+44,Green Sauce,5,Salt,25 g
+44,Green Sauce,6,C.K. powder,20 g
+44,Green Sauce,7,Vinegar,100 g
+44,Green Sauce,8,Oil,300 g
+44,Green Sauce,9,Lemon,20 g
+,,9,Lemon,20 g

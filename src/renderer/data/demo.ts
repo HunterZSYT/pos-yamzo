@@ -16,6 +16,7 @@ export const demoSummary: SalesSummary = {
   settledOrders: 0,
   discountTotal: 0,
   voidTotal: 0,
+  commissionTotal: 0,
   paymentBreakdown: {},
   sourceBreakdown: {},
   topItems: [],

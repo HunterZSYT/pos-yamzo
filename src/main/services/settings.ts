@@ -1,10 +1,18 @@
 import type Database from "better-sqlite3";
-import type { BrandingSettings } from "../../shared/types.js";
+import type { BrandingSettings, MenuTypeSetting } from "../../shared/types.js";
 
 const DEFAULT_LOGO_PATH = "yamzo://default-logo";
 const DEFAULT_QR_PATH = "yamzo://review-qr";
 const DEFAULT_HOST_NAMES = ["Cashier"];
 const DEFAULT_MENU_CATEGORIES = ["Seafood", "Momo", "Fish & Chips", "Pasta", "Rice", "Soup", "Snacks", "Sauce", "Drinks", "Other"];
+const DEFAULT_MENU_TYPES: MenuTypeSetting[] = [
+  { key: "in_house", label: "Dine-in", tablesEnabled: true, commissionPercent: 0, active: true },
+  { key: "parcel", label: "Parcel", tablesEnabled: false, commissionPercent: 0, active: true },
+  { key: "delivery", label: "Delivery", tablesEnabled: false, commissionPercent: 0, active: true },
+  { key: "foodpanda", label: "Foodpanda", tablesEnabled: false, commissionPercent: 0, active: true },
+  { key: "foodie", label: "Foodie", tablesEnabled: false, commissionPercent: 0, active: true },
+  { key: "other", label: "Other", tablesEnabled: false, commissionPercent: 0, active: true }
+];
 
 export function getSetting<T>(db: Database.Database, key: string, fallback: T): T {
   const row = db.prepare("SELECT value FROM settings WHERE key = ?").get(key) as { value: string } | undefined;
@@ -96,4 +104,35 @@ export function getMenuCategories(db: Database.Database): string[] {
 export function setMenuCategories(db: Database.Database, categories: string[]): void {
   const cleaned = Array.from(new Set(categories.map((category) => category.trim()).filter(Boolean)));
   setSetting(db, "menuCategories", cleaned.length ? cleaned : DEFAULT_MENU_CATEGORIES);
+}
+
+export function getMenuTypes(db: Database.Database): MenuTypeSetting[] {
+  const saved = getSetting<MenuTypeSetting[]>(db, "menuTypes", DEFAULT_MENU_TYPES);
+  const normalized = saved.map(normalizeMenuType).filter((type) => type.key && type.label);
+  return normalized.length ? normalized : DEFAULT_MENU_TYPES;
+}
+
+export function setMenuTypes(db: Database.Database, menuTypes: MenuTypeSetting[]): void {
+  const cleaned = Array.from(
+    new Map(menuTypes.map(normalizeMenuType).filter((type) => type.key && type.label).map((type) => [type.key, type])).values()
+  );
+  setSetting(db, "menuTypes", cleaned.length ? cleaned : DEFAULT_MENU_TYPES);
+}
+
+export function normalizeMenuType(input: Partial<MenuTypeSetting> & { label?: string; key?: string }): MenuTypeSetting {
+  const label = String(input.label ?? "").trim();
+  const key = String(input.key || slugMenuType(label)).trim();
+  return {
+    key,
+    label: label || key,
+    tablesEnabled: Boolean(input.tablesEnabled),
+    commissionPercent: Math.max(0, Math.min(100, Number(input.commissionPercent ?? 0) || 0)),
+    active: input.active !== false
+  };
+}
+
+export function slugMenuType(label: string): string {
+  const lowered = label.trim().toLowerCase();
+  if (["price", "dine in", "dine-in", "dinein", "in house", "in-house"].includes(lowered)) return "in_house";
+  return lowered.replace(/&/g, "and").replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "other";
 }

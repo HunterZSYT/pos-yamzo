@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import type { SalesSummary } from "../../shared/types.js";
+import { getMenuTypes } from "../services/settings.js";
 
 export function getSalesSummary(db: Database.Database, start?: string, end?: string): SalesSummary {
   const where = start && end ? "WHERE o.settled_at BETWEEN ? AND ? AND o.status = 'settled'" : "WHERE o.status = 'settled'";
@@ -12,6 +13,7 @@ export function getSalesSummary(db: Database.Database, start?: string, end?: str
   const payments = db
     .prepare(`SELECT p.method, p.amount FROM payments p JOIN orders o ON o.id = p.order_id ${where}`)
     .all(...params) as Array<{ method: string; amount: number }>;
+  const commissionBySource = new Map(getMenuTypes(db).map((type) => [type.key, type.commissionPercent]));
   const topItems = db
     .prepare(
       `SELECT oi.name, SUM(oi.quantity) AS quantity, SUM(oi.quantity * oi.unit_price) AS total
@@ -31,6 +33,7 @@ export function getSalesSummary(db: Database.Database, start?: string, end?: str
     settledOrders: orders.filter((order) => order.status === "settled").length,
     discountTotal: orders.reduce((sum, order) => sum + order.discount, 0),
     voidTotal: getVoidTotal(db, where, params),
+    commissionTotal: getCommissionTotal(db, where, params, commissionBySource),
     paymentBreakdown: groupMoney(payments, "method"),
     sourceBreakdown: groupCounts(orders, "source"),
     topItems,
@@ -53,6 +56,13 @@ function getVoidTotal(db: Database.Database, where: string, params: string[]): n
 function getOpenOrderCount(db: Database.Database): number {
   const row = db.prepare("SELECT COUNT(*) AS count FROM orders WHERE status IN ('open', 'kitchen_sent')").get() as { count: number };
   return row.count;
+}
+
+function getCommissionTotal(db: Database.Database, where: string, params: string[], commissionBySource: Map<string, number>): number {
+  const rows = db
+    .prepare(`SELECT o.source, COALESCE(SUM(p.amount), 0) AS amount FROM payments p JOIN orders o ON o.id = p.order_id ${where} GROUP BY o.source`)
+    .all(...params) as Array<{ source: string; amount: number }>;
+  return Math.round(rows.reduce((sum, row) => sum + (row.amount * (commissionBySource.get(row.source) ?? 0)) / 100, 0));
 }
 
 function groupMoney<T extends Record<string, string | number>>(rows: T[], key: keyof T): Record<string, number> {

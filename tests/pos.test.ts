@@ -25,7 +25,7 @@ import {
 } from "../src/main/domain/orders";
 import { reprintKitchenCopy, reprintReceipt, voidOrderItem } from "../src/main/domain/orders";
 import { getSalesSummary } from "../src/main/domain/reports";
-import { addCostRecord, addPriceRecord, addRestockEntry, deleteRestockEntry, importRecipeInventoryCsv, listInventorySnapshot, saveMenuRecipe } from "../src/main/domain/inventory";
+import { addCostRecord, addPriceRecord, addRestockEntry, deleteRestockEntry, importInventoryItemsCsv, importRecipeInventoryCsv, listInventorySnapshot, saveMenuRecipe } from "../src/main/domain/inventory";
 import { archiveMenuItem, deleteMenuItem, importMenuCsv, listMenuItems, parsePrice, saveMenuItem } from "../src/main/services/menuImport";
 import { getBrandingSettings, getHostNames, getTotalTables, setBrandingSettings, setHostNames, setInventoryTracking, getSetting, setPrinterName, setTotalTables } from "../src/main/services/settings";
 import { buildDailySalesEmail, clearGmailAuth, getEmailSettings, saveEmailSettings } from "../src/main/services/email";
@@ -68,7 +68,7 @@ describe("Yamzo POS core", () => {
     const result = importMenuCsv(database, file);
     expect(result.imported).toBe(2);
     const secondResult = importMenuCsv(database, file);
-    expect(secondResult).toMatchObject({ imported: 0, updated: 0, skipped: 3 });
+    expect(secondResult).toMatchObject({ imported: 0, updated: 2, skipped: 1 });
     expect(listMenuItems(database).map((item) => item.name)).toEqual(["Chicken Momo", "Ocean Pasta"]);
     fs.writeFileSync(file, "SL,Item Name,Price\n1,Chicken Momo,210 TK\n");
     expect(importMenuCsv(database, file)).toMatchObject({ imported: 0, updated: 1, skipped: 0 });
@@ -276,35 +276,42 @@ describe("Yamzo POS core", () => {
   it("imports recipe inventory CSV data and builds inventory status", () => {
     const database = freshDb();
     database.prepare("INSERT INTO menu_items (name, price) VALUES ('Chicken Momo', 240)").run();
+    const itemsFile = path.join(os.tmpdir(), `yamzo-items-${Date.now()}.csv`);
+    fs.writeFileSync(itemsFile, "Item Name,Unit / Type,Item Category\nChicken,g,Meat\nBengali spice,g,Spice\nGreen chilli,g,Produce\nGarlic,g,Produce\n");
     const file = path.join(os.tmpdir(), `yamzo-recipes-${Date.now()}.csv`);
     fs.writeFileSync(
       file,
       [
         "recipe number,recipe name,item serial no,item names,item quantity GM",
-        '1,Chicken Momo,1,"Chicken, raw",100 g',
+        "1,Chicken Momo,1,Chicken,100 g",
         ",,2,Bengali spice,2 g",
         "2,Green Sauce,1,Green chilli,25 g",
         ",,2,Garlic,5 g"
       ].join("\n")
     );
+    expect(importInventoryItemsCsv(database, itemsFile)).toMatchObject({ imported: 4, deleted: 0 });
     const result = importRecipeInventoryCsv(database, file);
     expect(result.recipesImported).toBe(2);
-    expect(result.inventoryItemsCreated).toBe(4);
+    expect(result.inventoryItemsCreated).toBe(0);
     expect(result.menuItemsCreated).toBe(1);
     const snapshot = listInventorySnapshot(database);
-    expect(snapshot.items.map((item) => item.name)).toContain("Chicken, raw");
+    expect(snapshot.items.map((item) => item.name)).toContain("Chicken");
     const chickenMomoRecipe = snapshot.recipes.find((recipe) => recipe.menuItemName === "Chicken Momo");
     expect(chickenMomoRecipe?.status).toBe("available");
     expect(snapshot.status.inventoryItemCount).toBe(4);
-    expect(snapshot.status.totalInventoryValue).toBeGreaterThan(0);
+    expect(snapshot.status.totalInventoryValue).toBe(0);
     saveMenuRecipe(database, { menuItemId: chickenMomoRecipe!.menuItemId, ingredients: [] });
     expect(listInventorySnapshot(database).recipes.find((recipe) => recipe.menuItemId === chickenMomoRecipe!.menuItemId)?.status).toBe("missing");
     fs.unlinkSync(file);
+    fs.unlinkSync(itemsFile);
   });
 
   it("records restocks, price history, cost records, and order cost snapshots", () => {
     const database = freshDb();
     database.prepare("INSERT INTO menu_items (name, price) VALUES ('Chicken Momo', 240)").run();
+    const itemsFile = path.join(os.tmpdir(), `yamzo-items-${Date.now()}.csv`);
+    fs.writeFileSync(itemsFile, "Item Name,Unit / Type,Item Category\nChicken,g,Meat\nSalt,g,Seasoning\n");
+    importInventoryItemsCsv(database, itemsFile);
     const file = path.join(os.tmpdir(), `yamzo-recipes-${Date.now()}.csv`);
     fs.writeFileSync(file, "recipe number,recipe name,item serial no,item names,item quantity GM\n1,Chicken Momo,1,Chicken,100 g\n,,2,Salt,2 g\n");
     importRecipeInventoryCsv(database, file);
@@ -328,13 +335,17 @@ describe("Yamzo POS core", () => {
     const after = listInventorySnapshot(database);
     expect(after.profit.revenue).toBe(480);
     expect(after.profit.otherCost).toBe(500);
-    expect(after.items.find((item) => item.id === chicken!.id)!.currentStock).toBeLessThan(chicken!.currentStock + 1000);
+    expect(after.items.find((item) => item.id === chicken!.id)!.currentStock).toBe(chicken!.currentStock + 1000);
     fs.unlinkSync(file);
+    fs.unlinkSync(itemsFile);
   });
 
   it("counts sales and inventory only for completed orders", () => {
     const database = freshDb();
     database.prepare("INSERT INTO menu_items (name, price) VALUES ('Chicken Momo', 240)").run();
+    const itemsFile = path.join(os.tmpdir(), `yamzo-items-${Date.now()}.csv`);
+    fs.writeFileSync(itemsFile, "Item Name,Unit / Type,Item Category\nChicken,g,Meat\n");
+    importInventoryItemsCsv(database, itemsFile);
     const file = path.join(os.tmpdir(), `yamzo-recipes-${Date.now()}.csv`);
     fs.writeFileSync(file, "recipe number,recipe name,item serial no,item names,item quantity GM\n1,Chicken Momo,1,Chicken,100 g\n");
     importRecipeInventoryCsv(database, file);
@@ -351,11 +362,13 @@ describe("Yamzo POS core", () => {
     addOrderItem(database, completed.id, { menuItemId: menuItem.id, quantity: 1 });
     settleOrder(database, completed.id, "cash");
     expect(getSalesSummary(database).totalSales).toBe(240);
-    expect(database.prepare("SELECT COUNT(*) AS count FROM inventory_adjustments WHERE order_id = ?").get(completed.id)).toMatchObject({ count: 1 });
+    expect(database.prepare("SELECT COUNT(*) AS count FROM order_item_cost_snapshots WHERE order_id = ?").get(completed.id)).toMatchObject({ count: 1 });
+    expect(database.prepare("SELECT COUNT(*) AS count FROM inventory_adjustments WHERE order_id = ?").get(completed.id)).toMatchObject({ count: 0 });
     reopenOrder(database, completed.id);
     expect(getSalesSummary(database).totalSales).toBe(0);
-    expect(database.prepare("SELECT COUNT(*) AS count FROM inventory_adjustments WHERE order_id = ?").get(completed.id)).toMatchObject({ count: 0 });
+    expect(database.prepare("SELECT COUNT(*) AS count FROM order_item_cost_snapshots WHERE order_id = ?").get(completed.id)).toMatchObject({ count: 0 });
     fs.unlinkSync(file);
+    fs.unlinkSync(itemsFile);
   });
 
   it("stores Gmail settings locally, builds summary email, clears token path, and escapes print HTML", () => {

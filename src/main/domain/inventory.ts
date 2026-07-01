@@ -6,6 +6,7 @@ import type {
   CostRecord,
   InventoryCategory,
   InventoryImportResult,
+  InventoryItemImportResult,
   InventoryItem,
   InventoryOrderUsageSnapshot,
   InventorySnapshot,
@@ -13,6 +14,7 @@ import type {
   InventoryUnitInput,
   InventoryUnit,
   MenuRecipe,
+  PhysicalCountEntry,
   PriceHistoryRecord,
   RecipeIngredientInput,
   RestockEntry,
@@ -26,6 +28,13 @@ type RecipeCsvRow = {
   "item serial no"?: string;
   "item names"?: string;
   "item quantity GM"?: string;
+  "item quantity needed GM"?: string;
+};
+
+type InventoryItemCsvRow = {
+  "Item Name"?: string;
+  "Unit / Type"?: string;
+  "Item Category"?: string;
 };
 
 type ParsedQuantity = {
@@ -41,6 +50,7 @@ export function listInventorySnapshot(db: Database.Database): InventorySnapshot 
   const items = listInventoryItems(db);
   const recipes = listMenuRecipes(db);
   const restocks = listRestockEntries(db, 120);
+  const physicalCounts = listPhysicalCounts(db, 240);
   const priceHistory = listPriceHistory(db, 160);
   const costRecords = listCostRecords(db, 160);
   return {
@@ -49,6 +59,7 @@ export function listInventorySnapshot(db: Database.Database): InventorySnapshot 
     items,
     recipes,
     restocks,
+    physicalCounts,
     priceHistory,
     costCategories: listCostCategories(db),
     costRecords,
@@ -82,7 +93,7 @@ export function importRecipeInventoryCsv(db: Database.Database, csvPath: string,
       result.rowsSkipped += 1;
       continue;
     }
-    const rawQuantity = cleanText(row["item quantity GM"] ?? "");
+    const rawQuantity = cleanText(row["item quantity GM"] ?? row["item quantity needed GM"] ?? "");
     const quantity = parseRecipeQuantity(rawQuantity);
     if (!quantity) {
       result.rowsSkipped += 1;
@@ -118,21 +129,62 @@ export function importRecipeInventoryCsv(db: Database.Database, csvPath: string,
         }
 
         for (const ingredient of ingredients) {
-          const item = ensureInventoryItem(db, ingredient.ingredientName, ingredient.quantity.baseUnitShortName);
-          if (item.created) result.inventoryItemsCreated += 1;
+          const item = findInventoryItemForRecipe(db, ingredient.ingredientName);
+          if (!item) {
+            result.rowsSkipped += 1;
+            result.errors.push(`Inventory item not found for ${recipeName}: ${ingredient.ingredientName}`);
+            continue;
+          }
           db.prepare(
             `INSERT INTO recipe_ingredients (recipe_id, inventory_item_id, quantity_base, unit_label)
              VALUES (?, ?, ?, ?)
              ON CONFLICT(recipe_id, inventory_item_id)
              DO UPDATE SET quantity_base = excluded.quantity_base, unit_label = excluded.unit_label`
           ).run(recipeId, item.id, ingredient.quantity.baseQuantity, ingredient.unitLabel);
-          ensureTestRestockAndPrice(db, item.id, ingredient.quantity.baseUnitShortName);
         }
       }
     }
   });
   tx();
   recordActivity(db, "inventory_csv_imported", { ...result }, actor);
+  return result;
+}
+
+export function importInventoryItemsCsv(db: Database.Database, csvPath: string, actor = "admin"): InventoryItemImportResult {
+  const csv = fs.readFileSync(csvPath, "utf8");
+  const parsed = Papa.parse<InventoryItemCsvRow>(csv, { header: true, skipEmptyLines: true });
+  const result: InventoryItemImportResult = { imported: 0, updated: 0, skipped: 0, deleted: 0, errors: [] };
+  const tx = db.transaction(() => {
+    result.deleted = (db.prepare("SELECT COUNT(*) AS count FROM inventory_items").get() as { count: number }).count;
+    db.prepare("DELETE FROM recipe_ingredients").run();
+    db.prepare("DELETE FROM menu_item_recipes").run();
+    db.prepare("DELETE FROM inventory_adjustments").run();
+    db.prepare("DELETE FROM inventory_physical_counts").run();
+    db.prepare("DELETE FROM inventory_price_history").run();
+    db.prepare("DELETE FROM inventory_restock_entries").run();
+    db.prepare("DELETE FROM inventory_items").run();
+
+    for (const row of parsed.data) {
+      const name = cleanText(row["Item Name"] ?? "");
+      const unit = cleanText(row["Unit / Type"] ?? "g") || "g";
+      const categoryName = cleanText(row["Item Category"] ?? "Other") || "Other";
+      if (!name) {
+        result.skipped += 1;
+        continue;
+      }
+      const unitId = ensureInventoryUnit(db, unit);
+      const categoryId = ensureInventoryCategory(db, categoryName);
+      db.prepare(
+        `INSERT INTO inventory_items (name, category_id, base_unit_id, low_stock_threshold, active)
+         VALUES (?, ?, ?, 1000, 1)
+         ON CONFLICT(name) DO UPDATE SET category_id = excluded.category_id, base_unit_id = excluded.base_unit_id,
+           low_stock_threshold = 1000, active = 1, updated_at = CURRENT_TIMESTAMP`
+      ).run(name, categoryId, unitId);
+      result.imported += 1;
+    }
+  });
+  tx();
+  recordActivity(db, "inventory_items_csv_imported", { ...result }, actor);
   return result;
 }
 
@@ -207,6 +259,16 @@ export function saveMenuRecipe(
   return listMenuRecipes(db).find((recipe) => recipe.menuItemId === menuItem.id)!;
 }
 
+export function setRecipeRestockEnabled(db: Database.Database, menuItemId: number, enabled: boolean, actor = "admin"): MenuRecipe {
+  const menuItem = db.prepare("SELECT id, name FROM menu_items WHERE id = ? AND archived = 0").get(menuItemId) as { id: number; name: string } | undefined;
+  if (!menuItem) throw new Error("Menu item not found.");
+  const existing = db.prepare("SELECT id FROM menu_item_recipes WHERE menu_item_id = ?").get(menuItem.id) as { id: number } | undefined;
+  const recipeId = existing?.id ?? Number(db.prepare("INSERT INTO menu_item_recipes (menu_item_id, active, restock_enabled) VALUES (?, 0, ?)").run(menuItem.id, enabled ? 1 : 0).lastInsertRowid);
+  db.prepare("UPDATE menu_item_recipes SET restock_enabled = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(enabled ? 1 : 0, recipeId);
+  recordActivity(db, "recipe_restock_option_updated", { entityType: "menu_item", entityId: String(menuItem.id), itemName: menuItem.name, enabled }, actor);
+  return listMenuRecipes(db).find((recipe) => recipe.menuItemId === menuItem.id)!;
+}
+
 export function saveInventoryCategory(db: Database.Database, input: { id?: number; name: string; active?: boolean }, actor = "admin"): InventoryCategory {
   const name = cleanText(input.name);
   if (!name) throw new Error("Category name is required.");
@@ -266,6 +328,8 @@ export function addRestockEntry(
   db: Database.Database,
   input: {
     inventoryItemId: number;
+    itemType?: "raw" | "recipe";
+    recipeId?: number | null;
     quantity: number;
     unitLabel?: string;
     totalCost?: number;
@@ -284,10 +348,11 @@ export function addRestockEntry(
   const id = Number(
     db.prepare(
       `INSERT INTO inventory_restock_entries
-       (inventory_item_id, quantity_base, unit_label, total_cost, price_per_base, supplier_name, responsible_person, note, entry_date)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))`
-    ).run(input.inventoryItemId, quantity, input.unitLabel || item.unitShortName, totalCost, pricePerBase, input.supplierName ?? null, input.responsiblePerson ?? null, input.note ?? null, input.entryDate ?? null).lastInsertRowid
+       (inventory_item_id, item_type, recipe_id, quantity_base, unit_label, total_cost, price_per_base, supplier_name, responsible_person, note, entry_date)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))`
+    ).run(input.inventoryItemId, input.itemType ?? "raw", input.recipeId ?? null, quantity, item.unitShortName, totalCost, pricePerBase, input.supplierName ?? null, input.responsiblePerson ?? null, input.note ?? null, input.entryDate ?? null).lastInsertRowid
   );
+  addPhysicalCount(db, { inventoryItemId: input.inventoryItemId, quantity, responsiblePerson: input.responsiblePerson ?? null, note: "Created from restock entry", countDate: input.entryDate ?? null, source: "restock" }, actor);
   if (pricePerBase > 0) {
     addPriceRecord(db, { inventoryItemId: input.inventoryItemId, pricePerBase, responsiblePerson: input.responsiblePerson ?? null, note: "Updated from restock entry" }, actor);
   }
@@ -300,6 +365,8 @@ export function updateRestockEntry(
   input: {
     id: number;
     inventoryItemId: number;
+    itemType?: "raw" | "recipe";
+    recipeId?: number | null;
     quantity: number;
     unitLabel?: string;
     totalCost?: number;
@@ -318,10 +385,10 @@ export function updateRestockEntry(
   const pricePerBase = quantity > 0 ? totalCost / quantity : 0;
   db.prepare(
     `UPDATE inventory_restock_entries
-     SET inventory_item_id = ?, quantity_base = ?, unit_label = ?, total_cost = ?, price_per_base = ?,
+     SET inventory_item_id = ?, item_type = ?, recipe_id = ?, quantity_base = ?, unit_label = ?, total_cost = ?, price_per_base = ?,
          supplier_name = ?, responsible_person = ?, note = ?, entry_date = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
      WHERE id = ?`
-  ).run(input.inventoryItemId, quantity, input.unitLabel || item.unitShortName, totalCost, pricePerBase, input.supplierName ?? null, input.responsiblePerson ?? null, input.note ?? null, input.id);
+  ).run(input.inventoryItemId, input.itemType ?? "raw", input.recipeId ?? null, quantity, item.unitShortName, totalCost, pricePerBase, input.supplierName ?? null, input.responsiblePerson ?? null, input.note ?? null, input.id);
   if (pricePerBase > 0) {
     addPriceRecord(db, { inventoryItemId: input.inventoryItemId, pricePerBase, responsiblePerson: input.responsiblePerson ?? null, note: "Updated from restock edit" }, actor);
   }
@@ -345,6 +412,23 @@ export function deleteRestockEntry(db: Database.Database, id: number, actor = "a
     itemName: existing.item_name,
     quantity: existing.quantity_base
   }, actor);
+}
+
+export function addPhysicalCount(
+  db: Database.Database,
+  input: { inventoryItemId: number; quantity: number; responsiblePerson?: string | null; note?: string | null; countDate?: string | null; source?: "manual" | "restock" },
+  actor = "admin"
+): PhysicalCountEntry {
+  const item = getInventoryItem(db, input.inventoryItemId);
+  const quantity = Math.max(0, Number(input.quantity));
+  const id = Number(
+    db.prepare(
+      `INSERT INTO inventory_physical_counts (inventory_item_id, quantity_base, unit_label, responsible_person, note, count_date, source)
+       VALUES (?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?)`
+    ).run(input.inventoryItemId, quantity, item.unitShortName, input.responsiblePerson ?? null, input.note ?? null, input.countDate ?? null, input.source ?? "manual").lastInsertRowid
+  );
+  recordActivity(db, "inventory_physical_count_saved", { entityType: "inventory_item", entityId: String(input.inventoryItemId), itemName: item.name, quantity }, actor);
+  return listPhysicalCounts(db, 1).find((entry) => entry.id === id)!;
 }
 
 export function addPriceRecord(
@@ -416,12 +500,6 @@ export function createOrderCostSnapshot(db: Database.Database, orderId: number, 
          (order_id, order_item_id, menu_item_id, quantity, revenue, raw_cost, profit, details_json)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
       ).run(orderId, row.id, row.menu_item_id, row.quantity, itemRevenue, itemRawCost, itemRevenue - itemRawCost, JSON.stringify(recipeCost.ingredients));
-      for (const ingredient of recipeCost.ingredients) {
-        db.prepare(
-          `INSERT INTO inventory_adjustments (inventory_item_id, quantity_delta, reason, order_id, order_item_id, note)
-           VALUES (?, ?, 'Order usage', ?, ?, ?)`
-        ).run(ingredient.inventoryItemId, -(ingredient.quantityBase * row.quantity), orderId, row.id, row.name);
-      }
     }
     const grossProfit = revenue - rawCost;
     db.prepare(
@@ -464,8 +542,11 @@ export function listInventoryItems(db: Database.Database): InventoryItem[] {
   const rows = db.prepare(
     `SELECT ii.id, ii.name, ii.category_id, ic.name AS category_name, ii.base_unit_id, iu.name AS unit_name,
             iu.short_name AS unit_short_name, ii.low_stock_threshold, ii.active,
-            COALESCE((SELECT SUM(quantity_base) FROM inventory_restock_entries WHERE inventory_item_id = ii.id), 0)
-            + COALESCE((SELECT SUM(quantity_delta) FROM inventory_adjustments WHERE inventory_item_id = ii.id), 0) AS current_stock,
+            COALESCE(
+              (SELECT quantity_base FROM inventory_physical_counts WHERE inventory_item_id = ii.id AND source = 'manual' ORDER BY datetime(count_date) DESC, id DESC LIMIT 1),
+              COALESCE((SELECT SUM(quantity_base) FROM inventory_restock_entries WHERE inventory_item_id = ii.id), 0)
+              + COALESCE((SELECT SUM(quantity_delta) FROM inventory_adjustments WHERE inventory_item_id = ii.id), 0)
+            ) AS current_stock,
             COALESCE((SELECT price_per_base FROM inventory_price_history WHERE inventory_item_id = ii.id AND active = 1 ORDER BY datetime(effective_at) DESC, id DESC LIMIT 1), 0) AS latest_price
      FROM inventory_items ii
      JOIN inventory_units iu ON iu.id = ii.base_unit_id
@@ -491,7 +572,7 @@ export function listInventoryItems(db: Database.Database): InventoryItem[] {
 export function listMenuRecipes(db: Database.Database): MenuRecipe[] {
   const menuRows = db.prepare("SELECT id, name, price FROM menu_items WHERE archived = 0 ORDER BY name").all() as Array<{ id: number; name: string; price: number }>;
   return menuRows.map((menuItem) => {
-    const recipe = db.prepare("SELECT id FROM menu_item_recipes WHERE menu_item_id = ? AND active = 1").get(menuItem.id) as { id: number } | undefined;
+    const recipe = db.prepare("SELECT id, restock_enabled FROM menu_item_recipes WHERE menu_item_id = ? AND active = 1").get(menuItem.id) as { id: number; restock_enabled: number } | undefined;
     if (!recipe) {
       return {
         id: 0,
@@ -499,6 +580,7 @@ export function listMenuRecipes(db: Database.Database): MenuRecipe[] {
         menuItemName: menuItem.name,
         sellingPrice: menuItem.price,
         status: "missing",
+        restockEnabled: false,
         rawCost: 0,
         estimatedProfit: menuItem.price,
         profitMargin: 100,
@@ -514,6 +596,7 @@ export function listMenuRecipes(db: Database.Database): MenuRecipe[] {
       menuItemName: menuItem.name,
       sellingPrice: menuItem.price,
       status: hasIngredients ? "available" : "missing",
+      restockEnabled: recipe.restock_enabled === 1,
       rawCost: roundMoney(cost.rawCost),
       estimatedProfit: roundMoney(profit),
       profitMargin: menuItem.price > 0 ? Math.round((profit / menuItem.price) * 100) : 0,
@@ -524,10 +607,13 @@ export function listMenuRecipes(db: Database.Database): MenuRecipe[] {
 
 export function listRestockEntries(db: Database.Database, limit = 100): RestockEntry[] {
   return db.prepare(
-    `SELECT re.id, re.inventory_item_id, ii.name AS item_name, re.quantity_base, re.unit_label, re.total_cost, re.price_per_base,
+    `SELECT re.id, re.inventory_item_id, ii.name AS item_name, re.item_type, re.recipe_id, mi.name AS recipe_name,
+            re.quantity_base, re.unit_label, re.total_cost, re.price_per_base,
             re.supplier_name, re.responsible_person, re.note, re.entry_date, COALESCE(re.updated_at, re.entry_date) AS updated_at
      FROM inventory_restock_entries re
      JOIN inventory_items ii ON ii.id = re.inventory_item_id
+     LEFT JOIN menu_item_recipes mr ON mr.id = re.recipe_id
+     LEFT JOIN menu_items mi ON mi.id = mr.menu_item_id
      ORDER BY datetime(re.entry_date) DESC, re.id DESC
      LIMIT ?`
   ).all(limit).map((row) => {
@@ -535,6 +621,9 @@ export function listRestockEntries(db: Database.Database, limit = 100): RestockE
       id: number;
       inventory_item_id: number;
       item_name: string;
+      item_type: "raw" | "recipe";
+      recipe_id: number | null;
+      recipe_name: string | null;
       quantity_base: number;
       unit_label: string;
       total_cost: number;
@@ -549,6 +638,9 @@ export function listRestockEntries(db: Database.Database, limit = 100): RestockE
       id: entry.id,
       inventoryItemId: entry.inventory_item_id,
       itemName: entry.item_name,
+      itemType: entry.item_type || "raw",
+      recipeId: entry.recipe_id,
+      recipeName: entry.recipe_name,
       quantityBase: entry.quantity_base,
       unitLabel: entry.unit_label,
       totalCost: roundMoney(entry.total_cost),
@@ -558,6 +650,40 @@ export function listRestockEntries(db: Database.Database, limit = 100): RestockE
       note: entry.note,
       entryDate: entry.entry_date,
       updatedAt: entry.updated_at
+    };
+  });
+}
+
+export function listPhysicalCounts(db: Database.Database, limit = 200): PhysicalCountEntry[] {
+  return db.prepare(
+    `SELECT pc.id, pc.inventory_item_id, ii.name AS item_name, pc.quantity_base, pc.unit_label,
+            pc.responsible_person, pc.note, pc.count_date, pc.source
+     FROM inventory_physical_counts pc
+     JOIN inventory_items ii ON ii.id = pc.inventory_item_id
+     ORDER BY datetime(pc.count_date) DESC, pc.id DESC
+     LIMIT ?`
+  ).all(limit).map((row) => {
+    const entry = row as {
+      id: number;
+      inventory_item_id: number;
+      item_name: string;
+      quantity_base: number;
+      unit_label: string;
+      responsible_person: string | null;
+      note: string | null;
+      count_date: string;
+      source: "manual" | "restock";
+    };
+    return {
+      id: entry.id,
+      inventoryItemId: entry.inventory_item_id,
+      itemName: entry.item_name,
+      quantityBase: entry.quantity_base,
+      unitLabel: entry.unit_label,
+      responsiblePerson: entry.responsible_person,
+      note: entry.note,
+      countDate: entry.count_date,
+      source: entry.source
     };
   });
 }
@@ -820,6 +946,11 @@ function ensureMenuItemsForRecipe(db: Database.Database, recipeName: string): Ar
     return [];
   }
   const category = recipeName.toLowerCase().includes("sauce") ? "Sauce" : "Imported";
+  const existing = db.prepare("SELECT id FROM menu_items WHERE name = ?").get(recipeName) as { id: number } | undefined;
+  if (existing) {
+    db.prepare("UPDATE menu_items SET price = ?, category = ?, available = 1, archived = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(MENU_PRICE_FALLBACK, category, existing.id);
+    return [{ id: existing.id, created: false }];
+  }
   const id = Number(
     db.prepare("INSERT INTO menu_items (name, price, category, available, archived) VALUES (?, ?, ?, 1, 0)").run(recipeName, MENU_PRICE_FALLBACK, category).lastInsertRowid
   );
@@ -837,17 +968,92 @@ function normalizeName(name: string): string {
 function recipeAlias(normalizedRecipeName: string): string {
   const aliases: Record<string, string> = {
     bbqoctopus: "bbqoctopusmasala",
+    grilledcalamari: "grillcalamari",
+    goldenfishfingers: "goldenfishfinger",
+    fishnuggets: "fishnugget",
+    prawntempura: "crispyprawn",
+    swimfishandchips: "swissfishandchips",
+    twinfavoursmomo: "twinflavormomo",
+    twinflavoursmomo: "twinflavormomo",
+    danishfishandchipsbitspicy: "danishfishandchips",
     loitta: "loittafry",
     dumplingwithchilisoup: "dumplingwithchillisoup",
     chickenchowmein: "chickenchowmin",
-    creamandmushroomsoup: "creamofmushroomsoup"
+    creamchilipastaseafood: "seafoodchillipasta",
+    creamychickenmushroompasta: "whitecreampasta",
+    creamandmushroomsoup: "creamofmushroomsoup",
+    chickensingara: "chickenshingara",
+    muttonsingara: "muttonlivershingara",
+    nagasingara: "nagashingara"
   };
   return aliases[normalizedRecipeName] ?? normalizedRecipeName;
 }
 
-function ensureInventoryItem(db: Database.Database, name: string, unitShortName: string): { id: number; created: boolean } {
+function findInventoryItemForRecipe(db: Database.Database, name: string): { id: number } | null {
   const existing = db.prepare("SELECT id FROM inventory_items WHERE lower(name) = lower(?)").get(name) as { id: number } | undefined;
-  if (existing) return { id: existing.id, created: false };
+  if (existing) return { id: existing.id };
+  const normalizedName = normalizeName(name);
+  const items = db.prepare("SELECT id, name FROM inventory_items WHERE active = 1").all() as Array<{ id: number; name: string }>;
+  const normalizedMatch = items.find((item) => normalizeName(item.name) === normalizedName);
+  if (normalizedMatch) return { id: normalizedMatch.id };
+  const alias = ingredientAlias(normalizedName);
+  const aliasMatch = items.find((item) => normalizeName(item.name) === alias);
+  return aliasMatch ? { id: aliasMatch.id } : null;
+}
+
+function ingredientAlias(normalizedIngredientName: string): string {
+  const aliases: Record<string, string> = {
+    maidaflour: "flour",
+    flour: "flour",
+    squidraw: "squid",
+    squid: "squid",
+    bengalispices: "bengalispice",
+    bellpepper: "capsicum",
+    onioncube: "onion",
+    garlicchopped: "garlic",
+    gingerchopped: "ginger",
+    basilleaf: "basilleaves",
+    sweetcorn: "corn",
+    saltandpepper: "salt",
+    saltpaper: "salt",
+    saltpeppersugar: "salt",
+    saltpepperchiliflakes: "salt",
+    corianderandsaltandpepper: "coriander",
+    coriandersaltandpepper: "coriander",
+    cookingcream: "cream",
+    milk: "carnationmilk",
+    fishdory: "doryfish",
+    loitta: "loittafish",
+    prawn: "soupprawn",
+    mushroom: "mushroomcan",
+    buttonmushroom: "mushroomcan",
+    creamcheese: "cheese",
+    cheese: "cheese",
+    mozzarella: "cheese",
+    parsley: "parsleyflakes",
+    oil: "oil",
+    cookingoil: "oil",
+    noodles: "noodles",
+    chicken: "chickenbreast",
+    soysauce: "darksoyasauce",
+    chickenpowder: "ckpowder",
+    butterginger: "butterlocal",
+    butter: "butterlocal",
+    lemonmustard: "mustardpaste",
+    lemonmustardsauce: "mustardpaste",
+    garlicginger: "garlic",
+    chickenmomodumpling: "chickenmomo",
+    lemoncoriander: "lemon",
+    lemonjuicelemongrasscoriander: "lemon",
+    saltpeppersauce: "sauce",
+    vinegar: "nunvinegar"
+  };
+  return aliases[normalizedIngredientName] ?? normalizedIngredientName;
+}
+
+function ensureInventoryItem(db: Database.Database, name: string, unitShortName: string): { id: number; created: boolean } {
+  const matched = findInventoryItemForRecipe(db, name);
+  if (matched) return { id: matched.id, created: false };
   const unit = getUnitByShortName(db, unitShortName);
   const category = getCategoryByName(db, inferCategory(name));
   const id = Number(
@@ -859,6 +1065,18 @@ function ensureInventoryItem(db: Database.Database, name: string, unitShortName:
     ).lastInsertRowid
   );
   return { id, created: true };
+}
+
+function ensureInventoryUnit(db: Database.Database, shortName: string): number {
+  const normalized = normalizeUnit(shortName);
+  const existing = db.prepare("SELECT id FROM inventory_units WHERE short_name = ?").get(normalized) as { id: number } | undefined;
+  if (existing) return existing.id;
+  const name = normalized === "g" ? "Gram" : normalized === "kg" ? "Kilogram" : normalized === "ml" ? "Milliliter" : normalized === "l" ? "Liter" : normalized === "pc" ? "Piece" : normalized.toUpperCase();
+  return Number(db.prepare("INSERT INTO inventory_units (name, short_name, active) VALUES (?, ?, 1)").run(name, normalized).lastInsertRowid);
+}
+
+function ensureInventoryCategory(db: Database.Database, name: string): number {
+  return getCategoryByName(db, name).id;
 }
 
 function ensureTestRestockAndPrice(db: Database.Database, inventoryItemId: number, unitShortName: string): void {
