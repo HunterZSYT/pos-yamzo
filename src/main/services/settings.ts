@@ -1,17 +1,22 @@
 import type Database from "better-sqlite3";
-import type { BrandingSettings, MenuTypeSetting } from "../../shared/types.js";
+import type { BrandingSettings, MenuDataSetting, MenuTypeSetting } from "../../shared/types.js";
 
 const DEFAULT_LOGO_PATH = "yamzo://default-logo";
 const DEFAULT_QR_PATH = "yamzo://review-qr";
 const DEFAULT_HOST_NAMES = ["Cashier"];
 const DEFAULT_MENU_CATEGORIES = ["Seafood", "Momo", "Fish & Chips", "Pasta", "Rice", "Soup", "Snacks", "Sauce", "Drinks", "Other"];
+const DEFAULT_MENU_DATA: MenuDataSetting[] = [
+  { key: "in_house", label: "Store Menu", active: true },
+  { key: "foodpanda", label: "Foodpanda Menu", active: true },
+  { key: "foodie", label: "Foodie Menu", active: true }
+];
 const DEFAULT_MENU_TYPES: MenuTypeSetting[] = [
-  { key: "in_house", label: "Dine-in", tablesEnabled: true, commissionPercent: 0, active: true },
-  { key: "parcel", label: "Parcel", tablesEnabled: false, commissionPercent: 0, active: true },
-  { key: "delivery", label: "Delivery", tablesEnabled: false, commissionPercent: 0, active: true },
-  { key: "foodpanda", label: "Foodpanda", tablesEnabled: false, commissionPercent: 0, active: true },
-  { key: "foodie", label: "Foodie", tablesEnabled: false, commissionPercent: 0, active: true },
-  { key: "other", label: "Other", tablesEnabled: false, commissionPercent: 0, active: true }
+  { key: "in_house", label: "Dine-in", menuDataKey: "in_house", tablesEnabled: true, commissionPercent: 0, active: true },
+  { key: "parcel", label: "Parcel", menuDataKey: "in_house", tablesEnabled: false, commissionPercent: 0, active: true },
+  { key: "delivery", label: "Delivery", menuDataKey: "in_house", tablesEnabled: false, commissionPercent: 0, active: true },
+  { key: "foodpanda", label: "Foodpanda", menuDataKey: "foodpanda", tablesEnabled: false, commissionPercent: 0, active: true },
+  { key: "foodie", label: "Foodie", menuDataKey: "foodie", tablesEnabled: false, commissionPercent: 0, active: true },
+  { key: "other", label: "Other", menuDataKey: "in_house", tablesEnabled: false, commissionPercent: 0, active: true }
 ];
 
 export function getSetting<T>(db: Database.Database, key: string, fallback: T): T {
@@ -106,6 +111,23 @@ export function setMenuCategories(db: Database.Database, categories: string[]): 
   setSetting(db, "menuCategories", cleaned.length ? cleaned : DEFAULT_MENU_CATEGORIES);
 }
 
+export function getMenuData(db: Database.Database): MenuDataSetting[] {
+  const saved = getSetting<MenuDataSetting[]>(db, "menuData", DEFAULT_MENU_DATA);
+  const priceKeys = db.prepare("SELECT DISTINCT menu_type_key AS key FROM menu_item_prices ORDER BY menu_type_key").all() as Array<{ key: string }>;
+  const merged = [...saved, ...priceKeys.map((row) => ({ key: row.key, label: menuDataLabel(row.key), active: true }))];
+  const cleaned = Array.from(
+    new Map(merged.map(normalizeMenuData).filter((entry) => entry.key && entry.label).map((entry) => [entry.key, entry])).values()
+  );
+  return cleaned.length ? cleaned : DEFAULT_MENU_DATA;
+}
+
+export function setMenuData(db: Database.Database, menuData: MenuDataSetting[]): void {
+  const cleaned = Array.from(
+    new Map(menuData.map(normalizeMenuData).filter((entry) => entry.key && entry.label).map((entry) => [entry.key, entry])).values()
+  );
+  setSetting(db, "menuData", cleaned.length ? cleaned : DEFAULT_MENU_DATA);
+}
+
 export function getMenuTypes(db: Database.Database): MenuTypeSetting[] {
   const saved = getSetting<MenuTypeSetting[]>(db, "menuTypes", DEFAULT_MENU_TYPES);
   const normalized = saved.map(normalizeMenuType).filter((type) => type.key && type.label);
@@ -125,8 +147,19 @@ export function normalizeMenuType(input: Partial<MenuTypeSetting> & { label?: st
   return {
     key,
     label: label || key,
+    menuDataKey: String(input.menuDataKey || key || "in_house").trim(),
     tablesEnabled: Boolean(input.tablesEnabled),
     commissionPercent: Math.max(0, Math.min(100, Number(input.commissionPercent ?? 0) || 0)),
+    active: input.active !== false
+  };
+}
+
+export function normalizeMenuData(input: Partial<MenuDataSetting> & { label?: string; key?: string }): MenuDataSetting {
+  const label = String(input.label ?? "").trim();
+  const key = String(input.key || slugMenuType(label)).trim();
+  return {
+    key,
+    label: label || menuDataLabel(key),
     active: input.active !== false
   };
 }
@@ -135,4 +168,9 @@ export function slugMenuType(label: string): string {
   const lowered = label.trim().toLowerCase();
   if (["price", "dine in", "dine-in", "dinein", "in house", "in-house"].includes(lowered)) return "in_house";
   return lowered.replace(/&/g, "and").replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "other";
+}
+
+function menuDataLabel(key: string): string {
+  if (key === "in_house") return "Store Menu";
+  return `${key.replace(/_/g, " ").replace(/\b\w/g, (char) => char.toUpperCase())} Menu`;
 }

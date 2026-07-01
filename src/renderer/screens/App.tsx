@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -38,6 +38,7 @@ import type {
   InventoryItem,
   InventorySnapshot,
   InventoryUnit,
+  MenuDataSetting,
   MenuTypeSetting,
   MenuRecipe,
   MenuImportResult,
@@ -60,6 +61,7 @@ type OrderLane = "newOrder" | "openOrders";
 type PrintConfirm = { type: "kitchen" | "bill"; orderId: number; orderNumber: string } | null;
 type NoteEdit = { line: OrderLine; draft: string } | null;
 type ProtectedScreen = "completedOrders" | "cancelledOrders" | "admin";
+type MenuFormState = { id: number; name: string; price: string; category: string; available: boolean; trackRecipe: boolean; menuPrices: Record<string, string> };
 
 interface PrinterOption {
   name: string;
@@ -68,12 +70,18 @@ interface PrinterOption {
 }
 
 const defaultMenuTypes: MenuTypeSetting[] = [
-  { key: "in_house", label: "Dine-in", tablesEnabled: true, commissionPercent: 0, active: true },
-  { key: "parcel", label: "Parcel", tablesEnabled: false, commissionPercent: 0, active: true },
-  { key: "delivery", label: "Delivery", tablesEnabled: false, commissionPercent: 0, active: true },
-  { key: "foodpanda", label: "Foodpanda", tablesEnabled: false, commissionPercent: 0, active: true },
-  { key: "foodie", label: "Foodie", tablesEnabled: false, commissionPercent: 0, active: true },
-  { key: "other", label: "Other", tablesEnabled: false, commissionPercent: 0, active: true }
+  { key: "in_house", label: "Dine-in", menuDataKey: "in_house", tablesEnabled: true, commissionPercent: 0, active: true },
+  { key: "parcel", label: "Parcel", menuDataKey: "in_house", tablesEnabled: false, commissionPercent: 0, active: true },
+  { key: "delivery", label: "Delivery", menuDataKey: "in_house", tablesEnabled: false, commissionPercent: 0, active: true },
+  { key: "foodpanda", label: "Foodpanda", menuDataKey: "foodpanda", tablesEnabled: false, commissionPercent: 0, active: true },
+  { key: "foodie", label: "Foodie", menuDataKey: "foodie", tablesEnabled: false, commissionPercent: 0, active: true },
+  { key: "other", label: "Other", menuDataKey: "in_house", tablesEnabled: false, commissionPercent: 0, active: true }
+];
+
+const defaultMenuData: MenuDataSetting[] = [
+  { key: "in_house", label: "Store Menu", active: true },
+  { key: "foodpanda", label: "Foodpanda Menu", active: true },
+  { key: "foodie", label: "Foodie Menu", active: true }
 ];
 
 const deleteReasons = [
@@ -168,6 +176,7 @@ export function App() {
   const [totalTables, setTotalTables] = useState(10);
   const [hostNames, setHostNames] = useState<string[]>(["Cashier"]);
   const [menuCategories, setMenuCategories] = useState<string[]>([]);
+  const [menuData, setMenuData] = useState<MenuDataSetting[]>(defaultMenuData);
   const [menuTypes, setMenuTypes] = useState<MenuTypeSetting[]>(defaultMenuTypes);
   const [selectedHost, setSelectedHost] = useState("Cashier");
   const [hostDraft, setHostDraft] = useState("");
@@ -184,7 +193,7 @@ export function App() {
   const [paymentReference, setPaymentReference] = useState("");
   const [activeOrder, setActiveOrder] = useState<OrderDetail | null>(null);
   const [externalKitchenEnabled, setExternalKitchenEnabled] = useState(false);
-  const [menuForm, setMenuForm] = useState({ id: 0, name: "", price: "", category: "", available: true });
+  const [menuForm, setMenuForm] = useState<MenuFormState>({ id: 0, name: "", price: "", category: "", available: true, trackRecipe: true, menuPrices: {} });
   const [message, setMessage] = useState("");
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [deleteReason, setDeleteReason] = useState("");
@@ -222,6 +231,12 @@ export function App() {
     return () => window.clearInterval(timer);
   }, [loggedIn]);
 
+  useEffect(() => {
+    if (!message || !loggedIn) return;
+    const timer = window.setTimeout(() => setMessage(""), 4500);
+    return () => window.clearTimeout(timer);
+  }, [message, loggedIn]);
+
   const activeItems = activeOrder?.items.filter((item) => item.status === "active") ?? [];
   const subtotal = activeOrder?.subtotal ?? 0;
   const calculatedDiscount = useMemo(() => {
@@ -256,6 +271,8 @@ export function App() {
     const query = menuSearch.trim().toLowerCase();
     const groups = new Map<string, MenuItem[]>();
     for (const item of menu) {
+      const sourcePrice = menuItemPrice(item, source, menuTypes);
+      if (sourcePrice <= 0) continue;
       const haystack = `${item.name} ${item.category ?? ""}`.toLowerCase();
       if (query && !haystack.includes(query)) continue;
       const category = item.category?.trim() || "Other";
@@ -271,11 +288,11 @@ export function App() {
       }
     }
     return [...ordered, ...Array.from(groups.entries()).sort(([left], [right]) => left.localeCompare(right))];
-  }, [menu, menuCategories, menuSearch]);
+  }, [menu, menuCategories, menuSearch, source, menuTypes]);
 
   async function refreshData() {
     if (!window.yamzo) return;
-    const [menuRows, openRows, historyRows, sales, jobs, email, receipt, inventory, inventoryData, printerName, tableCount, hosts, categories, types, activity] = await Promise.all([
+    const [menuRows, openRows, historyRows, sales, jobs, email, receipt, inventory, inventoryData, printerName, tableCount, hosts, categories, dataSets, types, activity] = await Promise.all([
       window.yamzo.menu.list(),
       window.yamzo.orders.open(),
       window.yamzo.orders.history(),
@@ -289,6 +306,7 @@ export function App() {
       window.yamzo.settings.getTotalTables(),
       window.yamzo.settings.getHostNames(),
       window.yamzo.settings.getMenuCategories(),
+      window.yamzo.settings.getMenuData(),
       window.yamzo.settings.getMenuTypes(),
       window.yamzo.audit.list(200)
     ]);
@@ -306,6 +324,7 @@ export function App() {
     setTotalTables(tableCount);
     setHostNames(hosts);
     setMenuCategories(categories);
+    setMenuData(dataSets?.length ? dataSets : defaultMenuData);
     setMenuTypes(types?.length ? types : defaultMenuTypes);
     setSelectedHost((current) => (hosts.includes(current) ? current : hosts[0] ?? "Cashier"));
     window.yamzo.print.listPrinters().then(setPrinters).catch(() => setPrinters([]));
@@ -765,14 +784,19 @@ export function App() {
 
   async function saveMenuForm() {
     if (!window.yamzo) return;
+    const menuPrices = Object.fromEntries(
+      Object.entries(menuForm.menuPrices).map(([key, value]) => [key, Number(value || 0)])
+    );
     await window.yamzo.menu.saveItem({
       id: menuForm.id || undefined,
       name: menuForm.name,
       price: Number(menuForm.price),
       category: menuForm.category || null,
-      available: menuForm.available
+      available: menuForm.available,
+      trackRecipe: menuForm.trackRecipe,
+      menuPrices
     });
-    setMenuForm({ id: 0, name: "", price: "", category: "", available: true });
+    setMenuForm({ id: 0, name: "", price: "", category: "", available: true, trackRecipe: true, menuPrices: {} });
     setMessage("Menu item saved.");
     await refreshData();
   }
@@ -804,12 +828,28 @@ export function App() {
     await refreshData();
   }
 
+  async function saveMenuDataSettings(nextData = menuData) {
+    const cleaned = nextData
+      .map((entry) => ({
+        ...entry,
+        key: entry.key || slugLocal(entry.label),
+        label: entry.label.trim(),
+        active: entry.active !== false
+      }))
+      .filter((entry) => entry.key && entry.label);
+    await window.yamzo?.settings.setMenuData(cleaned);
+    setMenuData(cleaned);
+    setMessage("Menu data saved.");
+    await refreshData();
+  }
+
   async function saveMenuTypeSettings(nextTypes = menuTypes) {
     const cleaned = nextTypes
       .map((type) => ({
         ...type,
         key: type.key || slugLocal(type.label),
         label: type.label.trim(),
+        menuDataKey: type.menuDataKey || "in_house",
         commissionPercent: Math.max(0, Math.min(100, Number(type.commissionPercent || 0))),
         active: type.active !== false
       }))
@@ -847,6 +887,11 @@ export function App() {
 
   return (
     <main className="grid h-screen grid-cols-[212px_minmax(0,1fr)] overflow-hidden bg-stone-50 text-stone-950">
+      {message && (
+        <div className="fixed right-6 top-6 z-[200] max-w-md rounded-xl border border-emerald-200 bg-white px-4 py-3 text-sm font-medium text-emerald-950 shadow-xl">
+          {message}
+        </div>
+      )}
       <aside className="flex min-h-0 flex-col gap-3 bg-stone-950 p-5 text-stone-50">
         <h1 className="mb-5 text-3xl font-semibold tracking-tight">Yamzo</h1>
         <SideNav active={screen === "newOrder" || (screen === "editOrder" && orderLane === "newOrder")} onClick={startFreshOrder}>New Order</SideNav>
@@ -936,7 +981,7 @@ export function App() {
                           >
                             <strong className="line-clamp-2 text-sm leading-snug">{item.name}</strong>
                             <span className="text-xs text-muted-foreground">{item.category || "Menu"}</span>
-                            <span className="self-end text-sm font-bold text-primary">{money(menuItemPrice(item, source))}</span>
+                            <span className="self-end text-sm font-bold text-primary">{money(menuItemPrice(item, source, menuTypes))}</span>
                           </button>
                         ))}
                       </div>
@@ -1053,7 +1098,6 @@ export function App() {
                   <Button size="lg" variant="secondary" onClick={connectPrinter}>Printer Connect</Button>
                 </div>
               </div>
-              {message && <p className="rounded-lg border bg-emerald-50 px-3 py-2 text-sm text-emerald-900">{message}</p>}
             </CardContent>
           </Card>
         </section>
@@ -1065,19 +1109,17 @@ export function App() {
       {screen === "reports" && <ContentShell title="Reports" description="Sales, order timing, payments, and profit reports."><ReportsPanel summary={summary} inventory={inventorySnapshot} /></ContentShell>}
       {screen === "menu" && (
         <ContentShell title="Menu" description="Manage food, sauce, drink items, and menu categories." action={<Button variant="secondary" onClick={refreshData}>Refresh</Button>}>
-          <MenuAdmin menu={menu} categories={menuCategories} categoryDraft={menuCategoryDraft} setCategoryDraft={setMenuCategoryDraft} saveCategories={saveMenuCategories} menuTypes={menuTypes} setMenuTypes={setMenuTypes} saveMenuTypes={saveMenuTypeSettings} totalTables={totalTables} setTotalTables={setTotalTables} saveTableSettings={saveTableSettings} menuForm={menuForm} setMenuForm={setMenuForm} saveMenuForm={saveMenuForm} importMenuCsv={importMenuCsv} downloadSampleCsv={downloadSampleCsv} refreshData={refreshData} />
+          <MenuAdmin menu={menu} categories={menuCategories} categoryDraft={menuCategoryDraft} setCategoryDraft={setMenuCategoryDraft} saveCategories={saveMenuCategories} menuData={menuData} setMenuData={setMenuData} saveMenuData={saveMenuDataSettings} menuTypes={menuTypes} setMenuTypes={setMenuTypes} saveMenuTypes={saveMenuTypeSettings} totalTables={totalTables} setTotalTables={setTotalTables} saveTableSettings={saveTableSettings} menuForm={menuForm} setMenuForm={setMenuForm} saveMenuForm={saveMenuForm} importMenuCsv={importMenuCsv} downloadSampleCsv={downloadSampleCsv} refreshData={refreshData} setMessage={setMessage} />
         </ContentShell>
       )}
       {screen === "inventory" && (
         <ContentShell title="Inventory" description="Recipes, stock, restocks, and physical count tracking." action={<Button variant="secondary" onClick={refreshData}>Refresh</Button>}>
           <InventoryAdmin snapshot={inventorySnapshot} refreshData={refreshData} setMessage={setMessage} onEditRecipe={setRecipeEdit} onViewPriceHistory={setPriceHistoryItemId} />
-          {message && <p className="rounded-lg border bg-emerald-50 px-3 py-2 text-sm text-emerald-900">{message}</p>}
         </ContentShell>
       )}
       {screen === "costs" && (
         <ContentShell title="Costs" description="Record quick restaurant costs for later review." action={<Button variant="secondary" onClick={refreshData}>Refresh</Button>}>
           <CostsPanel snapshot={inventorySnapshot} refreshData={refreshData} setMessage={setMessage} />
-          {message && <p className="rounded-lg border bg-emerald-50 px-3 py-2 text-sm text-emerald-900">{message}</p>}
         </ContentShell>
       )}
       {screen === "admin" && (
@@ -1098,7 +1140,6 @@ export function App() {
             <TabsContent value="adminSettings"><AdminSettings username={username} passwordForm={passwordForm} setPasswordForm={setPasswordForm} setMessage={setMessage} /></TabsContent>
             <TabsContent value="activity"><ActivityLogAdmin logs={activityLogs} refreshData={refreshData} /></TabsContent>
           </Tabs>
-          {message && <p className="rounded-lg border bg-emerald-50 px-3 py-2 text-sm text-emerald-900">{message}</p>}
         </ContentShell>
       )}
 
@@ -1119,7 +1160,6 @@ export function App() {
               }}
             />
           </Field>
-          {message && <p className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{message}</p>}
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <Button onClick={submitAdminPassword}>Continue</Button>
@@ -1273,6 +1313,7 @@ function RecipeEditorDialog({
 }) {
   const [rows, setRows] = useState<Array<{ inventoryItemId: string; quantityBase: string; unitLabel: string }>>([]);
   const [error, setError] = useState("");
+  const [ingredientSearch, setIngredientSearch] = useState("");
   const itemOptions = useMemo(() => {
     const byId = new Map<number, { id: number; name: string; unitShortName: string }>();
     for (const item of items) {
@@ -1342,13 +1383,19 @@ function RecipeEditorDialog({
               <div className="grid gap-3 rounded-xl border bg-card p-4 lg:grid-cols-[minmax(220px,1fr)_160px_120px_auto] lg:items-end" key={`${row.inventoryItemId}-${index}`}>
                 <div className="grid gap-2">
                   <Label>Ingredient</Label>
-                  <Select
-                    value={row.inventoryItemId}
-                    onValueChange={(value) => setRows((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, inventoryItemId: value, unitLabel: itemOptions.find((inventoryItem) => inventoryItem.id === Number(value))?.unitShortName || item.unitLabel } : item))}
-                  >
-                    <SelectTrigger className="w-full min-w-0"><SelectValue placeholder="Choose ingredient" /></SelectTrigger>
-                    <SelectContent>{itemOptions.map((item) => <SelectItem key={item.id} value={String(item.id)}>{item.name}</SelectItem>)}</SelectContent>
-                  </Select>
+                  <div className="grid gap-2">
+                    <Input value={ingredientSearch} onChange={(event) => setIngredientSearch(event.target.value)} placeholder="Search ingredient" />
+                    <Select
+                      value={row.inventoryItemId}
+                      onValueChange={(value) => {
+                        setRows((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, inventoryItemId: value, unitLabel: itemOptions.find((inventoryItem) => inventoryItem.id === Number(value))?.unitShortName || item.unitLabel } : item));
+                        setIngredientSearch("");
+                      }}
+                    >
+                      <SelectTrigger className="w-full min-w-0"><SelectValue placeholder="Choose ingredient" /></SelectTrigger>
+                      <SelectContent>{itemOptions.filter((item) => item.name.toLowerCase().includes(ingredientSearch.trim().toLowerCase())).slice(0, 80).map((item) => <SelectItem key={item.id} value={String(item.id)}>{item.name}</SelectItem>)}</SelectContent>
+                    </Select>
+                  </div>
                 </div>
                 <div className="grid gap-2">
                   <Label>Amount</Label>
@@ -1717,6 +1764,15 @@ function ReportBlock({ title, rows }: { title: string; rows: string[] }) {
   return <Card><CardHeader><CardTitle>{title}</CardTitle></CardHeader><CardContent className="grid gap-2">{rows.length === 0 ? <p className="text-sm text-muted-foreground">No data yet.</p> : rows.map((row) => <span key={row} className="text-sm">{row}</span>)}</CardContent></Card>;
 }
 
+function EmptyState({ title, description }: { title: string; description: string }) {
+  return (
+    <div className="rounded-xl border border-dashed bg-muted/20 p-6 text-center">
+      <strong>{title}</strong>
+      <p className="mt-1 text-sm text-muted-foreground">{description}</p>
+    </div>
+  );
+}
+
 function InventoryAdmin({
   snapshot,
   refreshData,
@@ -1776,6 +1832,11 @@ function InventoryAdmin({
   const [statusRange, setStatusRange] = useState({ start: "", end: "" });
   const [itemEdit, setItemEdit] = useState<InventoryItem | null>(null);
   const [restockEdit, setRestockEdit] = useState<RestockEntry | null>(null);
+  const [recipeSearch, setRecipeSearch] = useState("");
+  const [recipeStatusFilter, setRecipeStatusFilter] = useState("all");
+  const [inventoryItemSearch, setInventoryItemSearch] = useState("");
+  const [restockSearch, setRestockSearch] = useState("");
+  const [physicalSearch, setPhysicalSearch] = useState("");
 
   useEffect(() => {
     if (!itemForm.baseUnitId && activeUnits[0]) setItemForm((current) => ({ ...current, baseUnitId: String(activeUnits[0].id) }));
@@ -1943,6 +2004,25 @@ function InventoryAdmin({
       .map((entry) => [formatDate(entry.entryDate), entry.itemName, `${formatQuantity(entry.quantityBase)} ${entry.unitLabel}`, money(entry.totalCost), entry.responsiblePerson ?? "-", entry.supplierName ?? "-"]);
   }
 
+  const filteredRecipes = snapshot.recipes.filter((recipe) => {
+    const text = `${recipe.menuItemName} ${recipe.ingredients.map((item) => item.itemName).join(" ")}`.toLowerCase();
+    const queryMatch = text.includes(recipeSearch.trim().toLowerCase());
+    const statusMatch = recipeStatusFilter === "all" || recipe.status === recipeStatusFilter;
+    return queryMatch && statusMatch;
+  });
+  const filteredInventoryItems = snapshot.items.filter((item) => {
+    const text = `${item.name} ${item.categoryName ?? ""} ${item.unitShortName} ${item.status}`.toLowerCase();
+    return text.includes(inventoryItemSearch.trim().toLowerCase());
+  });
+  const filteredRestocks = snapshot.restocks.filter((entry) => {
+    const text = `${entry.itemName} ${entry.supplierName ?? ""} ${entry.responsiblePerson ?? ""} ${entry.note ?? ""}`.toLowerCase();
+    return text.includes(restockSearch.trim().toLowerCase());
+  });
+  const filteredPhysicalCounts = snapshot.physicalCounts.filter((entry) => {
+    const text = `${entry.itemName} ${entry.responsiblePerson ?? ""} ${entry.note ?? ""} ${entry.source}`.toLowerCase();
+    return text.includes(physicalSearch.trim().toLowerCase());
+  });
+
   return (
     <div className="grid gap-4 pt-4">
       <div className="grid grid-cols-[repeat(auto-fit,minmax(180px,1fr))] gap-3">
@@ -1992,15 +2072,32 @@ function InventoryAdmin({
           </div>
         </TabsContent>
 
-        <TabsContent value="recipes" className="grid gap-3 pt-4">
-          <div className="flex flex-wrap justify-between gap-2">
-            <p className="text-sm text-muted-foreground">Add or edit one recipe at a time from existing inventory items.</p>
-            <div className="flex flex-wrap gap-2">
-              <Button variant="secondary" onClick={importRecipesCsv}>Import Recipe CSV</Button>
-              <Button disabled={!firstMissingRecipe} onClick={() => firstMissingRecipe && onEditRecipe(firstMissingRecipe)}>{firstMissingRecipe?.status === "missing" ? "Add Recipe" : "Edit Recipe"}</Button>
-            </div>
-          </div>
-          {snapshot.recipes.map((recipe) => (
+        <TabsContent value="recipes" className="grid gap-4 pt-4">
+          <Card>
+            <CardHeader className="pb-3">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <CardTitle>Recipes</CardTitle>
+                  <CardDescription>Search recipes and edit one recipe at a time from existing inventory items.</CardDescription>
+                </div>
+                <Button disabled={!firstMissingRecipe} onClick={() => firstMissingRecipe && onEditRecipe(firstMissingRecipe)}>{firstMissingRecipe?.status === "missing" ? "Add Recipe" : "Edit Recipe"}</Button>
+              </div>
+            </CardHeader>
+            <CardContent className="grid gap-3 md:grid-cols-[minmax(260px,1fr)_220px]">
+              <Field label="Search recipe"><Input value={recipeSearch} onChange={(event) => setRecipeSearch(event.target.value)} placeholder="Search by dish or ingredient" /></Field>
+              <Field label="Status">
+                <Select value={recipeStatusFilter} onValueChange={setRecipeStatusFilter}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All recipes</SelectItem>
+                    <SelectItem value="available">Recipe available</SelectItem>
+                    <SelectItem value="missing">Missing recipe</SelectItem>
+                  </SelectContent>
+                </Select>
+              </Field>
+            </CardContent>
+          </Card>
+          {filteredRecipes.map((recipe) => (
             <Card key={recipe.menuItemId} size="sm">
               <CardContent className="grid gap-3 p-4 lg:grid-cols-[minmax(0,1fr)_180px_180px_180px] lg:items-center">
                 <div className="min-w-0">
@@ -2018,10 +2115,12 @@ function InventoryAdmin({
               </CardContent>
             </Card>
           ))}
+          {filteredRecipes.length === 0 && <EmptyState title="No recipes found" description="Try a different recipe, ingredient, or status filter." />}
         </TabsContent>
 
         <TabsContent value="items" className="grid gap-4 pt-4">
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap items-end justify-between gap-3">
+            <Field label="Search inventory items"><Input value={inventoryItemSearch} onChange={(event) => setInventoryItemSearch(event.target.value)} placeholder="Search by item, category, unit, or status" /></Field>
             <Button variant="secondary" onClick={importInventoryItemsCsv}>Import Items CSV</Button>
           </div>
           <Card>
@@ -2034,7 +2133,7 @@ function InventoryAdmin({
             </CardContent>
           </Card>
           <div className="grid gap-2">
-            {snapshot.items.map((item) => (
+            {filteredInventoryItems.map((item) => (
               <Card key={item.id} size="sm">
                 <CardContent className="grid gap-4 p-4 xl:grid-cols-[minmax(240px,1fr)_minmax(140px,auto)_minmax(150px,auto)_minmax(130px,auto)_auto] xl:items-center">
                   <div className="min-w-0">
@@ -2054,11 +2153,16 @@ function InventoryAdmin({
               </Card>
             ))}
           </div>
+          {filteredInventoryItems.length === 0 && <EmptyState title="No inventory items found" description="Try a different item name, category, unit, or stock status." />}
         </TabsContent>
 
         <TabsContent value="restock" className="grid gap-4 pt-4">
           <Card>
-            <CardContent className="grid grid-cols-[repeat(auto-fit,minmax(180px,1fr))] gap-3 p-4">
+            <CardHeader className="pb-2">
+              <CardTitle>Restock Entry</CardTitle>
+              <CardDescription>Select one raw material or enabled recipe material and record the purchase details.</CardDescription>
+            </CardHeader>
+            <CardContent className="grid grid-cols-[repeat(auto-fit,minmax(180px,1fr))] gap-3 p-4 pt-0">
               <Field label="Item type">
                 <Select value={restockForm.itemType} onValueChange={(value) => setRestockForm({ ...restockForm, itemType: value, recipeId: "" })}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
@@ -2067,13 +2171,10 @@ function InventoryAdmin({
               </Field>
               {restockForm.itemType === "recipe" && (
                 <Field label="Recipe">
-                  <Select value={restockForm.recipeId || "none"} onValueChange={(value) => setRestockForm({ ...restockForm, recipeId: value === "none" ? "" : value })}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
-                    <SelectContent><SelectItem value="none">Choose recipe</SelectItem>{restockableRecipes.map((recipe) => <SelectItem key={recipe.id} value={String(recipe.id)}>{recipe.menuItemName}</SelectItem>)}</SelectContent>
-                  </Select>
+                  <SearchableRecipeSelect value={restockForm.recipeId} recipes={restockableRecipes} onChange={(value) => setRestockForm({ ...restockForm, recipeId: value })} />
                 </Field>
               )}
-              <InventoryItemSelect label="Item" value={restockForm.inventoryItemId} items={snapshot.items} onChange={(value) => setRestockForm({ ...restockForm, inventoryItemId: value })} />
+              <InventoryItemPicker label="Item" value={restockForm.inventoryItemId} items={snapshot.items} onChange={(value) => setRestockForm({ ...restockForm, inventoryItemId: value })} />
               <Field label="Quantity"><Input value={restockForm.quantity} onChange={(event) => setRestockForm({ ...restockForm, quantity: event.target.value })} /></Field>
               <Field label="Total cost"><Input value={restockForm.totalCost} onChange={(event) => setRestockForm({ ...restockForm, totalCost: event.target.value })} /></Field>
               <Field label="Supplier"><Input value={restockForm.supplierName} onChange={(event) => setRestockForm({ ...restockForm, supplierName: event.target.value })} /></Field>
@@ -2082,7 +2183,16 @@ function InventoryAdmin({
               <Button className="self-end" onClick={addRestock} disabled={!restockForm.inventoryItemId}>Add Restock</Button>
             </CardContent>
           </Card>
-          <RestockEntryTable entries={snapshot.restocks} onEdit={setRestockEdit} onDelete={deleteRestock} />
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle>Restock History</CardTitle>
+              <CardDescription>Search recent restocks by item, supplier, person, or note.</CardDescription>
+            </CardHeader>
+            <CardContent className="grid gap-3">
+              <Input value={restockSearch} onChange={(event) => setRestockSearch(event.target.value)} placeholder="Search restock records" />
+              <RestockEntryTable entries={filteredRestocks} onEdit={setRestockEdit} onDelete={deleteRestock} />
+            </CardContent>
+          </Card>
         </TabsContent>
 
         <TabsContent value="physical" className="grid gap-4 pt-4">
@@ -2092,7 +2202,7 @@ function InventoryAdmin({
               <CardDescription>Manual stock counts are the source of truth for current stock.</CardDescription>
             </CardHeader>
             <CardContent className="grid grid-cols-[repeat(auto-fit,minmax(180px,1fr))] gap-3">
-              <InventoryItemSelect label="Item" value={physicalCountForm.inventoryItemId} items={snapshot.items} onChange={(value) => setPhysicalCountForm({ ...physicalCountForm, inventoryItemId: value })} />
+              <InventoryItemPicker label="Item" value={physicalCountForm.inventoryItemId} items={snapshot.items} onChange={(value) => setPhysicalCountForm({ ...physicalCountForm, inventoryItemId: value })} />
               <Field label={`Count (${snapshot.items.find((item) => String(item.id) === physicalCountForm.inventoryItemId)?.unitShortName ?? "unit"})`}>
                 <Input value={physicalCountForm.quantity} onChange={(event) => setPhysicalCountForm({ ...physicalCountForm, quantity: event.target.value })} />
               </Field>
@@ -2101,10 +2211,19 @@ function InventoryAdmin({
               <Button className="self-end" onClick={addPhysicalCountEntry} disabled={!physicalCountForm.inventoryItemId || !physicalCountForm.quantity}>Save Count</Button>
             </CardContent>
           </Card>
-          <InventoryTable
-            headers={["Date", "Item", "Count", "Source", "Person", "Note"]}
-            rows={snapshot.physicalCounts.map((entry) => [formatDate(entry.countDate), entry.itemName, `${formatQuantity(entry.quantityBase)} ${entry.unitLabel}`, labelize(entry.source), entry.responsiblePerson ?? "-", entry.note ?? "-"])}
-          />
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle>Physical Count History</CardTitle>
+              <CardDescription>Search saved manual counts and restock-created count records.</CardDescription>
+            </CardHeader>
+            <CardContent className="grid gap-3">
+              <Input value={physicalSearch} onChange={(event) => setPhysicalSearch(event.target.value)} placeholder="Search physical counts" />
+              <InventoryTable
+                headers={["Date", "Item", "Count", "Source", "Person", "Note"]}
+                rows={filteredPhysicalCounts.map((entry) => [formatDate(entry.countDate), entry.itemName, `${formatQuantity(entry.quantityBase)} ${entry.unitLabel}`, labelize(entry.source), entry.responsiblePerson ?? "-", entry.note ?? "-"])}
+              />
+            </CardContent>
+          </Card>
         </TabsContent>
 
         <TabsContent value="orders" className="pt-4">
@@ -2118,13 +2237,6 @@ function InventoryAdmin({
               <CardContent className="grid gap-3">
                 <div className="grid grid-cols-[1fr_auto] gap-2"><Input value={categoryName} onChange={(event) => setCategoryName(event.target.value)} placeholder="Example: Beverage" /><Button onClick={addCategory} disabled={!categoryName.trim()}>Add Category</Button></div>
                 <EditableSettingList items={activeCategories} onSave={(item, name) => window.yamzo?.inventory.saveCategory({ id: item.id, name, active: true }).then(refreshData)} onRemove={removeCategory} />
-              </CardContent>
-            </Card>
-            <Card>
-              <CardHeader><CardTitle>Cost Categories</CardTitle></CardHeader>
-              <CardContent className="grid gap-3">
-                <div className="grid grid-cols-[1fr_auto] gap-2"><Input value={costCategoryName} onChange={(event) => setCostCategoryName(event.target.value)} placeholder="Example: Marketing" /><Button onClick={addCostCategory} disabled={!costCategoryName.trim()}>Add Cost Category</Button></div>
-                <EditableSettingList items={activeCostCategories} onSave={(item, name) => window.yamzo?.inventory.saveCostCategory({ id: item.id, name, active: true }).then(refreshData)} onRemove={removeCostCategory} />
               </CardContent>
             </Card>
             <Card>
@@ -2353,7 +2465,7 @@ function RestockEditorDialog({
         <div className="grid gap-4 p-6">
           {error && <p className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</p>}
           <div className="grid gap-4 md:grid-cols-2">
-            <InventoryItemSelect label="Item" value={draft.inventoryItemId} items={items} onChange={chooseItem} />
+            <InventoryItemPicker label="Item" value={draft.inventoryItemId} items={items} onChange={chooseItem} />
             <Field label="Quantity"><Input value={draft.quantity} onChange={(event) => setDraft({ ...draft, quantity: event.target.value })} /></Field>
             <Field label="Unit"><Input value={selectedItem?.unitShortName || draft.unitLabel} readOnly className="bg-muted/60" /></Field>
             <Field label="Total cost"><Input value={draft.totalCost} onChange={(event) => setDraft({ ...draft, totalCost: event.target.value })} /></Field>
@@ -2434,14 +2546,91 @@ function InventoryMiniMetric({ label, value }: { label: string; value: string | 
   return <div className="rounded-lg border bg-background px-3 py-2"><span className="block text-xs text-muted-foreground">{label}</span><strong>{value}</strong></div>;
 }
 
-function InventoryItemSelect({ label, value, items, onChange }: { label: string; value: string; items: InventorySnapshot["items"]; onChange: (value: string) => void }) {
+function InventoryItemPicker({ label, value, items, onChange }: { label: string; value: string; items: InventorySnapshot["items"]; onChange: (value: string) => void }) {
+  const inputId = useId();
+  const selectedItem = items.find((item) => String(item.id) === value);
+  const [text, setText] = useState(selectedItem?.name ?? "");
+  const listId = `${inputId}-items`;
+
+  useEffect(() => {
+    setText(selectedItem?.name ?? "");
+  }, [selectedItem?.id, selectedItem?.name]);
+
+  function commit(nextText: string) {
+    const normalized = nextText.trim().toLowerCase();
+    const exact = items.find((item) => item.name.trim().toLowerCase() === normalized);
+    if (exact) {
+      onChange(String(exact.id));
+      return;
+    }
+    const firstMatch = items.find((item) => item.name.toLowerCase().includes(normalized));
+    if (firstMatch && normalized) {
+      onChange(String(firstMatch.id));
+      setText(firstMatch.name);
+    }
+  }
+
   return (
     <Field label={label}>
-      <Select value={value} onValueChange={onChange}>
-        <SelectTrigger><SelectValue placeholder="Choose item" /></SelectTrigger>
-        <SelectContent>{items.map((item) => <SelectItem key={item.id} value={String(item.id)}>{item.name}</SelectItem>)}</SelectContent>
-      </Select>
+      <Input
+        list={listId}
+        value={text}
+        onChange={(event) => {
+          setText(event.target.value);
+          commit(event.target.value);
+        }}
+        onBlur={() => commit(text)}
+        placeholder="Type item name"
+      />
+      <datalist id={listId}>{items.map((item) => <option key={item.id} value={item.name}>{item.categoryName ?? ""}</option>)}</datalist>
+      {selectedItem && <p className="mt-1 text-xs text-muted-foreground">{selectedItem.categoryName ?? "Uncategorized"} | {formatQuantity(selectedItem.currentStock)} {selectedItem.unitShortName} in stock</p>}
     </Field>
+  );
+}
+
+function SearchableRecipeSelect({ value, recipes, onChange }: { value: string; recipes: MenuRecipe[]; onChange: (value: string) => void }) {
+  const inputId = useId();
+  const selected = recipes.find((recipe) => String(recipe.id) === value);
+  const [text, setText] = useState(selected?.menuItemName ?? "");
+  const listId = `${inputId}-recipes`;
+
+  useEffect(() => {
+    setText(selected?.menuItemName ?? "");
+  }, [selected?.id, selected?.menuItemName]);
+
+  function commit(nextText: string) {
+    const normalized = nextText.trim().toLowerCase();
+    if (!normalized) {
+      onChange("");
+      return;
+    }
+    const exact = recipes.find((recipe) => recipe.menuItemName.trim().toLowerCase() === normalized);
+    if (exact) {
+      onChange(String(exact.id));
+      return;
+    }
+    const firstMatch = recipes.find((recipe) => recipe.menuItemName.toLowerCase().includes(normalized));
+    if (firstMatch) {
+      onChange(String(firstMatch.id));
+      setText(firstMatch.menuItemName);
+    }
+  }
+
+  return (
+    <>
+      <Input
+        list={listId}
+        value={text}
+        onChange={(event) => {
+          setText(event.target.value);
+          commit(event.target.value);
+        }}
+        onBlur={() => commit(text)}
+        placeholder="Type recipe name"
+      />
+      <datalist id={listId}>{recipes.map((recipe) => <option key={recipe.id} value={recipe.menuItemName}>{recipe.ingredients.length} ingredients</option>)}</datalist>
+      {selected && <p className="mt-1 text-xs text-muted-foreground">{selected.ingredients.length} ingredients | raw cost {money(selected.rawCost)}</p>}
+    </>
   );
 }
 
@@ -2520,6 +2709,9 @@ function DateRangeControl({ value, onChange }: { value: { start: string; end: st
 function CostsPanel({ snapshot, refreshData, setMessage }: { snapshot: InventorySnapshot; refreshData: () => Promise<void>; setMessage: (message: string) => void }) {
   const activeCostCategories = snapshot.costCategories.filter((category) => category.active);
   const firstCostCategory = activeCostCategories[0];
+  const [costTab, setCostTab] = useState("status");
+  const [costRange, setCostRange] = useState({ start: "", end: "" });
+  const [costCategoryName, setCostCategoryName] = useState("");
   const [costForm, setCostForm] = useState({
     categoryId: firstCostCategory?.id ? String(firstCostCategory.id) : "",
     costName: "",
@@ -2547,20 +2739,81 @@ function CostsPanel({ snapshot, refreshData, setMessage }: { snapshot: Inventory
     await refreshData();
   }
 
+  async function addCostCategory() {
+    if (!costCategoryName.trim()) return;
+    await window.yamzo?.inventory.saveCostCategory({ name: costCategoryName.trim(), active: true });
+    setCostCategoryName("");
+    setMessage("Cost category saved.");
+    await refreshData();
+  }
+
+  async function removeCostCategory(category: CostCategory) {
+    if (!window.confirm(`Remove cost category ${category.name}?`)) return;
+    await window.yamzo?.inventory.removeCostCategory(category.id);
+    setMessage("Cost category removed.");
+    await refreshData();
+  }
+
+  function applyCostPreset(preset: "today" | "yesterday" | "7days" | "1month") {
+    const today = startOfLocalDay(new Date());
+    const start = new Date(today);
+    const end = new Date(today);
+    if (preset === "yesterday") {
+      start.setDate(start.getDate() - 1);
+      end.setDate(end.getDate() - 1);
+    }
+    if (preset === "7days") start.setDate(start.getDate() - 6);
+    if (preset === "1month") start.setMonth(start.getMonth() - 1);
+    setCostRange({ start: dateInputValue(start), end: dateInputValue(end) });
+  }
+
+  const costRows = snapshot.costRecords
+    .filter((entry) => withinDateRange(entry.costDate, costRange))
+    .map((entry) => [formatDate(entry.costDate), entry.categoryName ?? "Other", entry.costName, money(entry.amount), entry.responsiblePerson ?? "-", entry.note ?? "-"]);
+
   return (
     <div className="grid gap-4 pt-4">
-      <Card>
-        <CardContent className="grid grid-cols-[repeat(auto-fit,minmax(180px,1fr))] gap-3 p-4">
-          <Field label="Category"><Select value={costForm.categoryId} onValueChange={(value) => setCostForm({ ...costForm, categoryId: value })}><SelectTrigger><SelectValue placeholder="Choose category" /></SelectTrigger><SelectContent>{activeCostCategories.map((category) => <SelectItem key={category.id} value={String(category.id)}>{category.name}</SelectItem>)}</SelectContent></Select></Field>
-          <Field label="Cost name"><Input value={costForm.costName} onChange={(event) => setCostForm({ ...costForm, costName: event.target.value })} /></Field>
-          <Field label="Amount"><Input value={costForm.amount} onChange={(event) => setCostForm({ ...costForm, amount: event.target.value })} /></Field>
-          <Field label="Payment method"><Input value={costForm.paymentMethod} onChange={(event) => setCostForm({ ...costForm, paymentMethod: event.target.value })} /></Field>
-          <Field label="Person responsible"><Input value={costForm.responsiblePerson} onChange={(event) => setCostForm({ ...costForm, responsiblePerson: event.target.value })} /></Field>
-          <Field label="Note"><Input value={costForm.note} onChange={(event) => setCostForm({ ...costForm, note: event.target.value })} /></Field>
-          <Button className="self-end" onClick={addCost}>Add Cost Record</Button>
-        </CardContent>
-      </Card>
-      <InventoryTable headers={["Date", "Category", "Cost", "Amount", "Person", "Note"]} rows={snapshot.costRecords.map((entry) => [formatDate(entry.costDate), entry.categoryName ?? "Other", entry.costName, money(entry.amount), entry.responsiblePerson ?? "-", entry.note ?? "-"])} />
+      <Tabs value={costTab} onValueChange={setCostTab}>
+        <TabsList className="grid w-full max-w-md grid-cols-2">
+          <TabsTrigger value="status">Status</TabsTrigger>
+          <TabsTrigger value="settings">Settings</TabsTrigger>
+        </TabsList>
+        <TabsContent value="status" className="grid gap-4 pt-4">
+          <Card>
+            <CardContent className="grid grid-cols-[repeat(auto-fit,minmax(180px,1fr))] gap-3 p-4">
+              <Field label="Category"><Select value={costForm.categoryId} onValueChange={(value) => setCostForm({ ...costForm, categoryId: value })}><SelectTrigger><SelectValue placeholder="Choose category" /></SelectTrigger><SelectContent>{activeCostCategories.map((category) => <SelectItem key={category.id} value={String(category.id)}>{category.name}</SelectItem>)}</SelectContent></Select></Field>
+              <Field label="Cost name"><Input value={costForm.costName} onChange={(event) => setCostForm({ ...costForm, costName: event.target.value })} /></Field>
+              <Field label="Amount"><Input value={costForm.amount} onChange={(event) => setCostForm({ ...costForm, amount: event.target.value })} /></Field>
+              <Field label="Payment method"><Input value={costForm.paymentMethod} onChange={(event) => setCostForm({ ...costForm, paymentMethod: event.target.value })} /></Field>
+              <Field label="Person responsible"><Input value={costForm.responsiblePerson} onChange={(event) => setCostForm({ ...costForm, responsiblePerson: event.target.value })} /></Field>
+              <Field label="Note"><Input value={costForm.note} onChange={(event) => setCostForm({ ...costForm, note: event.target.value })} /></Field>
+              <Button className="self-end" onClick={addCost}>Add Cost Record</Button>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardContent className="grid gap-3 p-4">
+              <div className="flex flex-wrap gap-2">
+                <Button variant="secondary" size="sm" onClick={() => applyCostPreset("today")}>Today</Button>
+                <Button variant="secondary" size="sm" onClick={() => applyCostPreset("yesterday")}>Yesterday</Button>
+                <Button variant="secondary" size="sm" onClick={() => applyCostPreset("7days")}>7 Days</Button>
+                <Button variant="secondary" size="sm" onClick={() => applyCostPreset("1month")}>1 Month</Button>
+                <Button variant="secondary" size="sm" onClick={() => exportCsvRows("yamzo-costs.csv", [["Date", "Category", "Cost", "Amount", "Person", "Note"], ...costRows])}>Export CSV</Button>
+              </div>
+              <DateRangeControl value={costRange} onChange={setCostRange} />
+              <InventoryTable headers={["Date", "Category", "Cost", "Amount", "Person", "Note"]} rows={costRows} />
+            </CardContent>
+          </Card>
+        </TabsContent>
+        <TabsContent value="settings" className="pt-4">
+          <Card>
+            <CardHeader><CardTitle>Cost Categories</CardTitle><CardDescription>Used when recording quick restaurant costs.</CardDescription></CardHeader>
+            <CardContent className="grid gap-3">
+              <div className="grid grid-cols-[1fr_auto] gap-2"><Input value={costCategoryName} onChange={(event) => setCostCategoryName(event.target.value)} placeholder="Example: Marketing" /><Button onClick={addCostCategory} disabled={!costCategoryName.trim()}>Add Category</Button></div>
+              <EditableSettingList items={activeCostCategories} onSave={(item, name) => window.yamzo?.inventory.saveCostCategory({ id: item.id, name, active: true }).then(refreshData)} onRemove={removeCostCategory} />
+            </CardContent>
+          </Card>
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }
@@ -2592,6 +2845,9 @@ function MenuAdmin({
   categoryDraft,
   setCategoryDraft,
   saveCategories,
+  menuData,
+  setMenuData,
+  saveMenuData,
   menuTypes,
   setMenuTypes,
   saveMenuTypes,
@@ -2603,27 +2859,105 @@ function MenuAdmin({
   saveMenuForm,
   importMenuCsv,
   downloadSampleCsv,
-  refreshData
+  refreshData,
+  setMessage
 }: {
   menu: MenuItem[];
   categories: string[];
   categoryDraft: string;
   setCategoryDraft: (value: string) => void;
   saveCategories: (categories: string[]) => void;
+  menuData: MenuDataSetting[];
+  setMenuData: (value: MenuDataSetting[]) => void;
+  saveMenuData: (menuData?: MenuDataSetting[]) => Promise<void>;
   menuTypes: MenuTypeSetting[];
   setMenuTypes: (value: MenuTypeSetting[]) => void;
   saveMenuTypes: (menuTypes?: MenuTypeSetting[]) => void;
   totalTables: number;
   setTotalTables: (value: number) => void;
   saveTableSettings: (totalTables?: number) => void;
-  menuForm: { id: number; name: string; price: string; category: string; available: boolean };
-  setMenuForm: (value: { id: number; name: string; price: string; category: string; available: boolean }) => void;
+  menuForm: MenuFormState;
+  setMenuForm: (value: MenuFormState) => void;
   saveMenuForm: () => void;
   importMenuCsv: () => void;
   downloadSampleCsv: () => void;
   refreshData: () => void;
+  setMessage: (message: string) => void;
 }) {
   const [dragCategory, setDragCategory] = useState<string | null>(null);
+  const activeMenuData = menuData.filter((entry) => entry.active !== false);
+  const [selectedMenuDataKey, setSelectedMenuDataKey] = useState(activeMenuData[0]?.key ?? "in_house");
+  const [menuDataDraft, setMenuDataDraft] = useState("");
+  const [menuSearch, setMenuSearch] = useState("");
+  const selectedMenuData = activeMenuData.find((entry) => entry.key === selectedMenuDataKey) ?? activeMenuData[0] ?? defaultMenuData[0];
+
+  useEffect(() => {
+    if (!activeMenuData.some((entry) => entry.key === selectedMenuDataKey)) {
+      setSelectedMenuDataKey(activeMenuData[0]?.key ?? "in_house");
+    }
+  }, [activeMenuData, selectedMenuDataKey]);
+
+  function selectedMenuPrice(item: MenuItem): number {
+    return item.menuPrices?.[selectedMenuData.key] ?? (selectedMenuData.key === "in_house" ? item.price : 0);
+  }
+
+  const filteredMenu = menu.filter((item) => {
+    const text = `${item.name} ${item.category ?? ""} ${item.available ? "available" : "unavailable"} ${item.trackRecipe ? "recipe" : ""}`.toLowerCase();
+    return text.includes(menuSearch.trim().toLowerCase());
+  });
+
+  function menuFormSelectedPrice(): string {
+    return menuForm.menuPrices[selectedMenuData.key] ?? (selectedMenuData.key === "in_house" ? menuForm.price : "");
+  }
+
+  function updateMenuFormPrice(value: string) {
+    setMenuForm({
+      ...menuForm,
+      price: selectedMenuData.key === "in_house" || !menuForm.price ? value : menuForm.price,
+      menuPrices: { ...menuForm.menuPrices, [selectedMenuData.key]: value }
+    });
+  }
+
+  async function addMenuData() {
+    const label = menuDataDraft.trim();
+    if (!label) return;
+    const key = uniqueMenuDataKey(label, menuData);
+    const next = [...menuData, { key, label, active: true }];
+    setMenuData(next);
+    setMenuDataDraft("");
+    await saveMenuData(next);
+  }
+
+  async function duplicateSelectedMenuData() {
+    const label = menuDataDraft.trim() || `${selectedMenuData.label} Copy`;
+    const key = uniqueMenuDataKey(label, menuData);
+    const next = [...menuData, { key, label, active: true }];
+    await saveMenuData(next);
+    for (const item of menu) {
+      const copyPrice = selectedMenuPrice(item);
+      if (copyPrice <= 0) continue;
+      await window.yamzo?.menu.saveItem({
+        id: item.id,
+        name: item.name,
+        price: item.price,
+        category: item.category,
+        trackRecipe: item.trackRecipe,
+        available: item.available,
+        menuPrices: { ...(item.menuPrices ?? {}), [key]: copyPrice }
+      });
+    }
+    setSelectedMenuDataKey(key);
+    setMenuDataDraft("");
+    setMessage(`Menu data duplicated: ${label}`);
+    await refreshData();
+  }
+
+  async function hideSelectedMenuData() {
+    if (activeMenuData.length <= 1) return;
+    if (!window.confirm(`Hide ${selectedMenuData.label}? Existing item prices will be kept for future use.`)) return;
+    const next = menuData.map((entry) => entry.key === selectedMenuData.key ? { ...entry, active: false } : entry);
+    await saveMenuData(next);
+  }
 
   function moveCategory(index: number, direction: -1 | 1) {
     const nextIndex = index + direction;
@@ -2660,11 +2994,38 @@ function MenuAdmin({
           <TabsTrigger value="settings">Menu Settings</TabsTrigger>
         </TabsList>
         <TabsContent value="items" className="grid gap-4 pt-4">
-          <div className="flex flex-wrap gap-2"><Button onClick={importMenuCsv}>Import CSV</Button><Button variant="secondary" onClick={downloadSampleCsv}>Download sample CSV format</Button></div>
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle>Menu Data</CardTitle>
+              <CardDescription>Choose which catalog you are editing. Menu Types in settings decide where each catalog is used.</CardDescription>
+            </CardHeader>
+            <CardContent className="grid gap-4 p-4 pt-0">
+              <div className="grid gap-3 xl:grid-cols-[260px_minmax(260px,1fr)_auto_auto] xl:items-end">
+                <Field label="Editing catalog">
+                  <Select value={selectedMenuData.key} onValueChange={setSelectedMenuDataKey}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>{activeMenuData.map((entry) => <SelectItem key={entry.key} value={entry.key}>{entry.label}</SelectItem>)}</SelectContent>
+                  </Select>
+                </Field>
+                <Field label="New / duplicate catalog name"><Input value={menuDataDraft} onChange={(event) => setMenuDataDraft(event.target.value)} placeholder="Example: Parcel Menu" /></Field>
+                <Button variant="secondary" onClick={addMenuData} disabled={!menuDataDraft.trim()}>Add Catalog</Button>
+                <Button variant="secondary" onClick={duplicateSelectedMenuData}>Duplicate Selected</Button>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Button onClick={importMenuCsv}>Import CSV</Button>
+                <Button variant="secondary" onClick={downloadSampleCsv}>Download sample CSV format</Button>
+                <Button variant="secondary" disabled={activeMenuData.length <= 1} onClick={hideSelectedMenuData}>Hide Selected Catalog</Button>
+              </div>
+            </CardContent>
+          </Card>
+          <div className="flex flex-wrap items-end justify-between gap-3">
+            <Field label={`Search ${selectedMenuData.label}`}><Input value={menuSearch} onChange={(event) => setMenuSearch(event.target.value)} placeholder="Search item, category, availability, or recipe status" /></Field>
+            <Badge variant="secondary">{filteredMenu.length} visible items</Badge>
+          </div>
           <Card>
             <CardContent className="grid grid-cols-[repeat(auto-fit,minmax(180px,1fr))] gap-3 p-4">
               <Field label="Item name"><Input value={menuForm.name} onChange={(event) => setMenuForm({ ...menuForm, name: event.target.value })} /></Field>
-              <Field label="Price"><Input value={menuForm.price} onChange={(event) => setMenuForm({ ...menuForm, price: event.target.value })} /></Field>
+              <Field label={`Price in ${selectedMenuData.label}`}><Input value={menuFormSelectedPrice()} onChange={(event) => updateMenuFormPrice(event.target.value)} placeholder="Leave blank to hide from this menu" /></Field>
               <Field label="Category">
                 <Select value={menuForm.category || "Other"} onValueChange={(value) => setMenuForm({ ...menuForm, category: value })}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
@@ -2672,12 +3033,14 @@ function MenuAdmin({
                 </Select>
               </Field>
               <label className="flex items-center gap-2 self-end"><Checkbox checked={menuForm.available} onCheckedChange={(checked) => setMenuForm({ ...menuForm, available: Boolean(checked) })} />Available</label>
+              <label className="flex items-center gap-2 self-end"><Checkbox checked={menuForm.trackRecipe} onCheckedChange={(checked) => setMenuForm({ ...menuForm, trackRecipe: Boolean(checked) })} />Track recipe</label>
               <Button className="self-end" onClick={saveMenuForm}>{menuForm.id ? "Save Item" : "Add Item"}</Button>
             </CardContent>
           </Card>
           <div className="grid gap-2">
-            {menu.map((item) => <MenuAdminRow key={item.id} item={item} categories={categories} onEdit={setMenuForm} onDone={refreshData} />)}
+            {filteredMenu.map((item) => <MenuAdminRow key={item.id} item={item} categories={categories} selectedMenuData={selectedMenuData} onEdit={setMenuForm} onDone={refreshData} />)}
           </div>
+          {filteredMenu.length === 0 && <EmptyState title="No menu items found" description="Try a different item name, category, availability, or recipe search." />}
         </TabsContent>
         <TabsContent value="settings" className="grid gap-4 pt-4">
           <Card>
@@ -2692,8 +3055,14 @@ function MenuAdmin({
             <CardContent className="grid gap-3">
               <div className="grid gap-2">
                 {menuTypes.map((type, index) => (
-                  <div key={`${type.key}-${index}`} className="grid gap-2 rounded-lg border bg-white p-3 lg:grid-cols-[1fr_120px_150px_130px_auto] lg:items-center">
+                  <div key={`${type.key}-${index}`} className="grid gap-2 rounded-lg border bg-white p-3 lg:grid-cols-[1fr_180px_120px_150px_130px_auto] lg:items-center">
                     <Field label="Name"><Input value={type.label} onChange={(event) => setMenuTypes(menuTypes.map((item, itemIndex) => itemIndex === index ? { ...item, label: event.target.value, key: item.key || slugLocal(event.target.value) } : item))} /></Field>
+                    <Field label="Uses menu data">
+                      <Select value={type.menuDataKey || "in_house"} onValueChange={(value) => setMenuTypes(menuTypes.map((item, itemIndex) => itemIndex === index ? { ...item, menuDataKey: value } : item))}>
+                        <SelectTrigger><SelectValue /></SelectTrigger>
+                        <SelectContent>{activeMenuData.map((entry) => <SelectItem key={entry.key} value={entry.key}>{entry.label}</SelectItem>)}</SelectContent>
+                      </Select>
+                    </Field>
                     <Field label="Commission %"><Input value={String(type.commissionPercent ?? 0)} onChange={(event) => setMenuTypes(menuTypes.map((item, itemIndex) => itemIndex === index ? { ...item, commissionPercent: Number(event.target.value || 0) } : item))} /></Field>
                     <label className="flex items-center gap-2"><Checkbox checked={type.tablesEnabled} onCheckedChange={(checked) => setMenuTypes(menuTypes.map((item, itemIndex) => itemIndex === index ? { ...item, tablesEnabled: Boolean(checked) } : item))} />Enable tables</label>
                     <label className="flex items-center gap-2"><Checkbox checked={type.active !== false} onCheckedChange={(checked) => setMenuTypes(menuTypes.map((item, itemIndex) => itemIndex === index ? { ...item, active: Boolean(checked) } : item))} />Active</label>
@@ -2702,7 +3071,7 @@ function MenuAdmin({
                 ))}
               </div>
               <div className="flex flex-wrap gap-2">
-                <Button variant="secondary" onClick={() => setMenuTypes([...menuTypes, { key: `type_${Date.now()}`, label: "New Type", tablesEnabled: false, commissionPercent: 0, active: true }])}>Add Menu Type</Button>
+                <Button variant="secondary" onClick={() => setMenuTypes([...menuTypes, { key: `type_${Date.now()}`, label: "New Type", menuDataKey: selectedMenuData.key, tablesEnabled: false, commissionPercent: 0, active: true }])}>Add Menu Type</Button>
                 <Button onClick={() => saveMenuTypes(menuTypes)}>Save Menu Types</Button>
               </div>
             </CardContent>
@@ -2741,28 +3110,92 @@ function MenuAdmin({
   );
 }
 
-function MenuAdminRow({ item, categories, onEdit: _onEdit, onDone }: { item: MenuItem; categories: string[]; onEdit: (value: { id: number; name: string; price: string; category: string; available: boolean }) => void; onDone: () => void }) {
+function MenuAdminRow({
+  item,
+  categories,
+  selectedMenuData,
+  onEdit: _onEdit,
+  onDone
+}: {
+  item: MenuItem;
+  categories: string[];
+  selectedMenuData: MenuDataSetting;
+  onEdit: (value: MenuFormState) => void;
+  onDone: () => void;
+}) {
   const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState({ name: item.name, price: String(item.price), category: item.category ?? "", available: item.available });
+  const [draft, setDraft] = useState<MenuFormState>({
+    id: item.id,
+    name: item.name,
+    price: String(item.price),
+    category: item.category ?? "",
+    available: item.available,
+    trackRecipe: item.trackRecipe,
+    menuPrices: Object.fromEntries(Object.entries(item.menuPrices ?? { in_house: item.price }).map(([key, value]) => [key, String(value)]))
+  });
+
+  useEffect(() => {
+    setDraft({
+      id: item.id,
+      name: item.name,
+      price: String(item.price),
+      category: item.category ?? "",
+      available: item.available,
+      trackRecipe: item.trackRecipe,
+      menuPrices: Object.fromEntries(Object.entries(item.menuPrices ?? { in_house: item.price }).map(([key, value]) => [key, String(value)]))
+    });
+  }, [item]);
+
+  const selectedPrice = draft.menuPrices[selectedMenuData.key] ?? (selectedMenuData.key === "in_house" ? draft.price : "");
+  const displayPrice = item.menuPrices?.[selectedMenuData.key] ?? (selectedMenuData.key === "in_house" ? item.price : 0);
+
   async function saveInline() {
-    await window.yamzo?.menu.saveItem({ id: item.id, name: draft.name, price: Number(draft.price), category: draft.category || null, available: draft.available });
+    const menuPrices = Object.fromEntries(Object.entries(draft.menuPrices).map(([key, value]) => [key, Number(value || 0)]));
+    const basePrice = Number(draft.price || draft.menuPrices.in_house || selectedPrice || item.price || 0);
+    await window.yamzo?.menu.saveItem({ id: item.id, name: draft.name, price: basePrice, category: draft.category || null, available: draft.available, trackRecipe: draft.trackRecipe, menuPrices });
     setEditing(false);
     await onDone();
   }
   if (editing) {
     return (
       <Card size="sm">
-        <CardContent className="grid grid-cols-[1.4fr_120px_1fr_auto_auto] items-end gap-2 p-3">
-          <Field label="Item"><Input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></Field>
-          <Field label="Price"><Input value={draft.price} onChange={(event) => setDraft({ ...draft, price: event.target.value })} /></Field>
-          <Field label="Category"><Select value={draft.category || "Other"} onValueChange={(value) => setDraft({ ...draft, category: value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{categories.map((category) => <SelectItem key={category} value={category}>{category}</SelectItem>)}</SelectContent></Select></Field>
-          <label className="flex h-10 items-center gap-2"><Checkbox checked={draft.available} onCheckedChange={(checked) => setDraft({ ...draft, available: Boolean(checked) })} />Available</label>
-          <div className="flex gap-2"><Button onClick={saveInline}>Save</Button><Button variant="secondary" onClick={() => setEditing(false)}>Cancel</Button></div>
+        <CardContent className="grid gap-3 p-4">
+          <div className="grid grid-cols-[repeat(auto-fit,minmax(180px,1fr))] items-end gap-3">
+            <Field label="Item"><Input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></Field>
+            <Field label={`Price in ${selectedMenuData.label}`}>
+              <Input
+                value={selectedPrice}
+                onChange={(event) => {
+                  const nextPrices = { ...draft.menuPrices, [selectedMenuData.key]: event.target.value };
+                  setDraft({ ...draft, menuPrices: nextPrices, price: selectedMenuData.key === "in_house" ? event.target.value : draft.price });
+                }}
+                placeholder="Leave blank to hide"
+              />
+            </Field>
+            <Field label="Category"><Select value={draft.category || "Other"} onValueChange={(value) => setDraft({ ...draft, category: value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{categories.map((category) => <SelectItem key={category} value={category}>{category}</SelectItem>)}</SelectContent></Select></Field>
+            <label className="flex h-10 items-center gap-2"><Checkbox checked={draft.available} onCheckedChange={(checked) => setDraft({ ...draft, available: Boolean(checked) })} />Available</label>
+            <label className="flex h-10 items-center gap-2"><Checkbox checked={draft.trackRecipe} onCheckedChange={(checked) => setDraft({ ...draft, trackRecipe: Boolean(checked) })} />Track recipe</label>
+          </div>
+          <div className="flex justify-end gap-2"><Button onClick={saveInline}>Save</Button><Button variant="secondary" onClick={() => setEditing(false)}>Cancel</Button></div>
         </CardContent>
       </Card>
     );
   }
-  return <Card size="sm"><CardContent className="grid grid-cols-[minmax(0,1fr)_auto_auto_auto] items-center gap-2 p-3"><div className="min-w-0"><strong>{item.name}</strong><p className="text-sm text-muted-foreground">{item.category || "Menu"} | {money(item.price)} | {item.available ? "Available" : "Unavailable"}</p></div><Button variant="secondary" onClick={() => setEditing(true)}>Edit</Button><Button variant="secondary" onClick={async () => { await window.yamzo?.menu.archiveItem(item.id); await onDone(); }}>Archive</Button><Button variant="destructive" onClick={async () => { await window.yamzo?.menu.deleteItem(item.id); await onDone(); }}>Delete</Button></CardContent></Card>;
+  return (
+    <Card size="sm">
+      <CardContent className="grid grid-cols-[minmax(0,1fr)_auto_auto_auto] items-center gap-2 p-3">
+        <div className="min-w-0">
+          <strong>{item.name}</strong>
+          <p className="text-sm text-muted-foreground">
+            {item.category || "Menu"} | {displayPrice > 0 ? `${money(displayPrice)} in ${selectedMenuData.label}` : `Hidden from ${selectedMenuData.label}`} | {item.available ? "Available" : "Unavailable"} | {item.trackRecipe ? "Tracks recipe" : "No recipe tracking"}
+          </p>
+        </div>
+        <Button variant="secondary" onClick={() => setEditing(true)}>Edit</Button>
+        <Button variant="secondary" onClick={async () => { await window.yamzo?.menu.archiveItem(item.id); await onDone(); }}>Archive</Button>
+        <Button variant="destructive" onClick={async () => { await window.yamzo?.menu.deleteItem(item.id); await onDone(); }}>Delete</Button>
+      </CardContent>
+    </Card>
+  );
 }
 
 function ReceiptAdmin({ branding, setBranding, chooseReceiptImage, setMessage }: { branding: BrandingSettings; setBranding: React.Dispatch<React.SetStateAction<BrandingSettings>>; chooseReceiptImage: (type: "logoPath" | "qrPath") => void; setMessage: (message: string) => void }) {
@@ -3104,8 +3537,20 @@ function slugLocal(value: string): string {
   return lowered.replace(/&/g, "and").replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "other";
 }
 
-function menuItemPrice(item: MenuItem, source: string): number {
-  return item.menuPrices?.[source] ?? item.menuPrices?.in_house ?? item.price;
+function uniqueMenuDataKey(label: string, existing: MenuDataSetting[]): string {
+  const base = slugLocal(label);
+  const used = new Set(existing.map((entry) => entry.key));
+  if (!used.has(base)) return base;
+  let index = 2;
+  while (used.has(`${base}_${index}`)) index += 1;
+  return `${base}_${index}`;
+}
+
+function menuItemPrice(item: MenuItem, source: string, menuTypes: MenuTypeSetting[]): number {
+  const menuType = menuTypes.find((type) => type.key === source);
+  const menuDataKey = menuType?.menuDataKey || source;
+  if (menuDataKey === "in_house") return item.menuPrices?.in_house ?? item.price;
+  return item.menuPrices?.[menuDataKey] ?? 0;
 }
 
 function escapeHtml(value: string): string {

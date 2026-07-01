@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron";
-import type { BrandingSettings, EmailSettings, GmailOAuthConfig, MenuItemInput, MenuTypeSetting, OrderItemInput, OrderSource, PaymentMethod, ReceiptPaymentInfo } from "../shared/types.js";
+import type { BrandingSettings, EmailSettings, GmailOAuthConfig, MenuDataSetting, MenuItemInput, MenuTypeSetting, OrderItemInput, OrderSource, PaymentMethod, ReceiptPaymentInfo } from "../shared/types.js";
 
 const api = {
   auth: {
@@ -102,6 +102,8 @@ const api = {
     setHostNames: (hostNames: string[]) => ipcRenderer.invoke("settings:setHostNames", hostNames),
     getMenuCategories: () => ipcRenderer.invoke("settings:getMenuCategories"),
     setMenuCategories: (categories: string[]) => ipcRenderer.invoke("settings:setMenuCategories", categories),
+    getMenuData: () => ipcRenderer.invoke("settings:getMenuData"),
+    setMenuData: (menuData: MenuDataSetting[]) => ipcRenderer.invoke("settings:setMenuData", menuData),
     getMenuTypes: () => ipcRenderer.invoke("settings:getMenuTypes"),
     setMenuTypes: (menuTypes: MenuTypeSetting[]) => ipcRenderer.invoke("settings:setMenuTypes", menuTypes)
   },

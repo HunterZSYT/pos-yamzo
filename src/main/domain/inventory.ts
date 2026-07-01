@@ -26,9 +26,12 @@ type RecipeCsvRow = {
   "recipe number"?: string;
   "recipe name"?: string;
   "item serial no"?: string;
+  "item name"?: string;
   "item names"?: string;
+  "item quantity"?: string;
   "item quantity GM"?: string;
   "item quantity needed GM"?: string;
+  "recipe unit"?: string;
 };
 
 type InventoryItemCsvRow = {
@@ -88,26 +91,27 @@ export function importRecipeInventoryCsv(db: Database.Database, csvPath: string,
     if (cleanText(row["recipe name"] ?? "")) {
       currentRecipeName = cleanText(row["recipe name"] ?? "");
     }
-    const ingredientName = cleanText(row["item names"] ?? "");
+    const ingredientName = cleanText(row["item name"] ?? row["item names"] ?? "");
     if (!recipeName || !ingredientName) {
       result.rowsSkipped += 1;
       continue;
     }
-    const rawQuantity = cleanText(row["item quantity GM"] ?? row["item quantity needed GM"] ?? "");
-    const quantity = parseRecipeQuantity(rawQuantity);
+    const rawQuantity = cleanText(row["item quantity"] ?? row["item quantity GM"] ?? row["item quantity needed GM"] ?? "");
+    const recipeUnit = cleanText(row["recipe unit"] ?? "");
+    const quantity = recipeUnit ? parseRecipeQuantity(`${rawQuantity} ${recipeUnit}`) : parseRecipeQuantity(rawQuantity);
     if (!quantity) {
       result.rowsSkipped += 1;
       result.errors.push(`Could not read quantity for ${recipeName}: ${ingredientName}`);
       continue;
     }
     const list = grouped.get(recipeName) ?? [];
-    list.push({ ingredientName, quantity, unitLabel: rawQuantity || quantity.unit });
+    list.push({ ingredientName, quantity, unitLabel: recipeUnit || rawQuantity || quantity.unit });
     grouped.set(recipeName, list);
   }
 
   const tx = db.transaction(() => {
     for (const [recipeName, ingredients] of grouped.entries()) {
-      const menuItems = ensureMenuItemsForRecipe(db, recipeName);
+      const menuItems = ensureRecipeHolders(db, recipeName);
       if (menuItems.length === 0) {
         result.rowsSkipped += ingredients.length;
         result.errors.push(`Menu item not found for recipe: ${recipeName}`);
@@ -135,12 +139,17 @@ export function importRecipeInventoryCsv(db: Database.Database, csvPath: string,
             result.errors.push(`Inventory item not found for ${recipeName}: ${ingredient.ingredientName}`);
             continue;
           }
+          if (item.unitShortName !== ingredient.quantity.baseUnitShortName) {
+            result.rowsSkipped += 1;
+            result.errors.push(`Unit mismatch for ${recipeName}: ${ingredient.ingredientName} uses ${ingredient.quantity.baseUnitShortName}, item base unit is ${item.unitShortName}`);
+            continue;
+          }
           db.prepare(
             `INSERT INTO recipe_ingredients (recipe_id, inventory_item_id, quantity_base, unit_label)
              VALUES (?, ?, ?, ?)
              ON CONFLICT(recipe_id, inventory_item_id)
              DO UPDATE SET quantity_base = excluded.quantity_base, unit_label = excluded.unit_label`
-          ).run(recipeId, item.id, ingredient.quantity.baseQuantity, ingredient.unitLabel);
+          ).run(recipeId, item.id, ingredient.quantity.baseQuantity, item.unitShortName);
         }
       }
     }
@@ -226,7 +235,7 @@ export function saveMenuRecipe(
   input: { menuItemId: number; ingredients: RecipeIngredientInput[] },
   actor = "admin"
 ): MenuRecipe {
-  const menuItem = db.prepare("SELECT id, name FROM menu_items WHERE id = ? AND archived = 0").get(input.menuItemId) as { id: number; name: string } | undefined;
+  const menuItem = db.prepare("SELECT id, name FROM menu_items WHERE id = ?").get(input.menuItemId) as { id: number; name: string } | undefined;
   if (!menuItem) throw new Error("Menu item not found.");
   const cleanIngredients = input.ingredients
     .map((ingredient) => ({
@@ -260,7 +269,7 @@ export function saveMenuRecipe(
 }
 
 export function setRecipeRestockEnabled(db: Database.Database, menuItemId: number, enabled: boolean, actor = "admin"): MenuRecipe {
-  const menuItem = db.prepare("SELECT id, name FROM menu_items WHERE id = ? AND archived = 0").get(menuItemId) as { id: number; name: string } | undefined;
+  const menuItem = db.prepare("SELECT id, name FROM menu_items WHERE id = ?").get(menuItemId) as { id: number; name: string } | undefined;
   if (!menuItem) throw new Error("Menu item not found.");
   const existing = db.prepare("SELECT id FROM menu_item_recipes WHERE menu_item_id = ?").get(menuItem.id) as { id: number } | undefined;
   const recipeId = existing?.id ?? Number(db.prepare("INSERT INTO menu_item_recipes (menu_item_id, active, restock_enabled) VALUES (?, 0, ?)").run(menuItem.id, enabled ? 1 : 0).lastInsertRowid);
@@ -570,7 +579,7 @@ export function listInventoryItems(db: Database.Database): InventoryItem[] {
 }
 
 export function listMenuRecipes(db: Database.Database): MenuRecipe[] {
-  const menuRows = db.prepare("SELECT id, name, price FROM menu_items WHERE archived = 0 ORDER BY name").all() as Array<{ id: number; name: string; price: number }>;
+  const menuRows = db.prepare("SELECT id, name, price, archived, track_recipe FROM menu_items WHERE (archived = 0 AND track_recipe = 1) OR id IN (SELECT menu_item_id FROM menu_item_recipes WHERE active = 1) ORDER BY archived, name").all() as Array<{ id: number; name: string; price: number; archived: number; track_recipe: number }>;
   return menuRows.map((menuItem) => {
     const recipe = db.prepare("SELECT id, restock_enabled FROM menu_item_recipes WHERE menu_item_id = ? AND active = 1").get(menuItem.id) as { id: number; restock_enabled: number } | undefined;
     if (!recipe) {
@@ -934,121 +943,28 @@ function getMenuItemRawCost(db: Database.Database, menuItemId: number): { hasRec
   return { hasRecipe: true, rawCost: ingredients.reduce((sum, item) => sum + item.rawCost, 0), ingredients };
 }
 
-function ensureMenuItemsForRecipe(db: Database.Database, recipeName: string): Array<{ id: number; created: boolean }> {
-  const menuItems = db.prepare("SELECT id, name FROM menu_items WHERE archived = 0").all() as Array<{ id: number; name: string }>;
-  const normalizedRecipeName = normalizeName(recipeName);
-  const alias = recipeAlias(normalizedRecipeName);
-  const exact = menuItems.filter((item) => normalizeName(item.name) === normalizedRecipeName || normalizeName(item.name) === alias);
-  if (exact.length > 0) return exact.map((item) => ({ id: item.id, created: false }));
-  const packageMatches = menuItems.filter((item) => normalizeName(item.name).startsWith(alias));
-  if (packageMatches.length > 0) return packageMatches.map((item) => ({ id: item.id, created: false }));
-  if (!isSauceLike(recipeName)) {
-    return [];
-  }
-  const category = recipeName.toLowerCase().includes("sauce") ? "Sauce" : "Imported";
-  const existing = db.prepare("SELECT id FROM menu_items WHERE name = ?").get(recipeName) as { id: number } | undefined;
+function ensureRecipeHolders(db: Database.Database, recipeName: string): Array<{ id: number; created: boolean }> {
+  const existing = db.prepare("SELECT id, archived FROM menu_items WHERE name = ?").get(recipeName) as { id: number; archived: number } | undefined;
   if (existing) {
-    db.prepare("UPDATE menu_items SET price = ?, category = ?, available = 1, archived = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(MENU_PRICE_FALLBACK, category, existing.id);
+    db.prepare("UPDATE menu_items SET track_recipe = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(existing.id);
     return [{ id: existing.id, created: false }];
   }
   const id = Number(
-    db.prepare("INSERT INTO menu_items (name, price, category, available, archived) VALUES (?, ?, ?, 1, 0)").run(recipeName, MENU_PRICE_FALLBACK, category).lastInsertRowid
+    db.prepare("INSERT INTO menu_items (name, price, category, track_recipe, available, archived) VALUES (?, ?, 'Recipe Material', 1, 0, 1)").run(recipeName, MENU_PRICE_FALLBACK).lastInsertRowid
   );
   return [{ id, created: true }];
 }
 
-function isSauceLike(name: string): boolean {
-  return /(sauce|chili oil|masala base)/i.test(name);
-}
-
-function normalizeName(name: string): string {
-  return name.toLowerCase().replace(/&/g, "and").replace(/[^a-z0-9]+/g, "");
-}
-
-function recipeAlias(normalizedRecipeName: string): string {
-  const aliases: Record<string, string> = {
-    bbqoctopus: "bbqoctopusmasala",
-    grilledcalamari: "grillcalamari",
-    goldenfishfingers: "goldenfishfinger",
-    fishnuggets: "fishnugget",
-    prawntempura: "crispyprawn",
-    swimfishandchips: "swissfishandchips",
-    twinfavoursmomo: "twinflavormomo",
-    twinflavoursmomo: "twinflavormomo",
-    danishfishandchipsbitspicy: "danishfishandchips",
-    loitta: "loittafry",
-    dumplingwithchilisoup: "dumplingwithchillisoup",
-    chickenchowmein: "chickenchowmin",
-    creamchilipastaseafood: "seafoodchillipasta",
-    creamychickenmushroompasta: "whitecreampasta",
-    creamandmushroomsoup: "creamofmushroomsoup",
-    chickensingara: "chickenshingara",
-    muttonsingara: "muttonlivershingara",
-    nagasingara: "nagashingara"
-  };
-  return aliases[normalizedRecipeName] ?? normalizedRecipeName;
-}
-
-function findInventoryItemForRecipe(db: Database.Database, name: string): { id: number } | null {
+function findInventoryItemForRecipe(db: Database.Database, name: string): { id: number; unitShortName: string } | null {
   const existing = db.prepare("SELECT id FROM inventory_items WHERE lower(name) = lower(?)").get(name) as { id: number } | undefined;
-  if (existing) return { id: existing.id };
-  const normalizedName = normalizeName(name);
-  const items = db.prepare("SELECT id, name FROM inventory_items WHERE active = 1").all() as Array<{ id: number; name: string }>;
-  const normalizedMatch = items.find((item) => normalizeName(item.name) === normalizedName);
-  if (normalizedMatch) return { id: normalizedMatch.id };
-  const alias = ingredientAlias(normalizedName);
-  const aliasMatch = items.find((item) => normalizeName(item.name) === alias);
-  return aliasMatch ? { id: aliasMatch.id } : null;
-}
-
-function ingredientAlias(normalizedIngredientName: string): string {
-  const aliases: Record<string, string> = {
-    maidaflour: "flour",
-    flour: "flour",
-    squidraw: "squid",
-    squid: "squid",
-    bengalispices: "bengalispice",
-    bellpepper: "capsicum",
-    onioncube: "onion",
-    garlicchopped: "garlic",
-    gingerchopped: "ginger",
-    basilleaf: "basilleaves",
-    sweetcorn: "corn",
-    saltandpepper: "salt",
-    saltpaper: "salt",
-    saltpeppersugar: "salt",
-    saltpepperchiliflakes: "salt",
-    corianderandsaltandpepper: "coriander",
-    coriandersaltandpepper: "coriander",
-    cookingcream: "cream",
-    milk: "carnationmilk",
-    fishdory: "doryfish",
-    loitta: "loittafish",
-    prawn: "soupprawn",
-    mushroom: "mushroomcan",
-    buttonmushroom: "mushroomcan",
-    creamcheese: "cheese",
-    cheese: "cheese",
-    mozzarella: "cheese",
-    parsley: "parsleyflakes",
-    oil: "oil",
-    cookingoil: "oil",
-    noodles: "noodles",
-    chicken: "chickenbreast",
-    soysauce: "darksoyasauce",
-    chickenpowder: "ckpowder",
-    butterginger: "butterlocal",
-    butter: "butterlocal",
-    lemonmustard: "mustardpaste",
-    lemonmustardsauce: "mustardpaste",
-    garlicginger: "garlic",
-    chickenmomodumpling: "chickenmomo",
-    lemoncoriander: "lemon",
-    lemonjuicelemongrasscoriander: "lemon",
-    saltpeppersauce: "sauce",
-    vinegar: "nunvinegar"
-  };
-  return aliases[normalizedIngredientName] ?? normalizedIngredientName;
+  if (!existing) return null;
+  const item = db.prepare(
+    `SELECT ii.id, iu.short_name AS unit_short_name
+     FROM inventory_items ii
+     JOIN inventory_units iu ON iu.id = ii.base_unit_id
+     WHERE ii.id = ?`
+  ).get(existing.id) as { id: number; unit_short_name: string } | undefined;
+  return item ? { id: item.id, unitShortName: item.unit_short_name } : null;
 }
 
 function ensureInventoryItem(db: Database.Database, name: string, unitShortName: string): { id: number; created: boolean } {

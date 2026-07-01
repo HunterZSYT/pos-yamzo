@@ -56,6 +56,7 @@ import {
   getHostNames,
   getInventoryTracking,
   getMenuCategories,
+  getMenuData,
   getMenuTypes,
   getPrinterName,
   getTotalTables,
@@ -63,6 +64,7 @@ import {
   setHostNames,
   setInventoryTracking,
   setMenuCategories,
+  setMenuData,
   setMenuTypes,
   setPrinterName,
   setTotalTables
@@ -227,6 +229,11 @@ export function registerIpc(db: Database.Database): void {
   ipcMain.handle("settings:setMenuCategories", (_event, categories: string[]) => {
     setMenuCategories(db, categories);
     recordActivity(db, "menu_categories_updated", { count: categories.length }, "admin");
+  });
+  ipcMain.handle("settings:getMenuData", () => getMenuData(db));
+  ipcMain.handle("settings:setMenuData", (_event, menuData) => {
+    setMenuData(db, menuData);
+    recordActivity(db, "menu_data_updated", { count: menuData.length }, "admin");
   });
   ipcMain.handle("settings:getMenuTypes", () => getMenuTypes(db));
   ipcMain.handle("settings:setMenuTypes", (_event, menuTypes) => {

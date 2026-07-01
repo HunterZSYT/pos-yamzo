@@ -1,10 +1,10 @@
 import type { MenuItem, OrderSummary, SalesSummary } from "../../shared/types";
 
 export const demoMenu: MenuItem[] = [
-  { id: 1, name: "Chicken Momo", price: 190, category: "Momo", available: true, archived: false },
-  { id: 2, name: "Chicken Cheese Momo", price: 240, category: "Momo", available: true, archived: false },
-  { id: 3, name: "Ocean Chilli Pasta", price: 450, category: "Pasta", available: true, archived: false },
-  { id: 4, name: "Garlic Chicken Fried Rice", price: 290, category: "Rice", available: true, archived: false }
+  { id: 1, name: "Chicken Momo", price: 190, category: "Momo", trackRecipe: true, available: true, archived: false, menuPrices: { in_house: 190 } },
+  { id: 2, name: "Chicken Cheese Momo", price: 240, category: "Momo", trackRecipe: true, available: true, archived: false, menuPrices: { in_house: 240 } },
+  { id: 3, name: "Ocean Chilli Pasta", price: 450, category: "Pasta", trackRecipe: true, available: true, archived: false, menuPrices: { in_house: 450 } },
+  { id: 4, name: "Garlic Chicken Fried Rice", price: 290, category: "Rice", trackRecipe: true, available: true, archived: false, menuPrices: { in_house: 290 } }
 ];
 
 export const demoOrders: OrderSummary[] = [];

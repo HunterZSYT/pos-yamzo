@@ -4,9 +4,17 @@
 
 1. Install Node.js LTS or use the packaged Windows installer once available.
 2. Clone or download the Yamzo POS repository.
-3. Run `npm install`.
-4. Run `npm run build`.
-5. Run `npm run dist` to create a Windows installer.
+3. Double-click `START_YAMZO_POS.bat`.
+
+The launcher opens the packaged app if it already exists. If not, it installs npm dependencies, builds the packaged app, and then starts Yamzo POS.
+
+Manual build commands are still available:
+
+```powershell
+npm install
+npm run build
+npm run package
+```
 
 The generated installer is written to:
 

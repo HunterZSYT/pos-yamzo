@@ -36,6 +36,7 @@ export function migrate(db: Database.Database): void {
       name TEXT NOT NULL UNIQUE,
       price INTEGER NOT NULL,
       category TEXT,
+      track_recipe INTEGER NOT NULL DEFAULT 1,
       available INTEGER NOT NULL DEFAULT 1,
       archived INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -323,6 +324,7 @@ export function migrate(db: Database.Database): void {
   ensureColumn(db, "inventory_restock_entries", "item_type", "TEXT NOT NULL DEFAULT 'raw'");
   ensureColumn(db, "inventory_restock_entries", "recipe_id", "INTEGER");
   ensureColumn(db, "menu_item_recipes", "restock_enabled", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn(db, "menu_items", "track_recipe", "INTEGER NOT NULL DEFAULT 1");
 
   seedDefaults(db);
 }

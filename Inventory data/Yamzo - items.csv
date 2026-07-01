@@ -1,53 +1,53 @@
 Item Name,Unit / Type,Item Category
-Chicken Breast,kg,Meat
-Chicken Thigh,kg,Meat
+Chicken Breast,g,Meat
+Chicken Thigh,g,Meat
 Crab,pcs,Seafood
 Soup Prawn,pcs,Seafood
 Tempura Prawn,pcs,Seafood
 Dory Fish,g,Seafood
-Loitta Fish,kg,Seafood
+Loitta Fish,g,Seafood
 Octopus,g,Seafood
-Squid,kg,Seafood
-Sweet Chili,can,Sauce
-Flour,kg,Baking
+Squid,g,Seafood
+Sweet Chili,ml,Sauce
+Flour,g,Baking
 Garlic,g,Produce
 Onion,g,Produce
 Oregano,g,Herb
 White Pepper,g,Spice
 Black Pepper,g,Spice
-Oil,L,Oil
+Oil,g,Oil
 Paprika,g,Spice
-Bread Crumb,kg,Baking
+Bread Crumb,g,Baking
 Wrapping Paper,pkt,Packaging
 Butter Local,g,Dairy
 Lemongrass,g,Herb
 Thai Ginger,g,Produce
 Lemon Leaf,g,Herb
-NUN Vinegar,bottle,Vinegar
+NUN Vinegar,ml,Vinegar
 Dark Soya Sauce,ml,Sauce
-Chili Sauce,L,Sauce
+Chili Sauce,ml,Sauce
 Fish Sauce,ml,Sauce
-L.P. Sauce,g,Sauce
+L.P. Sauce,ml,Sauce
 Sriracha Hot Sauce,ml,Sauce
 Light Soya Sauce,ml,Sauce
 Apple Vinegar,ml,Vinegar
-Naga Sauce,g,Sauce
-Kikkoman Sauce,L,Sauce
+Naga Sauce,ml,Sauce
+Kikkoman Sauce,ml,Sauce
 Mustard Paste,g,Condiment
 Mustard Oil,ml,Oil
-Carnation Milk,pcs,Dairy
+Carnation Milk,ml,Dairy
 BBQ Sauce,ml,Sauce
 Baking Powder,g,Baking
-Mushroom Can,can,Canned Food
-Red Cow Oil Butter,L,Dairy
+Mushroom Can,g,Canned Food
+Red Cow Oil Butter,ml,Dairy
 Pepsi Glass,pcs,Packaging
 Mirinda Glass,pcs,Packaging
 Disposable Cup,pcs,Packaging
-7UP,pcs,Beverage
-7UP 1/2 L,pcs,Beverage
-Pepsi 1/2 L,pcs,Beverage
-Water 1/2 L,pcs,Beverage
-Water 1 L,pcs,Beverage
+7UP,ml,Beverage
+7UP 1/2 L,ml,Beverage
+Pepsi 1/2 L,ml,Beverage
+Water 1/2 L,ml,Beverage
+Water 1 L,ml,Beverage
 Bengali Spice,g,Spice
 Egg,pcs,Egg
 Cajun Sauce,ml,Sauce
@@ -73,6 +73,7 @@ Noodles,packets,Noodles
 Vegetables,g,Produce
 Tomato Sauce,ml,Sauce
 Chips Spice,g,Spice
+Chili Flakes,g,Spice
 Soda Water,ml,Beverage
 Fries,g,Frozen Food
 Chicken Drumstick,pcs,Meat
@@ -90,9 +91,7 @@ Kashmiri Powder,g,Spice
 Sugar,g,Sweetener
 Curry Powder,g,Spice
 Garam Masala,g,Spice
-Coriander,g,Herb
 Mint Leaf,g,Herb
 Yogurt,g,Dairy
 Salt,g,Seasoning
 C.K. Powder,g,Seasoning
-Lemon,pcs,Produce

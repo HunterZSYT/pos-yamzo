@@ -28,6 +28,7 @@ export interface MenuItem {
   price: number;
   menuPrices?: Record<string, number>;
   category: string | null;
+  trackRecipe: boolean;
   available: boolean;
   archived: boolean;
 }
@@ -36,6 +37,8 @@ export interface MenuItemInput {
   name: string;
   price: number;
   category?: string | null;
+  trackRecipe?: boolean;
+  menuPrices?: Record<string, number>;
   available?: boolean;
 }
 
@@ -48,9 +51,16 @@ export interface MenuImportResult {
   cancelled?: boolean;
 }
 
+export interface MenuDataSetting {
+  key: string;
+  label: string;
+  active: boolean;
+}
+
 export interface MenuTypeSetting {
   key: string;
   label: string;
+  menuDataKey: string;
   tablesEnabled: boolean;
   commissionPercent: number;
   active: boolean;

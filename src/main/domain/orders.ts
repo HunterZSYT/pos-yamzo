@@ -35,7 +35,9 @@ export function addOrderItem(db: Database.Database, orderId: number, input: Orde
     throw new Error("Menu item not found.");
   }
 
-  const sourcePrice = db.prepare("SELECT price FROM menu_item_prices WHERE menu_item_id = ? AND menu_type_key = ?").get(item.id, order.source) as { price: number } | undefined;
+  const menuType = getMenuTypes(db).find((type) => type.key === order.source);
+  const menuDataKey = menuType?.menuDataKey || order.source;
+  const sourcePrice = db.prepare("SELECT price FROM menu_item_prices WHERE menu_item_id = ? AND menu_type_key = ?").get(item.id, menuDataKey) as { price: number } | undefined;
   const result = db
     .prepare(
       `INSERT INTO order_items (order_id, menu_item_id, name, quantity, unit_price, note, parcel)
