@@ -7,6 +7,7 @@ import type {
   InventoryCategory,
   InventoryImportResult,
   InventoryItem,
+  InventoryOrderUsageSnapshot,
   InventorySnapshot,
   InventoryStatusSummary,
   InventoryUnitInput,
@@ -51,6 +52,7 @@ export function listInventorySnapshot(db: Database.Database): InventorySnapshot 
     priceHistory,
     costCategories: listCostCategories(db),
     costRecords,
+    orderUsage: listInventoryOrderUsage(db),
     status: getInventoryStatus(db, items, recipes, restocks),
     profit: getSalesProfitSummary(db)
   };
@@ -289,6 +291,40 @@ export function addRestockEntry(
   return listRestockEntries(db, 1).find((entry) => entry.id === id) ?? listRestockEntries(db, 1)[0];
 }
 
+export function updateRestockEntry(
+  db: Database.Database,
+  input: {
+    id: number;
+    inventoryItemId: number;
+    quantity: number;
+    unitLabel?: string;
+    totalCost?: number;
+    supplierName?: string | null;
+    responsiblePerson?: string | null;
+    note?: string | null;
+  },
+  actor = "admin"
+): RestockEntry {
+  const existing = db.prepare("SELECT id FROM inventory_restock_entries WHERE id = ?").get(input.id) as { id: number } | undefined;
+  if (!existing) throw new Error("Restock entry not found.");
+  const item = getInventoryItem(db, input.inventoryItemId);
+  const quantity = Math.max(0, Number(input.quantity));
+  if (quantity <= 0) throw new Error("Restock quantity must be greater than zero.");
+  const totalCost = Math.max(0, Number(input.totalCost ?? 0));
+  const pricePerBase = quantity > 0 ? totalCost / quantity : 0;
+  db.prepare(
+    `UPDATE inventory_restock_entries
+     SET inventory_item_id = ?, quantity_base = ?, unit_label = ?, total_cost = ?, price_per_base = ?,
+         supplier_name = ?, responsible_person = ?, note = ?, entry_date = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+     WHERE id = ?`
+  ).run(input.inventoryItemId, quantity, input.unitLabel || item.unitShortName, totalCost, pricePerBase, input.supplierName ?? null, input.responsiblePerson ?? null, input.note ?? null, input.id);
+  if (pricePerBase > 0) {
+    addPriceRecord(db, { inventoryItemId: input.inventoryItemId, pricePerBase, responsiblePerson: input.responsiblePerson ?? null, note: "Updated from restock edit" }, actor);
+  }
+  recordActivity(db, "inventory_restock_updated", { entityType: "inventory_restock", entityId: String(input.id), itemName: item.name, quantity }, actor);
+  return listRestockEntries(db, 200).find((entry) => entry.id === input.id)!;
+}
+
 export function addPriceRecord(
   db: Database.Database,
   input: { inventoryItemId: number; pricePerBase: number; effectiveAt?: string | null; responsiblePerson?: string | null; note?: string | null },
@@ -467,7 +503,7 @@ export function listMenuRecipes(db: Database.Database): MenuRecipe[] {
 export function listRestockEntries(db: Database.Database, limit = 100): RestockEntry[] {
   return db.prepare(
     `SELECT re.id, re.inventory_item_id, ii.name AS item_name, re.quantity_base, re.unit_label, re.total_cost, re.price_per_base,
-            re.supplier_name, re.responsible_person, re.note, re.entry_date
+            re.supplier_name, re.responsible_person, re.note, re.entry_date, COALESCE(re.updated_at, re.entry_date) AS updated_at
      FROM inventory_restock_entries re
      JOIN inventory_items ii ON ii.id = re.inventory_item_id
      ORDER BY datetime(re.entry_date) DESC, re.id DESC
@@ -485,6 +521,7 @@ export function listRestockEntries(db: Database.Database, limit = 100): RestockE
       responsible_person: string | null;
       note: string | null;
       entry_date: string;
+      updated_at: string;
     };
     return {
       id: entry.id,
@@ -497,7 +534,8 @@ export function listRestockEntries(db: Database.Database, limit = 100): RestockE
       supplierName: entry.supplier_name,
       responsiblePerson: entry.responsible_person,
       note: entry.note,
-      entryDate: entry.entry_date
+      entryDate: entry.entry_date,
+      updatedAt: entry.updated_at
     };
   });
 }
@@ -555,6 +593,87 @@ export function listCostRecords(db: Database.Database, limit = 120): CostRecord[
   });
 }
 
+export function listInventoryOrderUsage(db: Database.Database, limit = 120): InventoryOrderUsageSnapshot {
+  const rows = db.prepare(
+    `SELECT o.id AS order_id, o.order_number, o.source, o.table_number, o.settled_at, COALESCE(ocs.revenue, 0) AS order_total,
+            oi.id AS order_item_id, oi.name AS menu_item_name, oics.quantity, oics.revenue, oics.raw_cost, oics.details_json
+     FROM order_item_cost_snapshots oics
+     JOIN orders o ON o.id = oics.order_id
+     JOIN order_items oi ON oi.id = oics.order_item_id
+     LEFT JOIN order_cost_snapshots ocs ON ocs.order_id = o.id
+     WHERE o.status = 'settled'
+     ORDER BY datetime(o.settled_at) DESC, o.id DESC, oi.id ASC
+     LIMIT ?`
+  ).all(limit) as Array<{
+    order_id: number;
+    order_number: string;
+    source: InventoryOrderUsageSnapshot["orders"][number]["source"];
+    table_number: string | null;
+    settled_at: string | null;
+    order_total: number;
+    order_item_id: number;
+    menu_item_name: string;
+    quantity: number;
+    revenue: number;
+    raw_cost: number;
+    details_json: string | null;
+  }>;
+  const orders = new Map<number, InventoryOrderUsageSnapshot["orders"][number]>();
+  const totals = new Map<string, InventoryOrderUsageSnapshot["totals"][number]>();
+
+  for (const row of rows) {
+    const order = orders.get(row.order_id) ?? {
+      orderId: row.order_id,
+      orderNumber: row.order_number,
+      source: row.source,
+      tableNumber: row.table_number,
+      settledAt: row.settled_at,
+      total: roundMoney(row.order_total),
+      items: []
+    };
+    const parsed = parseIngredientSnapshot(row.details_json);
+    const ingredients = parsed.map((ingredient) => {
+      const quantityBase = ingredient.quantityBase * row.quantity;
+      const rawCost = ingredient.rawCost * row.quantity;
+      const key = `${ingredient.inventoryItemId}:${ingredient.unitLabel}`;
+      const existing = totals.get(key);
+      if (existing) {
+        existing.quantityBase = roundQuantity(existing.quantityBase + quantityBase);
+        existing.rawCost = roundMoney(existing.rawCost + rawCost);
+      } else {
+        totals.set(key, {
+          inventoryItemId: ingredient.inventoryItemId,
+          itemName: ingredient.itemName,
+          quantityBase: roundQuantity(quantityBase),
+          unitLabel: ingredient.unitLabel,
+          rawCost: roundMoney(rawCost)
+        });
+      }
+      return {
+        inventoryItemId: ingredient.inventoryItemId,
+        itemName: ingredient.itemName,
+        quantityBase: roundQuantity(quantityBase),
+        unitLabel: ingredient.unitLabel,
+        rawCost: roundMoney(rawCost)
+      };
+    });
+    order.items.push({
+      orderItemId: row.order_item_id,
+      menuItemName: row.menu_item_name,
+      quantity: row.quantity,
+      revenue: roundMoney(row.revenue),
+      rawCost: roundMoney(row.raw_cost),
+      ingredients
+    });
+    orders.set(row.order_id, order);
+  }
+
+  return {
+    orders: Array.from(orders.values()),
+    totals: Array.from(totals.values()).sort((left, right) => left.itemName.localeCompare(right.itemName))
+  };
+}
+
 function getInventoryStatus(db: Database.Database, items: InventoryItem[], recipes: MenuRecipe[], restocks: RestockEntry[]): InventoryStatusSummary {
   const missingRecipes = recipes
     .filter((recipe) => recipe.status === "missing")
@@ -570,6 +689,25 @@ function getInventoryStatus(db: Database.Database, items: InventoryItem[], recip
     lowStockItems: items.filter((item) => item.status !== "ok").slice(0, 20),
     missingRecipes: missingRecipes.slice(0, 30)
   };
+}
+
+function parseIngredientSnapshot(value: string | null): Array<{ inventoryItemId: number; itemName: string; quantityBase: number; unitLabel: string; rawCost: number }> {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value) as Array<{ inventoryItemId?: number; itemName?: string; quantityBase?: number; unitLabel?: string; rawCost?: number }>;
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .map((item) => ({
+        inventoryItemId: Number(item.inventoryItemId ?? 0),
+        itemName: cleanText(item.itemName ?? ""),
+        quantityBase: Number(item.quantityBase ?? 0),
+        unitLabel: cleanText(item.unitLabel ?? "g") || "g",
+        rawCost: Number(item.rawCost ?? 0)
+      }))
+      .filter((item) => item.inventoryItemId > 0 && item.itemName && item.quantityBase > 0);
+  } catch {
+    return [];
+  }
 }
 
 export function getSalesProfitSummary(db: Database.Database, start?: string, end?: string): SalesProfitSummary {

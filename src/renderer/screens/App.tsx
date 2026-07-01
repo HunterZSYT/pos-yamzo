@@ -47,6 +47,7 @@ import type {
   OrderSummary,
   PaymentMethod,
   PrintJob,
+  RestockEntry,
   SalesSummary
 } from "../../shared/types";
 import { demoMenu, demoOrders, demoSummary } from "../data/demo";
@@ -117,6 +118,7 @@ const emptyInventorySnapshot: InventorySnapshot = {
   priceHistory: [],
   costCategories: [],
   costRecords: [],
+  orderUsage: { orders: [], totals: [] },
   status: {
     totalInventoryValue: 0,
     lowStockCount: 0,
@@ -1261,11 +1263,14 @@ function RecipeEditorDialog({
   async function saveRecipe() {
     if (!recipe) return;
     const ingredients = rows
-      .map((row) => ({
-        inventoryItemId: Number(row.inventoryItemId),
-        quantityBase: Number(row.quantityBase || 0),
-        unitLabel: row.unitLabel.trim() || itemOptions.find((item) => item.id === Number(row.inventoryItemId))?.unitShortName || "g"
-      }))
+      .map((row) => {
+        const selectedItem = itemOptions.find((item) => item.id === Number(row.inventoryItemId));
+        return {
+          inventoryItemId: Number(row.inventoryItemId),
+          quantityBase: Number(row.quantityBase || 0),
+          unitLabel: selectedItem?.unitShortName || row.unitLabel.trim() || "g"
+        };
+      })
       .filter((row) => row.inventoryItemId && row.quantityBase > 0);
     if (ingredients.length === 0) {
       setError("Add at least one ingredient with an amount greater than 0.");
@@ -1309,7 +1314,7 @@ function RecipeEditorDialog({
                 </div>
                 <div className="grid gap-2">
                   <Label>Unit</Label>
-                  <Input value={row.unitLabel || selectedItem?.unitShortName || "g"} onChange={(event) => setRows((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, unitLabel: event.target.value } : item))} />
+                  <Input value={selectedItem?.unitShortName || row.unitLabel || "g"} readOnly className="bg-muted/60" />
                 </div>
                 <Button className="w-full lg:w-auto" variant="secondary" onClick={() => setRows((current) => current.filter((_, itemIndex) => itemIndex !== index))}>Remove</Button>
               </div>
@@ -1328,18 +1333,23 @@ function RecipeEditorDialog({
 
 function PriceHistoryDialog({ snapshot, itemId, onClose }: { snapshot: InventorySnapshot; itemId: number | null; onClose: () => void }) {
   const item = snapshot.items.find((entry) => entry.id === itemId) ?? null;
-  const rows = snapshot.priceHistory.filter((entry) => entry.inventoryItemId === itemId);
+  const rows = snapshot.restocks.filter((entry) => entry.inventoryItemId === itemId);
 
   function exportHistory(extension: "csv" | "xls") {
     if (!item) return;
-    const header = ["Date", "Item", "Price", "Person", "Note"];
-    const body = rows.map((entry) => [entry.effectiveAt, entry.itemName, String(entry.pricePerBase), entry.responsiblePerson ?? "", entry.note ?? ""]);
+    const header = ["Date", "Item", "Quantity", "Cost", "Person", "Supplier"];
+    const body = rows.map((entry) => [entry.entryDate, entry.itemName, `${formatQuantity(entry.quantityBase)} ${entry.unitLabel}`, String(entry.totalCost), entry.responsiblePerson ?? "", entry.supplierName ?? ""]);
     downloadTextFile(`yamzo-price-record-${safeFileName(item.name)}.${extension}`, [header, ...body].map((line) => line.map(csvCell).join(",")).join("\n"));
   }
 
   function printHistory() {
     if (!item) return;
-    const lines = [`Price Record - ${item.name}`, "", ...rows.map((entry) => `${formatDate(entry.effectiveAt)} | ${entry.pricePerBase} | ${entry.responsiblePerson ?? "-"} | ${entry.note ?? "-"}`)];
+    const lines = [
+      `Price Record - ${item.name}`,
+      "",
+      "Date | Item | Quantity | Cost | Person | Supplier",
+      ...rows.map((entry) => `${formatDate(entry.entryDate)} | ${entry.itemName} | ${formatQuantity(entry.quantityBase)} ${entry.unitLabel} | ${money(entry.totalCost)} | ${entry.responsiblePerson ?? "-"} | ${entry.supplierName ?? "-"}`)
+    ];
     const popup = window.open("", "_blank", "width=720,height=720");
     if (!popup) return;
     popup.document.write(`<pre style="font:14px/1.5 system-ui;white-space:pre-wrap">${escapeHtml(lines.join("\n"))}</pre>`);
@@ -1350,19 +1360,19 @@ function PriceHistoryDialog({ snapshot, itemId, onClose }: { snapshot: Inventory
 
   return (
     <Dialog open={Boolean(itemId)} onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="max-h-[86vh] max-w-4xl overflow-hidden p-0">
+      <DialogContent className="max-h-[86vh] w-[min(1040px,calc(100vw-32px))] !max-w-[1040px] overflow-hidden p-0">
         <DialogHeader className="border-b px-6 py-5">
           <DialogTitle>{item ? `Price record - ${item.name}` : "Price record"}</DialogTitle>
-          <DialogDescription>Price history is created from restock entries and manual price records.</DialogDescription>
+          <DialogDescription>Restock purchases used to understand the latest item price.</DialogDescription>
         </DialogHeader>
-        <div className="max-h-[58vh] overflow-auto px-6 py-4">
+        <div className="max-h-[58vh] overflow-auto p-6">
           {rows.length === 0 ? (
             <p className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">No price records yet.</p>
           ) : (
             <div className="rounded-xl border">
               <Table>
-                <TableHeader><TableRow><TableHead>Date</TableHead><TableHead>Price</TableHead><TableHead>Person</TableHead><TableHead>Note</TableHead></TableRow></TableHeader>
-                <TableBody>{rows.map((entry) => <TableRow key={entry.id}><TableCell>{formatDate(entry.effectiveAt)}</TableCell><TableCell>{entry.pricePerBase}</TableCell><TableCell>{entry.responsiblePerson ?? "-"}</TableCell><TableCell>{entry.note ?? "-"}</TableCell></TableRow>)}</TableBody>
+                <TableHeader><TableRow><TableHead>Date</TableHead><TableHead>Item</TableHead><TableHead>Quantity</TableHead><TableHead>Cost</TableHead><TableHead>Person</TableHead><TableHead>Supplier</TableHead></TableRow></TableHeader>
+                <TableBody>{rows.map((entry) => <TableRow key={entry.id}><TableCell>{formatDate(entry.entryDate)}</TableCell><TableCell>{entry.itemName}</TableCell><TableCell>{formatQuantity(entry.quantityBase)} {entry.unitLabel}</TableCell><TableCell>{money(entry.totalCost)}</TableCell><TableCell>{entry.responsiblePerson ?? "-"}</TableCell><TableCell>{entry.supplierName ?? "-"}</TableCell></TableRow>)}</TableBody>
               </Table>
             </div>
           )}
@@ -1631,6 +1641,8 @@ function InventoryAdmin({
   const [costCategoryName, setCostCategoryName] = useState("");
   const [unitForm, setUnitForm] = useState({ name: "", shortName: "" });
   const [statusRange, setStatusRange] = useState({ start: "", end: "" });
+  const [itemEdit, setItemEdit] = useState<InventoryItem | null>(null);
+  const [restockEdit, setRestockEdit] = useState<RestockEntry | null>(null);
 
   useEffect(() => {
     if (!itemForm.baseUnitId && activeUnits[0]) setItemForm((current) => ({ ...current, baseUnitId: String(activeUnits[0].id) }));
@@ -1645,7 +1657,6 @@ function InventoryAdmin({
       return;
     }
     await window.yamzo?.inventory.saveItem({
-      id: itemForm.id || undefined,
       name: itemForm.name,
       categoryId: itemForm.categoryId ? Number(itemForm.categoryId) : null,
       baseUnitId: Number(itemForm.baseUnitId),
@@ -1658,14 +1669,7 @@ function InventoryAdmin({
   }
 
   function editItem(item: InventoryItem) {
-    setItemForm({
-      id: item.id,
-      name: item.name,
-      categoryId: item.categoryId ? String(item.categoryId) : "",
-      baseUnitId: String(item.baseUnitId),
-      lowStockThreshold: String(item.lowStockThreshold)
-    });
-    setMessage(`Editing ${item.name}.`);
+    setItemEdit(item);
   }
 
   async function removeItem(item: InventoryItem) {
@@ -1775,11 +1779,12 @@ function InventoryAdmin({
         <Metric label="Net Profit Estimate" value={money(snapshot.profit.netProfit)} />
       </div>
       <Tabs defaultValue="status">
-        <TabsList className="grid w-full grid-cols-4 lg:grid-cols-7">
+        <TabsList className="grid w-full grid-cols-4 lg:grid-cols-8">
           <TabsTrigger value="status">Status</TabsTrigger>
           <TabsTrigger value="recipes">Recipes</TabsTrigger>
           <TabsTrigger value="items">Items</TabsTrigger>
           <TabsTrigger value="restock">Restock</TabsTrigger>
+          <TabsTrigger value="orders">Orders</TabsTrigger>
           <TabsTrigger value="costs">Costs</TabsTrigger>
           <TabsTrigger value="profit">Profit</TabsTrigger>
           <TabsTrigger value="settings">Settings</TabsTrigger>
@@ -1842,16 +1847,13 @@ function InventoryAdmin({
               <Field label="Category"><Select value={itemForm.categoryId} onValueChange={(value) => setItemForm({ ...itemForm, categoryId: value })}><SelectTrigger><SelectValue placeholder="Choose category" /></SelectTrigger><SelectContent>{activeCategories.map((category) => <SelectItem key={category.id} value={String(category.id)}>{category.name}</SelectItem>)}</SelectContent></Select></Field>
               <Field label="Base unit"><Select value={itemForm.baseUnitId} onValueChange={(value) => setItemForm({ ...itemForm, baseUnitId: value })}><SelectTrigger><SelectValue placeholder="Choose unit" /></SelectTrigger><SelectContent>{activeUnits.map((unit) => <SelectItem key={unit.id} value={String(unit.id)}>{unit.name}</SelectItem>)}</SelectContent></Select></Field>
               <Field label="Low stock warning"><Input value={itemForm.lowStockThreshold} onChange={(event) => setItemForm({ ...itemForm, lowStockThreshold: event.target.value })} /></Field>
-              <div className="flex gap-2 self-end">
-                <Button onClick={saveItem}>{itemForm.id ? "Save Changes" : "Save Item"}</Button>
-                {itemForm.id > 0 && <Button variant="secondary" onClick={() => setItemForm({ ...itemForm, id: 0, name: "" })}>Cancel Edit</Button>}
-              </div>
+              <Button className="self-end" onClick={saveItem}>Save Item</Button>
             </CardContent>
           </Card>
           <div className="grid gap-2">
             {snapshot.items.map((item) => (
               <Card key={item.id} size="sm">
-                <CardContent className="grid gap-3 p-3 lg:grid-cols-[minmax(0,1.4fr)_160px_160px_160px_140px] lg:items-center">
+                <CardContent className="grid gap-4 p-4 xl:grid-cols-[minmax(240px,1fr)_minmax(140px,auto)_minmax(150px,auto)_minmax(130px,auto)_auto] xl:items-center">
                   <div className="min-w-0">
                     <strong className="block truncate">{item.name}</strong>
                     <p className="text-sm text-muted-foreground">{item.categoryName ?? "Other"}</p>
@@ -1859,7 +1861,7 @@ function InventoryAdmin({
                   <span>Stock: <strong>{formatQuantity(item.currentStock)} {item.unitShortName}</strong></span>
                   <span>Latest price: <strong>{formatQuantity(item.latestPrice)} / {item.unitShortName}</strong></span>
                   <span>Value: <strong>{money(item.estimatedValue)}</strong></span>
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center justify-start gap-2 xl:justify-end">
                     <Badge variant={item.status === "ok" ? "secondary" : "destructive"}>{item.status === "ok" ? "OK" : item.status === "low" ? "Low Stock" : "Out of Stock"}</Badge>
                     <Button variant="secondary" size="sm" onClick={() => editItem(item)}>Edit</Button>
                     <Button variant="secondary" size="sm" onClick={() => onViewPriceHistory(item.id)}>Price Record</Button>
@@ -1883,7 +1885,11 @@ function InventoryAdmin({
               <Button className="self-end" onClick={addRestock} disabled={!restockForm.inventoryItemId}>Add Restock</Button>
             </CardContent>
           </Card>
-          <InventoryTable headers={["Date", "Item", "Quantity", "Cost", "Person", "Supplier"]} rows={snapshot.restocks.map((entry) => [formatDate(entry.entryDate), entry.itemName, `${formatQuantity(entry.quantityBase)} ${entry.unitLabel}`, money(entry.totalCost), entry.responsiblePerson ?? "-", entry.supplierName ?? "-"])} />
+          <RestockEntryTable entries={snapshot.restocks} onEdit={setRestockEdit} />
+        </TabsContent>
+
+        <TabsContent value="orders" className="pt-4">
+          <InventoryOrdersPanel usage={snapshot.orderUsage} />
         </TabsContent>
 
         <TabsContent value="costs" className="grid gap-4 pt-4">
@@ -1945,8 +1951,290 @@ function InventoryAdmin({
           </div>
         </TabsContent>
       </Tabs>
+      <InventoryItemEditorDialog
+        item={itemEdit}
+        categories={activeCategories}
+        units={activeUnits}
+        onClose={() => setItemEdit(null)}
+        onSaved={async () => {
+          setItemEdit(null);
+          setMessage("Inventory item saved.");
+          await refreshData();
+        }}
+      />
+      <RestockEditorDialog
+        entry={restockEdit}
+        items={snapshot.items}
+        onClose={() => setRestockEdit(null)}
+        onSaved={async () => {
+          setRestockEdit(null);
+          setMessage("Restock entry saved. Date updated to latest save time.");
+          await refreshData();
+        }}
+      />
     </div>
   );
+}
+
+function InventoryItemEditorDialog({
+  item,
+  categories,
+  units,
+  onClose,
+  onSaved
+}: {
+  item: InventoryItem | null;
+  categories: InventoryCategory[];
+  units: InventoryUnit[];
+  onClose: () => void;
+  onSaved: () => Promise<void>;
+}) {
+  const [draft, setDraft] = useState({ name: "", categoryId: "", baseUnitId: "", lowStockThreshold: "0" });
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!item) return;
+    setError("");
+    setDraft({
+      name: item.name,
+      categoryId: item.categoryId ? String(item.categoryId) : "",
+      baseUnitId: String(item.baseUnitId),
+      lowStockThreshold: String(item.lowStockThreshold)
+    });
+  }, [item]);
+
+  async function save() {
+    if (!item) return;
+    if (!draft.name.trim()) {
+      setError("Item name is required.");
+      return;
+    }
+    try {
+      await window.yamzo?.inventory.saveItem({
+        id: item.id,
+        name: draft.name.trim(),
+        categoryId: draft.categoryId ? Number(draft.categoryId) : null,
+        baseUnitId: Number(draft.baseUnitId),
+        lowStockThreshold: Number(draft.lowStockThreshold || 0),
+        active: true
+      });
+      await onSaved();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not save inventory item.");
+    }
+  }
+
+  return (
+    <Dialog open={Boolean(item)} onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="w-[min(760px,calc(100vw-32px))] !max-w-[760px] overflow-hidden p-0">
+        <DialogHeader className="border-b px-6 py-5">
+          <DialogTitle>{item ? `Edit item - ${item.name}` : "Edit item"}</DialogTitle>
+          <DialogDescription>Update stock setup without changing existing restock history.</DialogDescription>
+        </DialogHeader>
+        <div className="grid gap-4 p-6">
+          {error && <p className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</p>}
+          <div className="grid gap-4 md:grid-cols-2">
+            <Field label="Item name"><Input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></Field>
+            <Field label="Category">
+              <Select value={draft.categoryId || "none"} onValueChange={(value) => setDraft({ ...draft, categoryId: value === "none" ? "" : value })}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">No category</SelectItem>
+                  {categories.map((category) => <SelectItem key={category.id} value={String(category.id)}>{category.name}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </Field>
+            <Field label="Base unit">
+              <Select value={draft.baseUnitId} onValueChange={(value) => setDraft({ ...draft, baseUnitId: value })}>
+                <SelectTrigger><SelectValue placeholder="Choose unit" /></SelectTrigger>
+                <SelectContent>{units.map((unit) => <SelectItem key={unit.id} value={String(unit.id)}>{unit.name}</SelectItem>)}</SelectContent>
+              </Select>
+            </Field>
+            <Field label="Low stock warning"><Input value={draft.lowStockThreshold} onChange={(event) => setDraft({ ...draft, lowStockThreshold: event.target.value })} /></Field>
+          </div>
+        </div>
+        <DialogFooter className="border-t px-6 py-4">
+          <Button variant="secondary" onClick={onClose}>Cancel</Button>
+          <Button onClick={save}>Save Item</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function RestockEntryTable({ entries, onEdit }: { entries: RestockEntry[]; onEdit: (entry: RestockEntry) => void }) {
+  return (
+    <div className="rounded-xl border bg-card">
+      {entries.length === 0 ? (
+        <p className="p-4 text-sm text-muted-foreground">No restock entries yet.</p>
+      ) : (
+        <div className="overflow-auto">
+          <Table className="min-w-[920px]">
+            <TableHeader>
+              <TableRow><TableHead>Date</TableHead><TableHead>Item</TableHead><TableHead>Quantity</TableHead><TableHead>Cost</TableHead><TableHead>Person</TableHead><TableHead>Supplier</TableHead><TableHead className="text-right">Action</TableHead></TableRow>
+            </TableHeader>
+            <TableBody>
+              {entries.map((entry) => (
+                <TableRow key={entry.id}>
+                  <TableCell>{formatDate(entry.updatedAt || entry.entryDate)}</TableCell>
+                  <TableCell>{entry.itemName}</TableCell>
+                  <TableCell>{formatQuantity(entry.quantityBase)} {entry.unitLabel}</TableCell>
+                  <TableCell>{money(entry.totalCost)}</TableCell>
+                  <TableCell>{entry.responsiblePerson ?? "-"}</TableCell>
+                  <TableCell>{entry.supplierName ?? "-"}</TableCell>
+                  <TableCell className="text-right"><Button size="sm" variant="secondary" onClick={() => onEdit(entry)}>Edit</Button></TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RestockEditorDialog({
+  entry,
+  items,
+  onClose,
+  onSaved
+}: {
+  entry: RestockEntry | null;
+  items: InventoryItem[];
+  onClose: () => void;
+  onSaved: () => Promise<void>;
+}) {
+  const [draft, setDraft] = useState({ inventoryItemId: "", quantity: "", unitLabel: "", totalCost: "", supplierName: "", responsiblePerson: "", note: "" });
+  const [error, setError] = useState("");
+  const selectedItem = items.find((item) => item.id === Number(draft.inventoryItemId));
+
+  useEffect(() => {
+    if (!entry) return;
+    setError("");
+    setDraft({
+      inventoryItemId: String(entry.inventoryItemId),
+      quantity: String(entry.quantityBase),
+      unitLabel: entry.unitLabel,
+      totalCost: String(entry.totalCost),
+      supplierName: entry.supplierName ?? "",
+      responsiblePerson: entry.responsiblePerson ?? "",
+      note: entry.note ?? ""
+    });
+  }, [entry]);
+
+  function chooseItem(value: string) {
+    const nextItem = items.find((item) => item.id === Number(value));
+    setDraft((current) => ({ ...current, inventoryItemId: value, unitLabel: nextItem?.unitShortName ?? current.unitLabel }));
+  }
+
+  async function save() {
+    if (!entry) return;
+    try {
+      await window.yamzo?.inventory.updateRestock({
+        id: entry.id,
+        inventoryItemId: Number(draft.inventoryItemId),
+        quantity: Number(draft.quantity || 0),
+        unitLabel: selectedItem?.unitShortName || draft.unitLabel,
+        totalCost: Number(draft.totalCost || 0),
+        supplierName: draft.supplierName || null,
+        responsiblePerson: draft.responsiblePerson || null,
+        note: draft.note || null
+      });
+      await onSaved();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not save restock entry.");
+    }
+  }
+
+  return (
+    <Dialog open={Boolean(entry)} onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="w-[min(860px,calc(100vw-32px))] !max-w-[860px] overflow-hidden p-0">
+        <DialogHeader className="border-b px-6 py-5">
+          <DialogTitle>{entry ? `Edit restock - ${entry.itemName}` : "Edit restock"}</DialogTitle>
+          <DialogDescription>Saving this entry updates its date to the latest save time.</DialogDescription>
+        </DialogHeader>
+        <div className="grid gap-4 p-6">
+          {error && <p className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</p>}
+          <div className="grid gap-4 md:grid-cols-2">
+            <InventoryItemSelect label="Item" value={draft.inventoryItemId} items={items} onChange={chooseItem} />
+            <Field label="Quantity"><Input value={draft.quantity} onChange={(event) => setDraft({ ...draft, quantity: event.target.value })} /></Field>
+            <Field label="Unit"><Input value={selectedItem?.unitShortName || draft.unitLabel} readOnly className="bg-muted/60" /></Field>
+            <Field label="Total cost"><Input value={draft.totalCost} onChange={(event) => setDraft({ ...draft, totalCost: event.target.value })} /></Field>
+            <Field label="Person responsible"><Input value={draft.responsiblePerson} onChange={(event) => setDraft({ ...draft, responsiblePerson: event.target.value })} /></Field>
+            <Field label="Supplier"><Input value={draft.supplierName} onChange={(event) => setDraft({ ...draft, supplierName: event.target.value })} /></Field>
+            <div className="md:col-span-2"><Field label="Note"><Textarea value={draft.note} onChange={(event) => setDraft({ ...draft, note: event.target.value })} /></Field></div>
+          </div>
+        </div>
+        <DialogFooter className="border-t px-6 py-4">
+          <Button variant="secondary" onClick={onClose}>Cancel</Button>
+          <Button onClick={save}>Save Restock</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function InventoryOrdersPanel({ usage }: { usage: InventorySnapshot["orderUsage"] }) {
+  return (
+    <div className="grid gap-4">
+      <Card>
+        <CardHeader>
+          <CardTitle>Inventory Used by Completed Orders</CardTitle>
+          <CardDescription>Total ingredient usage calculated from saved recipe cost snapshots.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <InventoryTable
+            headers={["Inventory item", "Quantity used", "Raw cost"]}
+            rows={usage.totals.map((item) => [item.itemName, `${formatQuantity(item.quantityBase)} ${item.unitLabel}`, money(item.rawCost)])}
+          />
+        </CardContent>
+      </Card>
+      <div className="grid gap-3">
+        {usage.orders.length === 0 ? (
+          <p className="rounded-xl border border-dashed p-4 text-sm text-muted-foreground">No completed orders with recipe usage yet.</p>
+        ) : usage.orders.map((order) => (
+          <Card key={order.orderId} size="sm">
+            <CardContent className="grid gap-4 p-4">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <CardTitle>{order.tableNumber ? `${formatSource(order.source)} - ${order.tableNumber}` : formatSource(order.source)}</CardTitle>
+                  <CardDescription>Receipt {order.orderNumber} | {order.settledAt ? formatDate(order.settledAt) : "Completed"}</CardDescription>
+                </div>
+                <div className="grid grid-cols-2 gap-2 text-sm sm:grid-cols-3">
+                  <InventoryMiniMetric label="Items" value={order.items.reduce((total, item) => total + item.quantity, 0)} />
+                  <InventoryMiniMetric label="Revenue" value={money(order.total)} />
+                  <InventoryMiniMetric label="Raw Cost" value={money(order.items.reduce((total, item) => total + item.rawCost, 0))} />
+                </div>
+              </div>
+              <div className="grid gap-2">
+                {order.items.map((item) => (
+                  <div key={item.orderItemId} className="rounded-lg border bg-muted/20 p-3">
+                    <div className="flex flex-wrap justify-between gap-2">
+                      <strong>{item.quantity} x {item.menuItemName}</strong>
+                      <span className="text-sm text-muted-foreground">Raw cost {money(item.rawCost)}</span>
+                    </div>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {item.ingredients.length === 0 ? (
+                        <Badge variant="destructive">No saved recipe usage</Badge>
+                      ) : item.ingredients.map((ingredient) => (
+                        <Badge key={`${item.orderItemId}-${ingredient.inventoryItemId}`} variant="secondary">
+                          {ingredient.itemName}: {formatQuantity(ingredient.quantityBase)} {ingredient.unitLabel}
+                        </Badge>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function InventoryMiniMetric({ label, value }: { label: string; value: string | number }) {
+  return <div className="rounded-lg border bg-background px-3 py-2"><span className="block text-xs text-muted-foreground">{label}</span><strong>{value}</strong></div>;
 }
 
 function InventoryItemSelect({ label, value, items, onChange }: { label: string; value: string; items: InventorySnapshot["items"]; onChange: (value: string) => void }) {

@@ -212,6 +212,7 @@ export interface RestockEntry {
   responsiblePerson: string | null;
   note: string | null;
   entryDate: string;
+  updatedAt: string;
 }
 
 export interface PriceHistoryRecord {
@@ -274,6 +275,46 @@ export interface SalesProfitSummary {
   topProfitItems: Array<{ name: string; revenue: number; rawCost: number; profit: number }>;
 }
 
+export interface InventoryOrderUsageIngredient {
+  inventoryItemId: number;
+  itemName: string;
+  quantityBase: number;
+  unitLabel: string;
+  rawCost: number;
+}
+
+export interface InventoryOrderUsageMenuItem {
+  orderItemId: number;
+  menuItemName: string;
+  quantity: number;
+  revenue: number;
+  rawCost: number;
+  ingredients: InventoryOrderUsageIngredient[];
+}
+
+export interface InventoryOrderUsageSummary {
+  orderId: number;
+  orderNumber: string;
+  source: OrderSource;
+  tableNumber: string | null;
+  settledAt: string | null;
+  total: number;
+  items: InventoryOrderUsageMenuItem[];
+}
+
+export interface InventoryIngredientUsageTotal {
+  inventoryItemId: number;
+  itemName: string;
+  quantityBase: number;
+  unitLabel: string;
+  rawCost: number;
+}
+
+export interface InventoryOrderUsageSnapshot {
+  orders: InventoryOrderUsageSummary[];
+  totals: InventoryIngredientUsageTotal[];
+}
+
 export interface InventorySnapshot {
   categories: InventoryCategory[];
   units: InventoryUnit[];
@@ -283,6 +324,7 @@ export interface InventorySnapshot {
   priceHistory: PriceHistoryRecord[];
   costCategories: CostCategory[];
   costRecords: CostRecord[];
+  orderUsage: InventoryOrderUsageSnapshot;
   status: InventoryStatusSummary;
   profit: SalesProfitSummary;
 }
