@@ -2489,13 +2489,15 @@ function InventoryItemCardPicker({
   selectedItemId,
   onSelect,
   search,
-  onSearch
+  onSearch,
+  placeholder = "Search item or category"
 }: {
   items: InventoryItem[];
   selectedItemId: string;
   onSelect: (item: InventoryItem) => void;
   search: string;
   onSearch: (value: string) => void;
+  placeholder?: string;
 }) {
   const groupedItems = useMemo(() => {
     const filtered = items.filter((item) => {
@@ -2512,7 +2514,7 @@ function InventoryItemCardPicker({
 
   return (
     <div className="grid gap-3">
-      <Input value={search} onChange={(event) => onSearch(event.target.value)} placeholder="Search item or category" />
+      <Input value={search} onChange={(event) => onSearch(event.target.value)} placeholder={placeholder} />
       <ScrollArea className="h-[420px] rounded-xl border bg-muted/20 p-3">
         <div className="grid gap-5 pr-3">
           {Object.entries(groupedItems).map(([category, categoryItems]) => (
@@ -2552,6 +2554,75 @@ function InventoryItemCardPicker({
   );
 }
 
+function RecipeMaterialCardPicker({
+  recipes,
+  selectedRecipeId,
+  onSelect,
+  search,
+  onSearch
+}: {
+  recipes: MenuRecipe[];
+  selectedRecipeId: string;
+  onSelect: (recipe: MenuRecipe) => void;
+  search: string;
+  onSearch: (value: string) => void;
+}) {
+  const groupedRecipes = useMemo(() => {
+    const filtered = recipes.filter((recipe) => {
+      const ingredients = recipe.ingredients.map((ingredient) => ingredient.itemName).join(" ");
+      const haystack = `${recipe.menuItemName} ${recipe.status} ${ingredients}`.toLowerCase();
+      return haystack.includes(search.trim().toLowerCase());
+    });
+    return filtered.reduce<Record<string, MenuRecipe[]>>((groups, recipe) => {
+      const key = recipe.status === "available" ? "Recipe materials" : "Needs recipe";
+      groups[key] = groups[key] ?? [];
+      groups[key].push(recipe);
+      return groups;
+    }, {});
+  }, [recipes, search]);
+
+  return (
+    <div className="grid gap-3">
+      <Input value={search} onChange={(event) => onSearch(event.target.value)} placeholder="Search recipe material or ingredient" />
+      <ScrollArea className="h-[420px] rounded-xl border bg-muted/20 p-3">
+        <div className="grid gap-5 pr-3">
+          {Object.entries(groupedRecipes).map(([group, groupRecipes]) => (
+            <section key={group} className="grid gap-2">
+              <div className="flex items-center justify-between gap-3">
+                <h4 className="text-sm font-semibold">{group}</h4>
+                <Badge variant="secondary">{groupRecipes.length}</Badge>
+              </div>
+              <div className="grid gap-2 sm:grid-cols-2">
+                {groupRecipes.map((recipe) => {
+                  const selected = selectedRecipeId === String(recipe.id);
+                  return (
+                    <button
+                      key={recipe.id}
+                      type="button"
+                      onClick={() => onSelect(recipe)}
+                      className={`rounded-xl border bg-card p-3 text-left shadow-sm transition hover:border-foreground/30 hover:bg-accent ${selected ? "border-foreground ring-2 ring-foreground/10" : ""}`}
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <strong className="line-clamp-2 text-sm">{recipe.menuItemName}</strong>
+                        <Badge variant={recipe.status === "available" ? "secondary" : "destructive"}>{recipe.status === "available" ? "Ready" : "Missing"}</Badge>
+                      </div>
+                      <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-muted-foreground">
+                        <span>Ingredients <strong className="block text-foreground">{recipe.ingredients.length}</strong></span>
+                        <span>Raw cost <strong className="block text-foreground">{money(recipe.rawCost)}</strong></span>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </section>
+          ))}
+          {Object.keys(groupedRecipes).length === 0 && <EmptyState title="No recipe materials found" description="Try another recipe name or ingredient." />}
+        </div>
+      </ScrollArea>
+    </div>
+  );
+}
+
 function RestockCreateDialog({
   open,
   onOpenChange,
@@ -2572,6 +2643,30 @@ function RestockCreateDialog({
   onSave: () => Promise<void>;
 }) {
   const [search, setSearch] = useState("");
+  const selectedRecipe = restockableRecipes.find((recipe) => String(recipe.id) === form.recipeId) ?? null;
+  const exactRecipeStockItem = selectedRecipe
+    ? items.find((item) => item.name.trim().toLowerCase() === selectedRecipe.menuItemName.trim().toLowerCase()) ?? null
+    : null;
+
+  function changeRestockSource(value: string) {
+    setSearch("");
+    setForm({
+      ...form,
+      itemType: value,
+      recipeId: "",
+      inventoryItemId: value === "raw" ? form.inventoryItemId : ""
+    });
+  }
+
+  function selectRecipeMaterial(recipe: MenuRecipe) {
+    const matchingItem = items.find((item) => item.name.trim().toLowerCase() === recipe.menuItemName.trim().toLowerCase());
+    setForm({
+      ...form,
+      itemType: "recipe",
+      recipeId: String(recipe.id),
+      inventoryItemId: matchingItem ? String(matchingItem.id) : ""
+    });
+  }
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -2581,19 +2676,56 @@ function RestockCreateDialog({
           <DialogDescription>Select the purchased item first, then enter quantity and cost details.</DialogDescription>
         </DialogHeader>
         <div className="grid max-h-[calc(100vh-190px)] gap-5 overflow-auto p-6 lg:grid-cols-[minmax(420px,1fr)_380px]">
-          <InventoryItemCardPicker
-            items={items}
-            selectedItemId={form.inventoryItemId}
-            search={search}
-            onSearch={setSearch}
-            onSelect={(item) => setForm({ ...form, inventoryItemId: String(item.id) })}
-          />
+          <div className="grid content-start gap-3">
+            <Field label="Show materials">
+              <Select value={form.itemType} onValueChange={changeRestockSource}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="raw">Raw materials</SelectItem>
+                  <SelectItem value="recipe">Recipe materials</SelectItem>
+                </SelectContent>
+              </Select>
+            </Field>
+            {form.itemType === "recipe" ? (
+              <RecipeMaterialCardPicker
+                recipes={restockableRecipes}
+                selectedRecipeId={form.recipeId}
+                search={search}
+                onSearch={setSearch}
+                onSelect={selectRecipeMaterial}
+              />
+            ) : (
+              <InventoryItemCardPicker
+                items={items}
+                selectedItemId={form.inventoryItemId}
+                search={search}
+                onSearch={setSearch}
+                placeholder="Search raw material or category"
+                onSelect={(item) => setForm({ ...form, itemType: "raw", recipeId: "", inventoryItemId: String(item.id) })}
+              />
+            )}
+          </div>
           <div className="grid content-start gap-4">
             <Card className="bg-emerald-50/60">
               <CardContent className="grid gap-2 p-4">
-                <span className="text-sm text-muted-foreground">Selected item</span>
-                <strong>{selectedItem?.name ?? "Choose an item"}</strong>
-                {selectedItem && (
+                <span className="text-sm text-muted-foreground">Selected material</span>
+                <strong>{form.itemType === "recipe" ? selectedRecipe?.menuItemName ?? "Choose a recipe material" : selectedItem?.name ?? "Choose a raw material"}</strong>
+                {form.itemType === "recipe" && selectedRecipe && (
+                  <div className="grid gap-2">
+                    <div className="grid grid-cols-2 gap-2 text-sm">
+                      <InventoryMiniMetric label="Ingredients" value={String(selectedRecipe.ingredients.length)} />
+                      <InventoryMiniMetric label="Raw cost" value={money(selectedRecipe.rawCost)} />
+                      <InventoryMiniMetric label="Stock item" value={exactRecipeStockItem?.name ?? "No exact match"} />
+                      <InventoryMiniMetric label="Unit" value={exactRecipeStockItem?.unitShortName ?? "-"} />
+                    </div>
+                    {!exactRecipeStockItem && (
+                      <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                        This recipe material needs an inventory item with the same name before it can be restocked.
+                      </p>
+                    )}
+                  </div>
+                )}
+                {form.itemType === "raw" && selectedItem && (
                   <div className="grid grid-cols-2 gap-2 text-sm">
                     <InventoryMiniMetric label="Category" value={selectedItem.categoryName ?? "Other"} />
                     <InventoryMiniMetric label="Unit" value={selectedItem.unitShortName} />
@@ -2603,17 +2735,6 @@ function RestockCreateDialog({
                 )}
               </CardContent>
             </Card>
-            <Field label="Item type">
-              <Select value={form.itemType} onValueChange={(value) => setForm({ ...form, itemType: value, recipeId: "" })}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent><SelectItem value="raw">Raw materials</SelectItem><SelectItem value="recipe">Recipe materials</SelectItem></SelectContent>
-              </Select>
-            </Field>
-            {form.itemType === "recipe" && (
-              <Field label="Recipe material">
-                <SearchableRecipeSelect value={form.recipeId} recipes={restockableRecipes} onChange={(value) => setForm({ ...form, recipeId: value })} />
-              </Field>
-            )}
             <div className="grid gap-3 sm:grid-cols-2">
               <Field label={`Quantity (${selectedItem?.unitShortName ?? "unit"})`}><Input value={form.quantity} onChange={(event) => setForm({ ...form, quantity: event.target.value })} /></Field>
               <Field label="Total cost"><Input value={form.totalCost} onChange={(event) => setForm({ ...form, totalCost: event.target.value })} /></Field>
@@ -3292,53 +3413,104 @@ function MenuAdmin({
           <TabsTrigger value="settings">Menu Settings</TabsTrigger>
         </TabsList>
         <TabsContent value="items" className="grid gap-4 pt-4">
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle>Menu Data</CardTitle>
-              <CardDescription>Choose which catalog you are editing. Menu Types in settings decide where each catalog is used.</CardDescription>
-            </CardHeader>
-            <CardContent className="grid gap-4 p-4 pt-0">
-              <div className="grid gap-3 xl:grid-cols-[260px_minmax(260px,1fr)_auto_auto] xl:items-end">
-                <Field label="Editing catalog">
-                  <Select value={selectedMenuData.key} onValueChange={setSelectedMenuDataKey}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
-                    <SelectContent>{activeMenuData.map((entry) => <SelectItem key={entry.key} value={entry.key}>{entry.label}</SelectItem>)}</SelectContent>
-                  </Select>
-                </Field>
-                <Field label="New / duplicate catalog name"><Input value={menuDataDraft} onChange={(event) => setMenuDataDraft(event.target.value)} placeholder="Example: Parcel Menu" /></Field>
-                <Button variant="secondary" onClick={addMenuData} disabled={!menuDataDraft.trim()}>Add Catalog</Button>
-                <Button variant="secondary" onClick={duplicateSelectedMenuData}>Duplicate Selected</Button>
+          <Tabs defaultValue="browse">
+            <TabsList className="grid w-full max-w-2xl grid-cols-3">
+              <TabsTrigger value="browse">Browse Items</TabsTrigger>
+              <TabsTrigger value="add">Add / Edit Item</TabsTrigger>
+              <TabsTrigger value="catalog">Catalog Setup</TabsTrigger>
+            </TabsList>
+
+            <TabsContent value="browse" className="grid gap-4 pt-4">
+              <Card className="border-muted-foreground/15">
+                <CardHeader className="pb-3">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <CardTitle>{selectedMenuData.label}</CardTitle>
+                      <CardDescription>Browse, search, edit, archive, or delete items in the selected catalog.</CardDescription>
+                    </div>
+                    <Badge variant="secondary">{filteredMenu.length} visible items</Badge>
+                  </div>
+                </CardHeader>
+                <CardContent className="grid gap-3 p-4 pt-0">
+                  <div className="grid gap-3 md:grid-cols-[260px_minmax(260px,1fr)]">
+                    <Field label="Catalog">
+                      <Select value={selectedMenuData.key} onValueChange={setSelectedMenuDataKey}>
+                        <SelectTrigger><SelectValue /></SelectTrigger>
+                        <SelectContent>{activeMenuData.map((entry) => <SelectItem key={entry.key} value={entry.key}>{entry.label}</SelectItem>)}</SelectContent>
+                      </Select>
+                    </Field>
+                    <Field label={`Search ${selectedMenuData.label}`}>
+                      <Input value={menuSearch} onChange={(event) => setMenuSearch(event.target.value)} placeholder="Search item, category, availability, or recipe status" />
+                    </Field>
+                  </div>
+                </CardContent>
+              </Card>
+              <div className="grid gap-2">
+                {filteredMenu.map((item) => <MenuAdminRow key={item.id} item={item} categories={categories} selectedMenuData={selectedMenuData} onEdit={setMenuForm} onDone={refreshData} />)}
               </div>
-              <div className="flex flex-wrap gap-2">
-                <Button onClick={importMenuCsv}>Import CSV</Button>
-                <Button variant="secondary" onClick={downloadSampleCsv}>Download sample CSV format</Button>
-                <Button variant="secondary" disabled={activeMenuData.length <= 1} onClick={hideSelectedMenuData}>Hide Selected Catalog</Button>
-              </div>
-            </CardContent>
-          </Card>
-          <div className="flex flex-wrap items-end justify-between gap-3">
-            <Field label={`Search ${selectedMenuData.label}`}><Input value={menuSearch} onChange={(event) => setMenuSearch(event.target.value)} placeholder="Search item, category, availability, or recipe status" /></Field>
-            <Badge variant="secondary">{filteredMenu.length} visible items</Badge>
-          </div>
-          <Card>
-            <CardContent className="grid grid-cols-[repeat(auto-fit,minmax(180px,1fr))] gap-3 p-4">
-              <Field label="Item name"><Input value={menuForm.name} onChange={(event) => setMenuForm({ ...menuForm, name: event.target.value })} /></Field>
-              <Field label={`Price in ${selectedMenuData.label}`}><Input value={menuFormSelectedPrice()} onChange={(event) => updateMenuFormPrice(event.target.value)} placeholder="Leave blank to hide from this menu" /></Field>
-              <Field label="Category">
-                <Select value={menuForm.category || "Other"} onValueChange={(value) => setMenuForm({ ...menuForm, category: value })}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>{categories.map((category) => <SelectItem key={category} value={category}>{category}</SelectItem>)}</SelectContent>
-                </Select>
-              </Field>
-              <label className="flex items-center gap-2 self-end"><Checkbox checked={menuForm.available} onCheckedChange={(checked) => setMenuForm({ ...menuForm, available: Boolean(checked) })} />Available</label>
-              <label className="flex items-center gap-2 self-end"><Checkbox checked={menuForm.trackRecipe} onCheckedChange={(checked) => setMenuForm({ ...menuForm, trackRecipe: Boolean(checked) })} />Track recipe</label>
-              <Button className="self-end" onClick={saveMenuForm}>{menuForm.id ? "Save Item" : "Add Item"}</Button>
-            </CardContent>
-          </Card>
-          <div className="grid gap-2">
-            {filteredMenu.map((item) => <MenuAdminRow key={item.id} item={item} categories={categories} selectedMenuData={selectedMenuData} onEdit={setMenuForm} onDone={refreshData} />)}
-          </div>
-          {filteredMenu.length === 0 && <EmptyState title="No menu items found" description="Try a different item name, category, availability, or recipe search." />}
+              {filteredMenu.length === 0 && <EmptyState title="No menu items found" description="Try a different item name, category, availability, or recipe search." />}
+            </TabsContent>
+
+            <TabsContent value="add" className="grid gap-4 pt-4">
+              <Card className="max-w-6xl border-emerald-200 bg-emerald-50/30">
+                <CardHeader>
+                  <CardTitle>{menuForm.id ? "Edit Menu Item" : "Add Menu Item"}</CardTitle>
+                  <CardDescription>Set the catalog price, category, availability, and recipe tracking in one place.</CardDescription>
+                </CardHeader>
+                <CardContent className="grid gap-4 p-4 pt-0">
+                  <div className="grid gap-3 lg:grid-cols-[minmax(280px,1.2fr)_minmax(220px,0.8fr)_220px]">
+                    <Field label="Item name"><Input value={menuForm.name} onChange={(event) => setMenuForm({ ...menuForm, name: event.target.value })} /></Field>
+                    <Field label={`Price in ${selectedMenuData.label}`}><Input value={menuFormSelectedPrice()} onChange={(event) => updateMenuFormPrice(event.target.value)} placeholder="Leave blank to hide from this menu" /></Field>
+                    <Field label="Category">
+                      <Select value={menuForm.category || "Other"} onValueChange={(value) => setMenuForm({ ...menuForm, category: value })}>
+                        <SelectTrigger><SelectValue /></SelectTrigger>
+                        <SelectContent>{categories.map((category) => <SelectItem key={category} value={category}>{category}</SelectItem>)}</SelectContent>
+                      </Select>
+                    </Field>
+                  </div>
+                  <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-white p-4">
+                    <div className="flex flex-wrap items-center gap-5">
+                      <label className="flex items-center gap-2"><Checkbox checked={menuForm.available} onCheckedChange={(checked) => setMenuForm({ ...menuForm, available: Boolean(checked) })} />Available</label>
+                      <label className="flex items-center gap-2"><Checkbox checked={menuForm.trackRecipe} onCheckedChange={(checked) => setMenuForm({ ...menuForm, trackRecipe: Boolean(checked) })} />Track recipe</label>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {menuForm.id > 0 && (
+                        <Button variant="secondary" onClick={() => setMenuForm({ id: 0, name: "", price: "", category: categories[0] ?? "Other", available: true, trackRecipe: true, menuPrices: {} })}>Clear Form</Button>
+                      )}
+                      <Button className="min-w-40" onClick={saveMenuForm}>{menuForm.id ? "Save Item" : "Add Item"}</Button>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            </TabsContent>
+
+            <TabsContent value="catalog" className="grid gap-4 pt-4">
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle>Menu Data</CardTitle>
+                  <CardDescription>Catalogs hold separate price lists. Menu Types in settings decide where each catalog is used.</CardDescription>
+                </CardHeader>
+                <CardContent className="grid gap-4 p-4 pt-0">
+                  <div className="grid gap-3 xl:grid-cols-[260px_minmax(260px,1fr)_auto_auto] xl:items-end">
+                    <Field label="Editing catalog">
+                      <Select value={selectedMenuData.key} onValueChange={setSelectedMenuDataKey}>
+                        <SelectTrigger><SelectValue /></SelectTrigger>
+                        <SelectContent>{activeMenuData.map((entry) => <SelectItem key={entry.key} value={entry.key}>{entry.label}</SelectItem>)}</SelectContent>
+                      </Select>
+                    </Field>
+                    <Field label="New / duplicate catalog name"><Input value={menuDataDraft} onChange={(event) => setMenuDataDraft(event.target.value)} placeholder="Example: Parcel Menu" /></Field>
+                    <Button variant="secondary" onClick={addMenuData} disabled={!menuDataDraft.trim()}>Add Catalog</Button>
+                    <Button variant="secondary" onClick={duplicateSelectedMenuData}>Duplicate Selected</Button>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <Button onClick={importMenuCsv}>Import CSV</Button>
+                    <Button variant="secondary" onClick={downloadSampleCsv}>Download sample CSV format</Button>
+                    <Button variant="secondary" disabled={activeMenuData.length <= 1} onClick={hideSelectedMenuData}>Hide Selected Catalog</Button>
+                  </div>
+                </CardContent>
+              </Card>
+            </TabsContent>
+          </Tabs>
         </TabsContent>
         <TabsContent value="settings" className="grid gap-4 pt-4">
           <Card>
