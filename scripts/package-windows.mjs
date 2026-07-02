@@ -13,7 +13,6 @@ const normal = spawnSync("npx", normalArgs, { stdio: "inherit", shell: true });
 
 if (normal.status === 0) {
   run("npm", ["rebuild", "better-sqlite3"]);
-  run("node", ["scripts/clear-runtime-order-data.mjs"]);
   process.exit(0);
 }
 
@@ -31,7 +30,6 @@ const fallbackArgs =
     : ["electron-builder", "--dir", "--config", "electron-builder.packaging-fallback.yml"];
 const fallback = spawnSync("npx", fallbackArgs, { stdio: "inherit", shell: true });
 run("npm", ["rebuild", "better-sqlite3"]);
-run("node", ["scripts/clear-runtime-order-data.mjs"]);
 process.exit(fallback.status ?? 1);
 
 function run(command, args) {

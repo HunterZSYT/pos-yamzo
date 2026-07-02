@@ -3,6 +3,15 @@ I have made a repo at [HunterZSYT/pos-yamzo](https://github.com/HunterZSYT/pos-y
 Main goal:
 Build a simple, local, installable Windows POS app. I will first test it on my laptop. Later, I should be able to push it to GitHub, then download/clone it on the restaurant POS computer and install/run it locally.
 
+Production update rule:
+
+* Yamzo POS is now treated as production software.
+* Do not clear, reset, seed over, or delete live orders, order history, print jobs, audit logs, inventory, menu data, settings, receipt settings, or printer settings during normal coding, packaging, install, or update work.
+* Only run cleanup/reset scripts when explicitly requested for a named test database or with direct approval for a specific live database cleanup.
+* Database changes must be additive migrations where possible and must preserve existing local SQLite data.
+* App updates must not replace the local data folder under the user's AppData profile.
+* Future updater work should use a hosted release source such as GitHub Releases and show staff/admin that an update is available before installing or restarting.
+
 Use a local-first setup:
 
 * No cloud database for now.
@@ -98,6 +107,7 @@ Add order source support:
 External/manual orders should:
 
 * Be quick to enter
+* Support optional external platform order ID when enabled for the linked menu data/catalog
 * Not require kitchen print
 * Appear in order history
 * Appear in sales reports

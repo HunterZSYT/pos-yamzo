@@ -55,6 +55,7 @@ export interface MenuDataSetting {
   key: string;
   label: string;
   active: boolean;
+  externalOrderIdEnabled?: boolean;
 }
 
 export interface MenuTypeSetting {
@@ -97,6 +98,7 @@ export interface OrderBatch {
 export interface OrderSummary {
   id: number;
   orderNumber: string;
+  externalOrderId: string | null;
   source: OrderSource;
   tableNumber: string | null;
   status: OrderStatus;

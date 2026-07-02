@@ -8,12 +8,12 @@ import { createOrderCostSnapshot, reverseOrderCostSnapshot } from "./inventory.j
 
 export function createOrder(
   db: Database.Database,
-  input: { source: OrderSource; tableNumber?: string; note?: string }
+  input: { source: OrderSource; tableNumber?: string; note?: string; externalOrderId?: string | null }
 ): OrderSummary {
   const orderNumber = nextOrderNumber(db);
   const result = db
-    .prepare("INSERT INTO orders (order_number, source, table_number, note) VALUES (?, ?, ?, ?)")
-    .run(orderNumber, input.source, input.tableNumber ?? null, input.note ?? null);
+    .prepare("INSERT INTO orders (order_number, source, table_number, note, external_order_id) VALUES (?, ?, ?, ?, ?)")
+    .run(orderNumber, input.source, input.tableNumber ?? null, input.note ?? null, cleanExternalOrderId(input.externalOrderId));
   return getOrderSummary(db, Number(result.lastInsertRowid));
 }
 
@@ -118,15 +118,19 @@ export function updateOrderNote(db: Database.Database, orderId: number, note: st
 export function updateOrderInfo(
   db: Database.Database,
   orderId: number,
-  input: { source: OrderSource; tableNumber?: string | null; note?: string | null }
+  input: { source: OrderSource; tableNumber?: string | null; note?: string | null; externalOrderId?: string | null }
 ): OrderSummary {
   assertEditableOrder(db, orderId);
   const menuType = getMenuTypes(db).find((type) => type.key === input.source);
   const tablesEnabled = menuType?.tablesEnabled ?? input.source === "in_house";
-  db.prepare("UPDATE orders SET source = ?, table_number = ?, note = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(
+  const existing = input.externalOrderId === undefined
+    ? db.prepare("SELECT external_order_id FROM orders WHERE id = ?").get(orderId) as { external_order_id: string | null } | undefined
+    : undefined;
+  db.prepare("UPDATE orders SET source = ?, table_number = ?, note = ?, external_order_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(
     input.source,
     tablesEnabled ? input.tableNumber?.trim() || null : null,
     input.note?.trim() || null,
+    input.externalOrderId === undefined ? existing?.external_order_id ?? null : cleanExternalOrderId(input.externalOrderId),
     orderId
   );
   return getOrderSummary(db, orderId);
@@ -285,6 +289,7 @@ export function getOrderSummary(db: Database.Database, orderId: number): OrderSu
   const order = db.prepare("SELECT * FROM orders WHERE id = ?").get(orderId) as {
     id: number;
     order_number: string;
+    external_order_id: string | null;
     source: OrderSource;
     table_number: string | null;
     status: OrderSummary["status"];
@@ -304,6 +309,7 @@ export function getOrderSummary(db: Database.Database, orderId: number): OrderSu
   return {
     id: order.id,
     orderNumber: order.order_number,
+    externalOrderId: order.external_order_id,
     source: order.source,
     tableNumber: order.table_number,
     status: order.status,
@@ -492,6 +498,10 @@ function hasKitchenTicket(db: Database.Database, orderId: number): boolean {
 
 function touchOrder(db: Database.Database, orderId: number): void {
   db.prepare("UPDATE orders SET updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(orderId);
+}
+
+function cleanExternalOrderId(value?: string | null): string | null {
+  return value?.trim() || null;
 }
 
 function nextOrderNumber(db: Database.Database): string {

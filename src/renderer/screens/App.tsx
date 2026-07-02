@@ -79,9 +79,9 @@ const defaultMenuTypes: MenuTypeSetting[] = [
 ];
 
 const defaultMenuData: MenuDataSetting[] = [
-  { key: "in_house", label: "Store Menu", active: true },
-  { key: "foodpanda", label: "Foodpanda Menu", active: true },
-  { key: "foodie", label: "Foodie Menu", active: true }
+  { key: "in_house", label: "Store Menu", active: true, externalOrderIdEnabled: false },
+  { key: "foodpanda", label: "Foodpanda Menu", active: true, externalOrderIdEnabled: true },
+  { key: "foodie", label: "Foodie Menu", active: true, externalOrderIdEnabled: true }
 ];
 
 const deleteReasons = [
@@ -184,6 +184,7 @@ export function App() {
   const [showEmailAdvanced, setShowEmailAdvanced] = useState(false);
   const [source, setSource] = useState<OrderSource>("in_house");
   const [tableNumber, setTableNumber] = useState("");
+  const [externalOrderId, setExternalOrderId] = useState("");
   const [orderNote, setOrderNote] = useState("");
   const [discountMode, setDiscountMode] = useState<DiscountMode>("percent");
   const [discountValue, setDiscountValue] = useState("");
@@ -250,6 +251,8 @@ export function App() {
   const payableTotal = Math.max(0, subtotal - calculatedDiscount);
   const activeMenuTypes = useMemo(() => menuTypes.filter((type) => type.active !== false), [menuTypes]);
   const selectedMenuType = activeMenuTypes.find((type) => type.key === source) ?? activeMenuTypes[0] ?? defaultMenuTypes[0];
+  const selectedMenuDataForSource = menuData.find((entry) => entry.key === selectedMenuType?.menuDataKey);
+  const externalOrderIdEnabled = Boolean(selectedMenuDataForSource?.externalOrderIdEnabled);
   const tablesEnabledForSource = selectedMenuType?.tablesEnabled ?? source === "in_house";
   const isExternalOrder = !tablesEnabledForSource && ["foodpanda", "foodie", "other"].includes(source);
   const canPrintKitchen = !isExternalOrder || externalKitchenEnabled;
@@ -391,6 +394,7 @@ export function App() {
     setActiveOrder(null);
     setSource(activeMenuTypes[0]?.key ?? "in_house");
     setTableNumber("");
+    setExternalOrderId("");
     setOrderNote("");
     setDiscountMode("percent");
     setDiscountValue("");
@@ -418,6 +422,7 @@ export function App() {
     setActiveOrder(detail);
     setSource(detail.source);
     setTableNumber(detail.tableNumber ?? "");
+    setExternalOrderId(detail.externalOrderId ?? "");
     setOrderNote(detail.note ?? "");
     setDiscountMode("percent");
     setDiscountValue(detail.discount ? String(detail.discount) : "");
@@ -443,7 +448,12 @@ export function App() {
       setActiveOrder(detail);
       return detail;
     }
-    const created = await window.yamzo.orders.create({ source, tableNumber: tablesEnabledForSource ? tableNumber || undefined : undefined, note: orderNote || undefined });
+    const created = await window.yamzo.orders.create({
+      source,
+      tableNumber: tablesEnabledForSource ? tableNumber || undefined : undefined,
+      note: orderNote || undefined,
+      externalOrderId: externalOrderIdEnabled ? externalOrderId : null
+    });
     await window.yamzo.orders.discount(created.id, calculatedDiscount);
     const detail = await window.yamzo.orders.detail(created.id);
     setActiveOrder(detail);
@@ -452,16 +462,19 @@ export function App() {
 
   async function saveOrderInfo(orderId = activeOrder?.id) {
     if (!window.yamzo || !orderId) return;
-    await window.yamzo.orders.updateInfo(orderId, { source, tableNumber, note: orderNote });
+    await window.yamzo.orders.updateInfo(orderId, { source, tableNumber, note: orderNote, externalOrderId: externalOrderIdEnabled ? externalOrderId : null });
   }
 
   async function chooseSource(nextSource: OrderSource) {
     setSource(nextSource);
     const nextType = menuTypes.find((type) => type.key === nextSource);
     const nextTable = nextType?.tablesEnabled ? tableNumber : "";
+    const nextMenuData = menuData.find((entry) => entry.key === nextType?.menuDataKey);
+    const nextExternalOrderId = nextMenuData?.externalOrderIdEnabled ? externalOrderId : "";
     if (!nextType?.tablesEnabled) setTableNumber("");
+    if (!nextMenuData?.externalOrderIdEnabled) setExternalOrderId("");
     if (activeOrder && window.yamzo) {
-      await window.yamzo.orders.updateInfo(activeOrder.id, { source: nextSource, tableNumber: nextTable, note: orderNote });
+      await window.yamzo.orders.updateInfo(activeOrder.id, { source: nextSource, tableNumber: nextTable, note: orderNote, externalOrderId: nextExternalOrderId });
       setActiveOrder(await window.yamzo.orders.detail(activeOrder.id));
       await refreshData();
     }
@@ -475,7 +488,7 @@ export function App() {
     }
     setTableNumber(table);
     if (activeOrder && window.yamzo) {
-      await window.yamzo.orders.updateInfo(activeOrder.id, { source, tableNumber: table, note: orderNote });
+      await window.yamzo.orders.updateInfo(activeOrder.id, { source, tableNumber: table, note: orderNote, externalOrderId: externalOrderIdEnabled ? externalOrderId : null });
       setActiveOrder(await window.yamzo.orders.detail(activeOrder.id));
       await refreshData();
     }
@@ -834,7 +847,8 @@ export function App() {
         ...entry,
         key: entry.key || slugLocal(entry.label),
         label: entry.label.trim(),
-        active: entry.active !== false
+        active: entry.active !== false,
+        externalOrderIdEnabled: Boolean(entry.externalOrderIdEnabled)
       }))
       .filter((entry) => entry.key && entry.label);
     await window.yamzo?.settings.setMenuData(cleaned);
@@ -997,6 +1011,11 @@ export function App() {
               <CardTitle>Order Items</CardTitle>
               <CardDescription>{activeOrder ? activeOrder.orderNumber : "No order started"}</CardDescription>
               <div className="grid gap-2">
+                {externalOrderIdEnabled && (
+                  <Field label="External order ID">
+                    <Input value={externalOrderId} onChange={(event) => setExternalOrderId(event.target.value)} onBlur={() => saveOrderInfo()} placeholder="Example: Foodpanda order ID" />
+                  </Field>
+                )}
                 <Field label="Host">
                   <Select value={selectedHost} onValueChange={setSelectedHost}>
                     <SelectTrigger className="bg-white"><SelectValue /></SelectTrigger>
@@ -1564,6 +1583,7 @@ function OrderList({ orders, showResume = false, resumeLabel = "Resume", onResum
               <div>
                 <CardTitle>{orderDisplayName(order)}</CardTitle>
                 <CardDescription>Receipt {order.orderNumber}</CardDescription>
+                {order.externalOrderId && <p className="mt-1 text-xs font-medium text-sky-700">External ID: {order.externalOrderId}</p>}
               </div>
               <Badge className="shrink-0" variant={order.status === "cancelled" ? "secondary" : "default"}>{order.status === "cancelled" ? "Deleted" : labelize(order.status)}</Badge>
             </div>
@@ -3341,7 +3361,7 @@ function MenuAdmin({
     const label = menuDataDraft.trim();
     if (!label) return;
     const key = uniqueMenuDataKey(label, menuData);
-    const next = [...menuData, { key, label, active: true }];
+    const next = [...menuData, { key, label, active: true, externalOrderIdEnabled: false }];
     setMenuData(next);
     setMenuDataDraft("");
     await saveMenuData(next);
@@ -3350,7 +3370,7 @@ function MenuAdmin({
   async function duplicateSelectedMenuData() {
     const label = menuDataDraft.trim() || `${selectedMenuData.label} Copy`;
     const key = uniqueMenuDataKey(label, menuData);
-    const next = [...menuData, { key, label, active: true }];
+    const next = [...menuData, { key, label, active: true, externalOrderIdEnabled: selectedMenuData.externalOrderIdEnabled ?? false }];
     await saveMenuData(next);
     for (const item of menu) {
       const copyPrice = selectedMenuPrice(item);
@@ -3375,6 +3395,12 @@ function MenuAdmin({
     if (activeMenuData.length <= 1) return;
     if (!window.confirm(`Hide ${selectedMenuData.label}? Existing item prices will be kept for future use.`)) return;
     const next = menuData.map((entry) => entry.key === selectedMenuData.key ? { ...entry, active: false } : entry);
+    await saveMenuData(next);
+  }
+
+  async function toggleSelectedExternalOrderId(enabled: boolean) {
+    const next = menuData.map((entry) => entry.key === selectedMenuData.key ? { ...entry, externalOrderIdEnabled: enabled } : entry);
+    setMenuData(next);
     await saveMenuData(next);
   }
 
@@ -3507,6 +3533,13 @@ function MenuAdmin({
                     <Button variant="secondary" onClick={downloadSampleCsv}>Download sample CSV format</Button>
                     <Button variant="secondary" disabled={activeMenuData.length <= 1} onClick={hideSelectedMenuData}>Hide Selected Catalog</Button>
                   </div>
+                  <label className="flex max-w-xl items-start gap-3 rounded-xl border bg-muted/30 p-3">
+                    <Checkbox checked={Boolean(selectedMenuData.externalOrderIdEnabled)} onCheckedChange={(checked) => toggleSelectedExternalOrderId(Boolean(checked))} />
+                    <span className="grid gap-1">
+                      <strong>External order ID</strong>
+                      <small className="text-muted-foreground">Show an order ID field when staff use menu types linked to this catalog.</small>
+                    </span>
+                  </label>
                 </CardContent>
               </Card>
             </TabsContent>

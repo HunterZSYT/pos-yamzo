@@ -6,9 +6,9 @@ const DEFAULT_QR_PATH = "yamzo://review-qr";
 const DEFAULT_HOST_NAMES = ["Cashier"];
 const DEFAULT_MENU_CATEGORIES = ["Seafood", "Momo", "Fish & Chips", "Pasta", "Rice", "Soup", "Snacks", "Sauce", "Drinks", "Other"];
 const DEFAULT_MENU_DATA: MenuDataSetting[] = [
-  { key: "in_house", label: "Store Menu", active: true },
-  { key: "foodpanda", label: "Foodpanda Menu", active: true },
-  { key: "foodie", label: "Foodie Menu", active: true }
+  { key: "in_house", label: "Store Menu", active: true, externalOrderIdEnabled: false },
+  { key: "foodpanda", label: "Foodpanda Menu", active: true, externalOrderIdEnabled: true },
+  { key: "foodie", label: "Foodie Menu", active: true, externalOrderIdEnabled: true }
 ];
 const DEFAULT_MENU_TYPES: MenuTypeSetting[] = [
   { key: "in_house", label: "Dine-in", menuDataKey: "in_house", tablesEnabled: true, commissionPercent: 0, active: true },
@@ -114,7 +114,7 @@ export function setMenuCategories(db: Database.Database, categories: string[]): 
 export function getMenuData(db: Database.Database): MenuDataSetting[] {
   const saved = getSetting<MenuDataSetting[]>(db, "menuData", DEFAULT_MENU_DATA);
   const priceKeys = db.prepare("SELECT DISTINCT menu_type_key AS key FROM menu_item_prices ORDER BY menu_type_key").all() as Array<{ key: string }>;
-  const merged = [...saved, ...priceKeys.map((row) => ({ key: row.key, label: menuDataLabel(row.key), active: true }))];
+  const merged = [...saved, ...priceKeys.map((row) => ({ key: row.key, label: menuDataLabel(row.key), active: true, externalOrderIdEnabled: defaultExternalOrderId(row.key) }))];
   const cleaned = Array.from(
     new Map(merged.map(normalizeMenuData).filter((entry) => entry.key && entry.label).map((entry) => [entry.key, entry])).values()
   );
@@ -160,7 +160,8 @@ export function normalizeMenuData(input: Partial<MenuDataSetting> & { label?: st
   return {
     key,
     label: label || menuDataLabel(key),
-    active: input.active !== false
+    active: input.active !== false,
+    externalOrderIdEnabled: typeof input.externalOrderIdEnabled === "boolean" ? input.externalOrderIdEnabled : defaultExternalOrderId(key)
   };
 }
 
@@ -173,4 +174,8 @@ export function slugMenuType(label: string): string {
 function menuDataLabel(key: string): string {
   if (key === "in_house") return "Store Menu";
   return `${key.replace(/_/g, " ").replace(/\b\w/g, (char) => char.toUpperCase())} Menu`;
+}
+
+function defaultExternalOrderId(key: string): boolean {
+  return ["foodpanda", "foodie"].includes(key);
 }

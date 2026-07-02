@@ -319,6 +319,7 @@ export function migrate(db: Database.Database): void {
   `);
 
   ensureColumn(db, "order_items", "parcel", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn(db, "orders", "external_order_id", "TEXT");
   ensureColumn(db, "orders", "first_kitchen_sent_at", "TEXT");
   ensureColumn(db, "orders", "kitchen_completed_at", "TEXT");
   ensureColumn(db, "kitchen_tickets", "completed_at", "TEXT");

@@ -27,7 +27,7 @@ import { reprintKitchenCopy, reprintReceipt, voidOrderItem } from "../src/main/d
 import { getSalesSummary } from "../src/main/domain/reports";
 import { addCostRecord, addPriceRecord, addRestockEntry, deleteRestockEntry, importInventoryItemsCsv, importRecipeInventoryCsv, listInventorySnapshot, saveMenuRecipe } from "../src/main/domain/inventory";
 import { archiveMenuItem, deleteMenuItem, importMenuCsv, listMenuItems, parsePrice, saveMenuItem } from "../src/main/services/menuImport";
-import { getBrandingSettings, getHostNames, getTotalTables, setBrandingSettings, setHostNames, setInventoryTracking, getSetting, setPrinterName, setTotalTables } from "../src/main/services/settings";
+import { getBrandingSettings, getHostNames, getMenuData, getTotalTables, setBrandingSettings, setHostNames, setInventoryTracking, getSetting, setMenuData, setPrinterName, setTotalTables } from "../src/main/services/settings";
 import { buildDailySalesEmail, clearGmailAuth, getEmailSettings, saveEmailSettings } from "../src/main/services/email";
 import { renderReceiptHtml } from "../src/main/services/printer";
 import { getPrintJob, listPrintJobs, markPrintJobFailed, markPrintJobRetry } from "../src/main/services/printQueue";
@@ -180,6 +180,23 @@ describe("Yamzo POS core", () => {
     expect(getOrderDetail(database, order.id).status).toBe("cancelled");
     expect(clearOrderHistory(database)).toBe(1);
     expect(database.prepare("SELECT COUNT(*) AS count FROM orders").get()).toMatchObject({ count: 0 });
+  });
+
+  it("stores external order IDs only as order metadata", () => {
+    const database = freshDb();
+    setMenuData(database, [
+      { key: "in_house", label: "Store Menu", active: true, externalOrderIdEnabled: false },
+      { key: "foodpanda", label: "Foodpanda Menu", active: true, externalOrderIdEnabled: true }
+    ]);
+    expect(getMenuData(database).find((entry) => entry.key === "foodpanda")?.externalOrderIdEnabled).toBe(true);
+    const order = createOrder(database, { source: "foodpanda", externalOrderId: " FP-77881 " });
+    expect(getOrderDetail(database, order.id).externalOrderId).toBe("FP-77881");
+    updateOrderInfo(database, order.id, { source: "foodpanda", externalOrderId: "FP-77882" });
+    expect(listOpenOrders(database)[0].externalOrderId).toBe("FP-77882");
+    updateOrderInfo(database, order.id, { source: "in_house", tableNumber: "Table 2", externalOrderId: null });
+    const updated = getOrderDetail(database, order.id);
+    expect(updated.source).toBe("in_house");
+    expect(updated.externalOrderId).toBeNull();
   });
 
   it("rejects invalid order edges and prevents closed-order mutation", () => {

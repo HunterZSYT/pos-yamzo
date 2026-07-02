@@ -51,12 +51,12 @@ const api = {
     deleteItem: (id: number) => ipcRenderer.invoke("menu:deleteItem", id)
   },
   orders: {
-    create: (input: { source: OrderSource; tableNumber?: string; note?: string }) => ipcRenderer.invoke("orders:create", input),
+    create: (input: { source: OrderSource; tableNumber?: string; note?: string; externalOrderId?: string | null }) => ipcRenderer.invoke("orders:create", input),
     addItem: (orderId: number, input: OrderItemInput) => ipcRenderer.invoke("orders:addItem", orderId, input),
     sendKitchen: (orderId: number, allowExternal?: boolean) => ipcRenderer.invoke("orders:sendKitchen", orderId, allowExternal),
     discount: (orderId: number, discount: number) => ipcRenderer.invoke("orders:discount", orderId, discount),
     updateNote: (orderId: number, note: string) => ipcRenderer.invoke("orders:updateNote", orderId, note),
-    updateInfo: (orderId: number, input: { source: OrderSource; tableNumber?: string | null; note?: string | null }) =>
+    updateInfo: (orderId: number, input: { source: OrderSource; tableNumber?: string | null; note?: string | null; externalOrderId?: string | null }) =>
       ipcRenderer.invoke("orders:updateInfo", orderId, input),
     updateItem: (orderItemId: number, input: { quantity: number; note?: string | null; parcel?: boolean }) => ipcRenderer.invoke("orders:updateItem", orderItemId, input),
     removeItem: (orderItemId: number, reason?: string) => ipcRenderer.invoke("orders:removeItem", orderItemId, reason),
