@@ -1821,6 +1821,7 @@ function InventoryAdmin({
   const [costForm, setCostForm] = useState({
     categoryId: firstCostCategory?.id ? String(firstCostCategory.id) : "",
     costName: "",
+    quantity: "1",
     amount: "",
     paymentMethod: "cash",
     responsiblePerson: "",
@@ -1832,11 +1833,15 @@ function InventoryAdmin({
   const [statusRange, setStatusRange] = useState({ start: "", end: "" });
   const [itemEdit, setItemEdit] = useState<InventoryItem | null>(null);
   const [restockEdit, setRestockEdit] = useState<RestockEntry | null>(null);
+  const [restockDialogOpen, setRestockDialogOpen] = useState(false);
+  const [physicalDialogOpen, setPhysicalDialogOpen] = useState(false);
   const [recipeSearch, setRecipeSearch] = useState("");
   const [recipeStatusFilter, setRecipeStatusFilter] = useState("all");
   const [inventoryItemSearch, setInventoryItemSearch] = useState("");
   const [restockSearch, setRestockSearch] = useState("");
   const [physicalSearch, setPhysicalSearch] = useState("");
+  const selectedRestockItem = snapshot.items.find((item) => String(item.id) === restockForm.inventoryItemId) ?? null;
+  const selectedPhysicalItem = snapshot.items.find((item) => String(item.id) === physicalCountForm.inventoryItemId) ?? null;
 
   useEffect(() => {
     if (!itemForm.baseUnitId && activeUnits[0]) setItemForm((current) => ({ ...current, baseUnitId: String(activeUnits[0].id) }));
@@ -1886,6 +1891,7 @@ function InventoryAdmin({
       note: restockForm.note || null
     });
     setRestockForm({ ...restockForm, quantity: "", totalCost: "", supplierName: "", note: "" });
+    setRestockDialogOpen(false);
     setMessage("Restock entry saved.");
     await refreshData();
   }
@@ -1898,6 +1904,7 @@ function InventoryAdmin({
       note: physicalCountForm.note || null
     });
     setPhysicalCountForm({ ...physicalCountForm, quantity: "", note: "" });
+    setPhysicalDialogOpen(false);
     setMessage("Physical count saved.");
     await refreshData();
   }
@@ -1933,12 +1940,13 @@ function InventoryAdmin({
     await window.yamzo?.inventory.addCost({
       categoryId: costForm.categoryId ? Number(costForm.categoryId) : null,
       costName: costForm.costName,
+      quantity: Number(costForm.quantity || 1),
       amount: Number(costForm.amount || 0),
       paymentMethod: costForm.paymentMethod,
       responsiblePerson: costForm.responsiblePerson || null,
       note: costForm.note || null
     });
-    setCostForm({ ...costForm, costName: "", amount: "", note: "" });
+    setCostForm({ ...costForm, costName: "", quantity: "1", amount: "", note: "" });
     setMessage("Cost record saved.");
     await refreshData();
   }
@@ -1960,7 +1968,7 @@ function InventoryAdmin({
 
   async function addCostCategory() {
     if (!costCategoryName.trim()) return;
-    await window.yamzo?.inventory.saveCostCategory({ name: costCategoryName.trim(), active: true });
+    await window.yamzo?.inventory.saveCostCategory({ name: costCategoryName.trim(), active: true, sortOrder: activeCostCategories.length });
     setCostCategoryName("");
     setMessage("Cost category saved.");
     await refreshData();
@@ -2132,19 +2140,24 @@ function InventoryAdmin({
               <Button className="self-end" onClick={saveItem}>Save Item</Button>
             </CardContent>
           </Card>
-          <div className="grid gap-2">
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
             {filteredInventoryItems.map((item) => (
-              <Card key={item.id} size="sm">
-                <CardContent className="grid gap-4 p-4 xl:grid-cols-[minmax(240px,1fr)_minmax(140px,auto)_minmax(150px,auto)_minmax(130px,auto)_auto] xl:items-center">
-                  <div className="min-w-0">
-                    <strong className="block truncate">{item.name}</strong>
+              <Card key={item.id} size="sm" className="overflow-hidden">
+                <CardContent className="grid min-h-[190px] gap-3 p-4">
+                  <div className="min-w-0 space-y-1">
+                    <div className="flex items-start justify-between gap-2">
+                      <strong className="line-clamp-2">{item.name}</strong>
+                      <Badge variant={item.status === "ok" ? "secondary" : "destructive"}>{item.status === "ok" ? "OK" : item.status === "low" ? "Low" : "Out"}</Badge>
+                    </div>
                     <p className="text-sm text-muted-foreground">{item.categoryName ?? "Other"}</p>
                   </div>
-                  <span>Stock: <strong>{formatQuantity(item.currentStock)} {item.unitShortName}</strong></span>
-                  <span>Latest price: <strong>{formatQuantity(item.latestPrice)} / {item.unitShortName}</strong></span>
-                  <span>Value: <strong>{money(item.estimatedValue)}</strong></span>
-                  <div className="flex flex-wrap items-center justify-start gap-2 xl:justify-end">
-                    <Badge variant={item.status === "ok" ? "secondary" : "destructive"}>{item.status === "ok" ? "OK" : item.status === "low" ? "Low Stock" : "Out of Stock"}</Badge>
+                  <div className="grid grid-cols-2 gap-2 text-sm">
+                    <InventoryMiniMetric label="Stock" value={`${formatQuantity(item.currentStock)} ${item.unitShortName}`} />
+                    <InventoryMiniMetric label="Latest" value={`${formatQuantity(item.latestPrice)} / ${item.unitShortName}`} />
+                    <InventoryMiniMetric label="Value" value={money(item.estimatedValue)} />
+                    <InventoryMiniMetric label="Warning" value={`${formatQuantity(item.lowStockThreshold)} ${item.unitShortName}`} />
+                  </div>
+                  <div className="mt-auto grid grid-cols-3 gap-2">
                     <Button variant="secondary" size="sm" onClick={() => editItem(item)}>Edit</Button>
                     <Button variant="secondary" size="sm" onClick={() => onViewPriceHistory(item.id)}>Price Record</Button>
                     <Button variant="destructive" size="sm" onClick={() => removeItem(item)}>Remove</Button>
@@ -2158,63 +2171,42 @@ function InventoryAdmin({
 
         <TabsContent value="restock" className="grid gap-4 pt-4">
           <Card>
-            <CardHeader className="pb-2">
-              <CardTitle>Restock Entry</CardTitle>
-              <CardDescription>Select one raw material or enabled recipe material and record the purchase details.</CardDescription>
-            </CardHeader>
-            <CardContent className="grid grid-cols-[repeat(auto-fit,minmax(180px,1fr))] gap-3 p-4 pt-0">
-              <Field label="Item type">
-                <Select value={restockForm.itemType} onValueChange={(value) => setRestockForm({ ...restockForm, itemType: value, recipeId: "" })}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent><SelectItem value="raw">Raw materials</SelectItem><SelectItem value="recipe">Recipe materials</SelectItem></SelectContent>
-                </Select>
-              </Field>
-              {restockForm.itemType === "recipe" && (
-                <Field label="Recipe">
-                  <SearchableRecipeSelect value={restockForm.recipeId} recipes={restockableRecipes} onChange={(value) => setRestockForm({ ...restockForm, recipeId: value })} />
-                </Field>
-              )}
-              <InventoryItemPicker label="Item" value={restockForm.inventoryItemId} items={snapshot.items} onChange={(value) => setRestockForm({ ...restockForm, inventoryItemId: value })} />
-              <Field label="Quantity"><Input value={restockForm.quantity} onChange={(event) => setRestockForm({ ...restockForm, quantity: event.target.value })} /></Field>
-              <Field label="Total cost"><Input value={restockForm.totalCost} onChange={(event) => setRestockForm({ ...restockForm, totalCost: event.target.value })} /></Field>
-              <Field label="Supplier"><Input value={restockForm.supplierName} onChange={(event) => setRestockForm({ ...restockForm, supplierName: event.target.value })} /></Field>
-              <Field label="Person responsible"><Input value={restockForm.responsiblePerson} onChange={(event) => setRestockForm({ ...restockForm, responsiblePerson: event.target.value })} /></Field>
-              <Field label="Note"><Input value={restockForm.note} onChange={(event) => setRestockForm({ ...restockForm, note: event.target.value })} /></Field>
-              <Button className="self-end" onClick={addRestock} disabled={!restockForm.inventoryItemId}>Add Restock</Button>
-            </CardContent>
-          </Card>
-          <Card>
             <CardHeader className="pb-3">
-              <CardTitle>Restock History</CardTitle>
-              <CardDescription>Search recent restocks by item, supplier, person, or note.</CardDescription>
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <CardTitle>Restock History</CardTitle>
+                  <CardDescription>Search recent restocks by item, supplier, person, or note.</CardDescription>
+                </div>
+                <Button onClick={() => { setRestockForm({ ...restockForm, inventoryItemId: "", recipeId: "", quantity: "", totalCost: "", supplierName: "", note: "" }); setRestockDialogOpen(true); }}>Add Restock</Button>
+              </div>
             </CardHeader>
             <CardContent className="grid gap-3">
               <Input value={restockSearch} onChange={(event) => setRestockSearch(event.target.value)} placeholder="Search restock records" />
               <RestockEntryTable entries={filteredRestocks} onEdit={setRestockEdit} onDelete={deleteRestock} />
             </CardContent>
           </Card>
+          <RestockCreateDialog
+            open={restockDialogOpen}
+            onOpenChange={setRestockDialogOpen}
+            items={snapshot.items}
+            restockableRecipes={restockableRecipes}
+            form={restockForm}
+            selectedItem={selectedRestockItem}
+            setForm={setRestockForm}
+            onSave={addRestock}
+          />
         </TabsContent>
 
         <TabsContent value="physical" className="grid gap-4 pt-4">
           <Card>
-            <CardHeader>
-              <CardTitle>Physical Count</CardTitle>
-              <CardDescription>Manual stock counts are the source of truth for current stock.</CardDescription>
-            </CardHeader>
-            <CardContent className="grid grid-cols-[repeat(auto-fit,minmax(180px,1fr))] gap-3">
-              <InventoryItemPicker label="Item" value={physicalCountForm.inventoryItemId} items={snapshot.items} onChange={(value) => setPhysicalCountForm({ ...physicalCountForm, inventoryItemId: value })} />
-              <Field label={`Count (${snapshot.items.find((item) => String(item.id) === physicalCountForm.inventoryItemId)?.unitShortName ?? "unit"})`}>
-                <Input value={physicalCountForm.quantity} onChange={(event) => setPhysicalCountForm({ ...physicalCountForm, quantity: event.target.value })} />
-              </Field>
-              <Field label="Person responsible"><Input value={physicalCountForm.responsiblePerson} onChange={(event) => setPhysicalCountForm({ ...physicalCountForm, responsiblePerson: event.target.value })} /></Field>
-              <Field label="Note"><Input value={physicalCountForm.note} onChange={(event) => setPhysicalCountForm({ ...physicalCountForm, note: event.target.value })} /></Field>
-              <Button className="self-end" onClick={addPhysicalCountEntry} disabled={!physicalCountForm.inventoryItemId || !physicalCountForm.quantity}>Save Count</Button>
-            </CardContent>
-          </Card>
-          <Card>
             <CardHeader className="pb-3">
-              <CardTitle>Physical Count History</CardTitle>
-              <CardDescription>Search saved manual counts and restock-created count records.</CardDescription>
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <CardTitle>Physical Count History</CardTitle>
+                  <CardDescription>Manual stock counts are the source of truth for current stock.</CardDescription>
+                </div>
+                <Button onClick={() => { setPhysicalCountForm({ ...physicalCountForm, inventoryItemId: "", quantity: "", note: "" }); setPhysicalDialogOpen(true); }}>Add Count</Button>
+              </div>
             </CardHeader>
             <CardContent className="grid gap-3">
               <Input value={physicalSearch} onChange={(event) => setPhysicalSearch(event.target.value)} placeholder="Search physical counts" />
@@ -2224,6 +2216,15 @@ function InventoryAdmin({
               />
             </CardContent>
           </Card>
+          <PhysicalCountCreateDialog
+            open={physicalDialogOpen}
+            onOpenChange={setPhysicalDialogOpen}
+            items={snapshot.items}
+            form={physicalCountForm}
+            selectedItem={selectedPhysicalItem}
+            setForm={setPhysicalCountForm}
+            onSave={addPhysicalCountEntry}
+          />
         </TabsContent>
 
         <TabsContent value="orders" className="pt-4">
@@ -2483,6 +2484,217 @@ function RestockEditorDialog({
   );
 }
 
+function InventoryItemCardPicker({
+  items,
+  selectedItemId,
+  onSelect,
+  search,
+  onSearch
+}: {
+  items: InventoryItem[];
+  selectedItemId: string;
+  onSelect: (item: InventoryItem) => void;
+  search: string;
+  onSearch: (value: string) => void;
+}) {
+  const groupedItems = useMemo(() => {
+    const filtered = items.filter((item) => {
+      const haystack = `${item.name} ${item.categoryName ?? ""} ${item.unitShortName}`.toLowerCase();
+      return haystack.includes(search.trim().toLowerCase());
+    });
+    return filtered.reduce<Record<string, InventoryItem[]>>((groups, item) => {
+      const key = item.categoryName || "Other";
+      groups[key] = groups[key] ?? [];
+      groups[key].push(item);
+      return groups;
+    }, {});
+  }, [items, search]);
+
+  return (
+    <div className="grid gap-3">
+      <Input value={search} onChange={(event) => onSearch(event.target.value)} placeholder="Search item or category" />
+      <ScrollArea className="h-[420px] rounded-xl border bg-muted/20 p-3">
+        <div className="grid gap-5 pr-3">
+          {Object.entries(groupedItems).map(([category, categoryItems]) => (
+            <section key={category} className="grid gap-2">
+              <div className="flex items-center justify-between gap-3">
+                <h4 className="text-sm font-semibold">{category}</h4>
+                <Badge variant="secondary">{categoryItems.length}</Badge>
+              </div>
+              <div className="grid gap-2 sm:grid-cols-2">
+                {categoryItems.map((item) => {
+                  const selected = selectedItemId === String(item.id);
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => onSelect(item)}
+                      className={`rounded-xl border bg-card p-3 text-left shadow-sm transition hover:border-foreground/30 hover:bg-accent ${selected ? "border-foreground ring-2 ring-foreground/10" : ""}`}
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <strong className="line-clamp-2 text-sm">{item.name}</strong>
+                        <Badge variant={item.status === "ok" ? "secondary" : "destructive"}>{item.status === "ok" ? "OK" : item.status === "low" ? "Low" : "Out"}</Badge>
+                      </div>
+                      <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-muted-foreground">
+                        <span>Stock <strong className="block text-foreground">{formatQuantity(item.currentStock)} {item.unitShortName}</strong></span>
+                        <span>Latest <strong className="block text-foreground">{formatQuantity(item.latestPrice)} / {item.unitShortName}</strong></span>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </section>
+          ))}
+          {Object.keys(groupedItems).length === 0 && <EmptyState title="No items found" description="Try another item name or category." />}
+        </div>
+      </ScrollArea>
+    </div>
+  );
+}
+
+function RestockCreateDialog({
+  open,
+  onOpenChange,
+  items,
+  restockableRecipes,
+  form,
+  selectedItem,
+  setForm,
+  onSave
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  items: InventoryItem[];
+  restockableRecipes: MenuRecipe[];
+  form: { itemType: string; inventoryItemId: string; recipeId: string; quantity: string; totalCost: string; supplierName: string; responsiblePerson: string; note: string };
+  selectedItem: InventoryItem | null;
+  setForm: (form: { itemType: string; inventoryItemId: string; recipeId: string; quantity: string; totalCost: string; supplierName: string; responsiblePerson: string; note: string }) => void;
+  onSave: () => Promise<void>;
+}) {
+  const [search, setSearch] = useState("");
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="w-[min(1120px,calc(100vw-32px))] !max-w-[1120px] overflow-hidden p-0">
+        <DialogHeader className="border-b px-6 py-5">
+          <DialogTitle>Add Restock</DialogTitle>
+          <DialogDescription>Select the purchased item first, then enter quantity and cost details.</DialogDescription>
+        </DialogHeader>
+        <div className="grid max-h-[calc(100vh-190px)] gap-5 overflow-auto p-6 lg:grid-cols-[minmax(420px,1fr)_380px]">
+          <InventoryItemCardPicker
+            items={items}
+            selectedItemId={form.inventoryItemId}
+            search={search}
+            onSearch={setSearch}
+            onSelect={(item) => setForm({ ...form, inventoryItemId: String(item.id) })}
+          />
+          <div className="grid content-start gap-4">
+            <Card className="bg-emerald-50/60">
+              <CardContent className="grid gap-2 p-4">
+                <span className="text-sm text-muted-foreground">Selected item</span>
+                <strong>{selectedItem?.name ?? "Choose an item"}</strong>
+                {selectedItem && (
+                  <div className="grid grid-cols-2 gap-2 text-sm">
+                    <InventoryMiniMetric label="Category" value={selectedItem.categoryName ?? "Other"} />
+                    <InventoryMiniMetric label="Unit" value={selectedItem.unitShortName} />
+                    <InventoryMiniMetric label="Current stock" value={`${formatQuantity(selectedItem.currentStock)} ${selectedItem.unitShortName}`} />
+                    <InventoryMiniMetric label="Latest price" value={`${formatQuantity(selectedItem.latestPrice)} / ${selectedItem.unitShortName}`} />
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+            <Field label="Item type">
+              <Select value={form.itemType} onValueChange={(value) => setForm({ ...form, itemType: value, recipeId: "" })}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent><SelectItem value="raw">Raw materials</SelectItem><SelectItem value="recipe">Recipe materials</SelectItem></SelectContent>
+              </Select>
+            </Field>
+            {form.itemType === "recipe" && (
+              <Field label="Recipe material">
+                <SearchableRecipeSelect value={form.recipeId} recipes={restockableRecipes} onChange={(value) => setForm({ ...form, recipeId: value })} />
+              </Field>
+            )}
+            <div className="grid gap-3 sm:grid-cols-2">
+              <Field label={`Quantity (${selectedItem?.unitShortName ?? "unit"})`}><Input value={form.quantity} onChange={(event) => setForm({ ...form, quantity: event.target.value })} /></Field>
+              <Field label="Total cost"><Input value={form.totalCost} onChange={(event) => setForm({ ...form, totalCost: event.target.value })} /></Field>
+              <Field label="Supplier"><Input value={form.supplierName} onChange={(event) => setForm({ ...form, supplierName: event.target.value })} /></Field>
+              <Field label="Person responsible"><Input value={form.responsiblePerson} onChange={(event) => setForm({ ...form, responsiblePerson: event.target.value })} /></Field>
+            </div>
+            <Field label="Note"><Textarea value={form.note} onChange={(event) => setForm({ ...form, note: event.target.value })} /></Field>
+          </div>
+        </div>
+        <DialogFooter className="border-t px-6 py-4">
+          <Button variant="secondary" onClick={() => onOpenChange(false)}>Cancel</Button>
+          <Button onClick={onSave} disabled={!selectedItem || !form.quantity || !form.totalCost}>Save Restock</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function PhysicalCountCreateDialog({
+  open,
+  onOpenChange,
+  items,
+  form,
+  selectedItem,
+  setForm,
+  onSave
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  items: InventoryItem[];
+  form: { inventoryItemId: string; quantity: string; responsiblePerson: string; note: string };
+  selectedItem: InventoryItem | null;
+  setForm: (form: { inventoryItemId: string; quantity: string; responsiblePerson: string; note: string }) => void;
+  onSave: () => Promise<void>;
+}) {
+  const [search, setSearch] = useState("");
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="w-[min(1040px,calc(100vw-32px))] !max-w-[1040px] overflow-hidden p-0">
+        <DialogHeader className="border-b px-6 py-5">
+          <DialogTitle>Add Physical Count</DialogTitle>
+          <DialogDescription>Select the counted item from cards, then record the measured quantity.</DialogDescription>
+        </DialogHeader>
+        <div className="grid max-h-[calc(100vh-190px)] gap-5 overflow-auto p-6 lg:grid-cols-[minmax(420px,1fr)_340px]">
+          <InventoryItemCardPicker
+            items={items}
+            selectedItemId={form.inventoryItemId}
+            search={search}
+            onSearch={setSearch}
+            onSelect={(item) => setForm({ ...form, inventoryItemId: String(item.id) })}
+          />
+          <div className="grid content-start gap-4">
+            <Card className="bg-sky-50/70">
+              <CardContent className="grid gap-2 p-4">
+                <span className="text-sm text-muted-foreground">Selected item</span>
+                <strong>{selectedItem?.name ?? "Choose an item"}</strong>
+                {selectedItem && (
+                  <div className="grid grid-cols-2 gap-2 text-sm">
+                    <InventoryMiniMetric label="Category" value={selectedItem.categoryName ?? "Other"} />
+                    <InventoryMiniMetric label="Unit" value={selectedItem.unitShortName} />
+                    <InventoryMiniMetric label="Current stock" value={`${formatQuantity(selectedItem.currentStock)} ${selectedItem.unitShortName}`} />
+                    <InventoryMiniMetric label="Warning" value={`${formatQuantity(selectedItem.lowStockThreshold)} ${selectedItem.unitShortName}`} />
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+            <Field label={`Count (${selectedItem?.unitShortName ?? "unit"})`}><Input value={form.quantity} onChange={(event) => setForm({ ...form, quantity: event.target.value })} /></Field>
+            <Field label="Person responsible"><Input value={form.responsiblePerson} onChange={(event) => setForm({ ...form, responsiblePerson: event.target.value })} /></Field>
+            <Field label="Note"><Textarea value={form.note} onChange={(event) => setForm({ ...form, note: event.target.value })} /></Field>
+          </div>
+        </div>
+        <DialogFooter className="border-t px-6 py-4">
+          <Button variant="secondary" onClick={() => onOpenChange(false)}>Cancel</Button>
+          <Button onClick={onSave} disabled={!selectedItem || !form.quantity}>Save Count</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function InventoryOrdersPanel({ usage }: { usage: InventorySnapshot["orderUsage"] }) {
   return (
     <div className="grid gap-4">
@@ -2634,17 +2846,83 @@ function SearchableRecipeSelect({ value, recipes, onChange }: { value: string; r
   );
 }
 
-function EditableSettingList<T extends { id: number; name: string }>({ items, onSave, onRemove }: { items: T[]; onSave: (item: T, name: string) => Promise<unknown> | void; onRemove: (item: T) => Promise<void> | void }) {
+function EditableSettingList<T extends { id: number; name: string }>({
+  items,
+  onSave,
+  onRemove,
+  onReorder
+}: {
+  items: T[];
+  onSave: (item: T, name: string) => Promise<unknown> | void;
+  onRemove: (item: T) => Promise<void> | void;
+  onReorder?: (items: T[]) => Promise<void> | void;
+}) {
+  const [draggedId, setDraggedId] = useState<number | null>(null);
+
+  function moveItem(fromId: number, toId: number) {
+    if (!onReorder || fromId === toId) return;
+    const fromIndex = items.findIndex((item) => item.id === fromId);
+    const toIndex = items.findIndex((item) => item.id === toId);
+    if (fromIndex < 0 || toIndex < 0) return;
+    const nextItems = [...items];
+    const [moved] = nextItems.splice(fromIndex, 1);
+    nextItems.splice(toIndex, 0, moved);
+    void onReorder(nextItems);
+  }
+
+  function nudgeItem(item: T, direction: -1 | 1) {
+    if (!onReorder) return;
+    const index = items.findIndex((entry) => entry.id === item.id);
+    const nextIndex = index + direction;
+    if (index < 0 || nextIndex < 0 || nextIndex >= items.length) return;
+    const nextItems = [...items];
+    const [moved] = nextItems.splice(index, 1);
+    nextItems.splice(nextIndex, 0, moved);
+    void onReorder(nextItems);
+  }
+
   return (
     <div className="grid gap-2">
       {items.length === 0 ? <p className="rounded-lg border border-dashed p-3 text-sm text-muted-foreground">No entries yet.</p> : items.map((item) => (
-        <EditableNameRow key={item.id} item={item} onSave={onSave} onRemove={onRemove} />
+        <div
+          key={item.id}
+          draggable={Boolean(onReorder)}
+          onDragStart={() => setDraggedId(item.id)}
+          onDragOver={(event) => onReorder && event.preventDefault()}
+          onDrop={() => {
+            if (draggedId) moveItem(draggedId, item.id);
+            setDraggedId(null);
+          }}
+        >
+          <EditableNameRow
+            item={item}
+            onSave={onSave}
+            onRemove={onRemove}
+            canReorder={Boolean(onReorder)}
+            onMoveUp={() => nudgeItem(item, -1)}
+            onMoveDown={() => nudgeItem(item, 1)}
+          />
+        </div>
       ))}
     </div>
   );
 }
 
-function EditableNameRow<T extends { id: number; name: string }>({ item, onSave, onRemove }: { item: T; onSave: (item: T, name: string) => Promise<unknown> | void; onRemove: (item: T) => Promise<void> | void }) {
+function EditableNameRow<T extends { id: number; name: string }>({
+  item,
+  onSave,
+  onRemove,
+  canReorder = false,
+  onMoveUp,
+  onMoveDown
+}: {
+  item: T;
+  onSave: (item: T, name: string) => Promise<unknown> | void;
+  onRemove: (item: T) => Promise<void> | void;
+  canReorder?: boolean;
+  onMoveUp?: () => void;
+  onMoveDown?: () => void;
+}) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(item.name);
 
@@ -2661,8 +2939,14 @@ function EditableNameRow<T extends { id: number; name: string }>({ item, onSave,
   }
 
   return (
-    <div className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-2 rounded-lg border bg-card px-3 py-2">
+    <div className="grid grid-cols-[minmax(0,1fr)_auto_auto_auto] items-center gap-2 rounded-lg border bg-card px-3 py-2">
       <strong className="truncate">{item.name}</strong>
+      {canReorder && (
+        <div className="flex items-center gap-1">
+          <Button size="sm" variant="secondary" onClick={onMoveUp}>Up</Button>
+          <Button size="sm" variant="secondary" onClick={onMoveDown}>Down</Button>
+        </div>
+      )}
       <Button size="sm" variant="secondary" onClick={() => setEditing(true)}>Edit</Button>
       <Button size="sm" variant="destructive" onClick={() => onRemove(item)}>Remove</Button>
     </div>
@@ -2715,6 +2999,7 @@ function CostsPanel({ snapshot, refreshData, setMessage }: { snapshot: Inventory
   const [costForm, setCostForm] = useState({
     categoryId: firstCostCategory?.id ? String(firstCostCategory.id) : "",
     costName: "",
+    quantity: "1",
     amount: "",
     paymentMethod: "cash",
     responsiblePerson: "",
@@ -2729,19 +3014,20 @@ function CostsPanel({ snapshot, refreshData, setMessage }: { snapshot: Inventory
     await window.yamzo?.inventory.addCost({
       categoryId: costForm.categoryId ? Number(costForm.categoryId) : null,
       costName: costForm.costName,
+      quantity: Number(costForm.quantity || 1),
       amount: Number(costForm.amount || 0),
       paymentMethod: costForm.paymentMethod,
       responsiblePerson: costForm.responsiblePerson || null,
       note: costForm.note || null
     });
-    setCostForm({ ...costForm, costName: "", amount: "", note: "" });
+    setCostForm({ ...costForm, costName: "", quantity: "1", amount: "", note: "" });
     setMessage("Cost record saved.");
     await refreshData();
   }
 
   async function addCostCategory() {
     if (!costCategoryName.trim()) return;
-    await window.yamzo?.inventory.saveCostCategory({ name: costCategoryName.trim(), active: true });
+    await window.yamzo?.inventory.saveCostCategory({ name: costCategoryName.trim(), active: true, sortOrder: activeCostCategories.length });
     setCostCategoryName("");
     setMessage("Cost category saved.");
     await refreshData();
@@ -2751,6 +3037,12 @@ function CostsPanel({ snapshot, refreshData, setMessage }: { snapshot: Inventory
     if (!window.confirm(`Remove cost category ${category.name}?`)) return;
     await window.yamzo?.inventory.removeCostCategory(category.id);
     setMessage("Cost category removed.");
+    await refreshData();
+  }
+
+  async function reorderCostCategories(categories: CostCategory[]) {
+    await Promise.all(categories.map((category, index) => window.yamzo?.inventory.saveCostCategory({ id: category.id, name: category.name, active: true, sortOrder: index })));
+    setMessage("Cost category order saved.");
     await refreshData();
   }
 
@@ -2769,7 +3061,7 @@ function CostsPanel({ snapshot, refreshData, setMessage }: { snapshot: Inventory
 
   const costRows = snapshot.costRecords
     .filter((entry) => withinDateRange(entry.costDate, costRange))
-    .map((entry) => [formatDate(entry.costDate), entry.categoryName ?? "Other", entry.costName, money(entry.amount), entry.responsiblePerson ?? "-", entry.note ?? "-"]);
+    .map((entry) => [formatDate(entry.costDate), entry.categoryName ?? "Other", entry.costName, formatQuantity(entry.quantity), money(entry.amount), entry.responsiblePerson ?? "-", entry.note ?? "-"]);
 
   return (
     <div className="grid gap-4 pt-4">
@@ -2783,6 +3075,7 @@ function CostsPanel({ snapshot, refreshData, setMessage }: { snapshot: Inventory
             <CardContent className="grid grid-cols-[repeat(auto-fit,minmax(180px,1fr))] gap-3 p-4">
               <Field label="Category"><Select value={costForm.categoryId} onValueChange={(value) => setCostForm({ ...costForm, categoryId: value })}><SelectTrigger><SelectValue placeholder="Choose category" /></SelectTrigger><SelectContent>{activeCostCategories.map((category) => <SelectItem key={category.id} value={String(category.id)}>{category.name}</SelectItem>)}</SelectContent></Select></Field>
               <Field label="Cost name"><Input value={costForm.costName} onChange={(event) => setCostForm({ ...costForm, costName: event.target.value })} /></Field>
+              <Field label="Qty"><Input value={costForm.quantity} onChange={(event) => setCostForm({ ...costForm, quantity: event.target.value })} /></Field>
               <Field label="Amount"><Input value={costForm.amount} onChange={(event) => setCostForm({ ...costForm, amount: event.target.value })} /></Field>
               <Field label="Payment method"><Input value={costForm.paymentMethod} onChange={(event) => setCostForm({ ...costForm, paymentMethod: event.target.value })} /></Field>
               <Field label="Person responsible"><Input value={costForm.responsiblePerson} onChange={(event) => setCostForm({ ...costForm, responsiblePerson: event.target.value })} /></Field>
@@ -2797,10 +3090,10 @@ function CostsPanel({ snapshot, refreshData, setMessage }: { snapshot: Inventory
                 <Button variant="secondary" size="sm" onClick={() => applyCostPreset("yesterday")}>Yesterday</Button>
                 <Button variant="secondary" size="sm" onClick={() => applyCostPreset("7days")}>7 Days</Button>
                 <Button variant="secondary" size="sm" onClick={() => applyCostPreset("1month")}>1 Month</Button>
-                <Button variant="secondary" size="sm" onClick={() => exportCsvRows("yamzo-costs.csv", [["Date", "Category", "Cost", "Amount", "Person", "Note"], ...costRows])}>Export CSV</Button>
+                <Button variant="secondary" size="sm" onClick={() => exportCsvRows("yamzo-costs.csv", [["Date", "Category", "Cost", "Qty", "Amount", "Person", "Note"], ...costRows])}>Export CSV</Button>
               </div>
               <DateRangeControl value={costRange} onChange={setCostRange} />
-              <InventoryTable headers={["Date", "Category", "Cost", "Amount", "Person", "Note"]} rows={costRows} />
+              <InventoryTable headers={["Date", "Category", "Cost", "Qty", "Amount", "Person", "Note"]} rows={costRows} />
             </CardContent>
           </Card>
         </TabsContent>
@@ -2809,7 +3102,12 @@ function CostsPanel({ snapshot, refreshData, setMessage }: { snapshot: Inventory
             <CardHeader><CardTitle>Cost Categories</CardTitle><CardDescription>Used when recording quick restaurant costs.</CardDescription></CardHeader>
             <CardContent className="grid gap-3">
               <div className="grid grid-cols-[1fr_auto] gap-2"><Input value={costCategoryName} onChange={(event) => setCostCategoryName(event.target.value)} placeholder="Example: Marketing" /><Button onClick={addCostCategory} disabled={!costCategoryName.trim()}>Add Category</Button></div>
-              <EditableSettingList items={activeCostCategories} onSave={(item, name) => window.yamzo?.inventory.saveCostCategory({ id: item.id, name, active: true }).then(refreshData)} onRemove={removeCostCategory} />
+              <EditableSettingList
+                items={activeCostCategories}
+                onSave={(item, name) => window.yamzo?.inventory.saveCostCategory({ id: item.id, name, active: true, sortOrder: item.sortOrder ?? 0 }).then(refreshData)}
+                onRemove={removeCostCategory}
+                onReorder={reorderCostCategories}
+              />
             </CardContent>
           </Card>
         </TabsContent>

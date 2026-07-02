@@ -248,6 +248,7 @@ export interface CostCategory {
   id: number;
   name: string;
   active: boolean;
+  sortOrder?: number;
 }
 
 export interface CostRecord {
@@ -255,6 +256,7 @@ export interface CostRecord {
   categoryId: number | null;
   categoryName: string | null;
   costName: string;
+  quantity: number;
   amount: number;
   paymentMethod: string | null;
   responsiblePerson: string | null;

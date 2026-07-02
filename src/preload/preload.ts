@@ -37,9 +37,9 @@ const api = {
       ipcRenderer.invoke("inventory:addPhysicalCount", input),
     addPrice: (input: { inventoryItemId: number; pricePerBase: number; effectiveAt?: string | null; responsiblePerson?: string | null; note?: string | null }) =>
       ipcRenderer.invoke("inventory:addPrice", input),
-    saveCostCategory: (input: { id?: number; name: string; active?: boolean }) => ipcRenderer.invoke("inventory:saveCostCategory", input),
+    saveCostCategory: (input: { id?: number; name: string; active?: boolean; sortOrder?: number }) => ipcRenderer.invoke("inventory:saveCostCategory", input),
     removeCostCategory: (id: number) => ipcRenderer.invoke("inventory:removeCostCategory", id),
-    addCost: (input: { categoryId?: number | null; costName: string; amount: number; paymentMethod?: string | null; responsiblePerson?: string | null; note?: string | null; costDate?: string | null }) =>
+    addCost: (input: { categoryId?: number | null; costName: string; quantity?: number; amount: number; paymentMethod?: string | null; responsiblePerson?: string | null; note?: string | null; costDate?: string | null }) =>
       ipcRenderer.invoke("inventory:addCost", input)
   },
   menu: {

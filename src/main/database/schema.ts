@@ -253,6 +253,7 @@ export function migrate(db: Database.Database): void {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL UNIQUE,
       active INTEGER NOT NULL DEFAULT 1,
+      sort_order INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
@@ -261,6 +262,7 @@ export function migrate(db: Database.Database): void {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       cost_category_id INTEGER REFERENCES cost_categories(id),
       cost_name TEXT NOT NULL,
+      quantity REAL NOT NULL DEFAULT 1,
       amount REAL NOT NULL,
       payment_method TEXT,
       responsible_person TEXT,
@@ -325,6 +327,8 @@ export function migrate(db: Database.Database): void {
   ensureColumn(db, "inventory_restock_entries", "recipe_id", "INTEGER");
   ensureColumn(db, "menu_item_recipes", "restock_enabled", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn(db, "menu_items", "track_recipe", "INTEGER NOT NULL DEFAULT 1");
+  ensureColumn(db, "cost_records", "quantity", "REAL NOT NULL DEFAULT 1");
+  ensureColumn(db, "cost_categories", "sort_order", "INTEGER NOT NULL DEFAULT 0");
 
   seedDefaults(db);
 }

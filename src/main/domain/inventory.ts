@@ -315,15 +315,16 @@ export function removeInventoryUnit(db: Database.Database, id: number, actor = "
   recordActivity(db, "inventory_unit_removed", { entityType: "inventory_unit", entityId: String(id) }, actor);
 }
 
-export function saveCostCategory(db: Database.Database, input: { id?: number; name: string; active?: boolean }, actor = "admin"): CostCategory {
+export function saveCostCategory(db: Database.Database, input: { id?: number; name: string; active?: boolean; sortOrder?: number }, actor = "admin"): CostCategory {
   const name = cleanText(input.name);
   if (!name) throw new Error("Cost category name is required.");
+  const sortOrder = Number.isFinite(Number(input.sortOrder)) ? Number(input.sortOrder) : 0;
   if (input.id) {
-    db.prepare("UPDATE cost_categories SET name = ?, active = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(name, input.active === false ? 0 : 1, input.id);
+    db.prepare("UPDATE cost_categories SET name = ?, active = ?, sort_order = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(name, input.active === false ? 0 : 1, sortOrder, input.id);
     recordActivity(db, "cost_category_updated", { entityType: "cost_category", entityId: String(input.id), name }, actor);
     return listCostCategories(db).find((category) => category.id === input.id)!;
   }
-  const id = Number(db.prepare("INSERT INTO cost_categories (name, active) VALUES (?, ?)").run(name, input.active === false ? 0 : 1).lastInsertRowid);
+  const id = Number(db.prepare("INSERT INTO cost_categories (name, active, sort_order) VALUES (?, ?, ?)").run(name, input.active === false ? 0 : 1, sortOrder).lastInsertRowid);
   recordActivity(db, "cost_category_created", { entityType: "cost_category", entityId: String(id), name }, actor);
   return listCostCategories(db).find((category) => category.id === id)!;
 }
@@ -463,6 +464,7 @@ export function addCostRecord(
   input: {
     categoryId?: number | null;
     costName: string;
+    quantity?: number;
     amount: number;
     paymentMethod?: string | null;
     responsiblePerson?: string | null;
@@ -475,13 +477,14 @@ export function addCostRecord(
   if (!costName) throw new Error("Cost name is required.");
   const amount = Math.max(0, Number(input.amount));
   if (amount <= 0) throw new Error("Cost amount must be greater than zero.");
+  const quantity = Math.max(0, Number(input.quantity ?? 1)) || 1;
   const id = Number(
     db.prepare(
-      `INSERT INTO cost_records (cost_category_id, cost_name, amount, payment_method, responsible_person, note, cost_date)
-       VALUES (?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))`
-    ).run(input.categoryId ?? null, costName, amount, input.paymentMethod ?? null, input.responsiblePerson ?? null, input.note ?? null, input.costDate ?? null).lastInsertRowid
+      `INSERT INTO cost_records (cost_category_id, cost_name, quantity, amount, payment_method, responsible_person, note, cost_date)
+       VALUES (?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))`
+    ).run(input.categoryId ?? null, costName, quantity, amount, input.paymentMethod ?? null, input.responsiblePerson ?? null, input.note ?? null, input.costDate ?? null).lastInsertRowid
   );
-  recordActivity(db, "cost_record_created", { entityType: "cost_record", entityId: String(id), costName, amount }, actor);
+  recordActivity(db, "cost_record_created", { entityType: "cost_record", entityId: String(id), costName, quantity, amount }, actor);
   return listCostRecords(db, 1).find((entry) => entry.id === id) ?? listCostRecords(db, 1)[0];
 }
 
@@ -720,27 +723,28 @@ export function listPriceHistory(db: Database.Database, limit = 120): PriceHisto
 }
 
 export function listCostCategories(db: Database.Database): CostCategory[] {
-  return db.prepare("SELECT id, name, active FROM cost_categories WHERE active = 1 ORDER BY name").all().map((row) => {
-    const item = row as { id: number; name: string; active: number };
-    return { id: item.id, name: item.name, active: item.active === 1 };
+  return db.prepare("SELECT id, name, active, sort_order FROM cost_categories WHERE active = 1 ORDER BY sort_order ASC, name ASC, id ASC").all().map((row) => {
+    const item = row as { id: number; name: string; active: number; sort_order: number };
+    return { id: item.id, name: item.name, active: item.active === 1, sortOrder: item.sort_order };
   });
 }
 
 export function listCostRecords(db: Database.Database, limit = 120): CostRecord[] {
   return db.prepare(
-    `SELECT cr.id, cr.cost_category_id, cc.name AS category_name, cr.cost_name, cr.amount, cr.payment_method,
+    `SELECT cr.id, cr.cost_category_id, cc.name AS category_name, cr.cost_name, cr.quantity, cr.amount, cr.payment_method,
             cr.responsible_person, cr.note, cr.cost_date
      FROM cost_records cr
      LEFT JOIN cost_categories cc ON cc.id = cr.cost_category_id
      ORDER BY datetime(cr.cost_date) DESC, cr.id DESC
      LIMIT ?`
   ).all(limit).map((row) => {
-    const entry = row as { id: number; cost_category_id: number | null; category_name: string | null; cost_name: string; amount: number; payment_method: string | null; responsible_person: string | null; note: string | null; cost_date: string };
+    const entry = row as { id: number; cost_category_id: number | null; category_name: string | null; cost_name: string; quantity: number; amount: number; payment_method: string | null; responsible_person: string | null; note: string | null; cost_date: string };
     return {
       id: entry.id,
       categoryId: entry.cost_category_id,
       categoryName: entry.category_name,
       costName: entry.cost_name,
+      quantity: roundQuantity(entry.quantity),
       amount: roundMoney(entry.amount),
       paymentMethod: entry.payment_method,
       responsiblePerson: entry.responsible_person,
