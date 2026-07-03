@@ -14,6 +14,9 @@ const api = {
   },
   inventory: {
     snapshot: () => ipcRenderer.invoke("inventory:snapshot"),
+    previewBackfill: (input?: { start?: string | null; end?: string | null }) => ipcRenderer.invoke("inventory:previewBackfill", input),
+    applyBackfill: (input?: { start?: string | null; end?: string | null; mode?: "missing" | "replace"; reason?: string | null }) => ipcRenderer.invoke("inventory:applyBackfill", input),
+    recalculateOrderUsage: (orderId: number) => ipcRenderer.invoke("inventory:recalculateOrderUsage", orderId),
     chooseAndImportCsv: () => ipcRenderer.invoke("inventory:chooseAndImportCsv"),
     importCsv: (csvPath: string) => ipcRenderer.invoke("inventory:importCsv", csvPath),
     chooseAndImportItemsCsv: () => ipcRenderer.invoke("inventory:chooseAndImportItemsCsv"),
@@ -21,26 +24,33 @@ const api = {
     saveItem: (input: { id?: number; name: string; categoryId?: number | null; baseUnitId: number; lowStockThreshold?: number; active?: boolean }) =>
       ipcRenderer.invoke("inventory:saveItem", input),
     deleteItem: (id: number) => ipcRenderer.invoke("inventory:deleteItem", id),
-    saveRecipe: (input: { menuItemId: number; ingredients: Array<{ inventoryItemId: number; quantityBase: number; unitLabel: string }> }) =>
+    saveRecipe: (input: { menuItemId: number; ingredients: Array<{ kind?: "raw" | "recipe"; inventoryItemId?: number; childRecipeId?: number; quantityBase: number; unitLabel: string }> }) =>
       ipcRenderer.invoke("inventory:saveRecipe", input),
     setRecipeRestockEnabled: (menuItemId: number, enabled: boolean) => ipcRenderer.invoke("inventory:setRecipeRestockEnabled", menuItemId, enabled),
+    setRecipeUseInRecipeEnabled: (menuItemId: number, enabled: boolean) => ipcRenderer.invoke("inventory:setRecipeUseInRecipeEnabled", menuItemId, enabled),
     saveCategory: (input: { id?: number; name: string; active?: boolean }) => ipcRenderer.invoke("inventory:saveCategory", input),
     removeCategory: (id: number) => ipcRenderer.invoke("inventory:removeCategory", id),
     saveUnit: (input: { id?: number; name: string; shortName: string; active?: boolean }) => ipcRenderer.invoke("inventory:saveUnit", input),
     removeUnit: (id: number) => ipcRenderer.invoke("inventory:removeUnit", id),
-    addRestock: (input: { inventoryItemId: number; itemType?: "raw" | "recipe"; recipeId?: number | null; quantity: number; unitLabel?: string; totalCost?: number; supplierName?: string | null; responsiblePerson?: string | null; note?: string | null; entryDate?: string | null }) =>
+    addRestock: (input: { inventoryItemId: number; itemType?: "raw" | "recipe"; entryType?: "purchase" | "adjustment"; recipeId?: number | null; quantity: number; unitLabel?: string; totalCost?: number; supplierName?: string | null; responsiblePerson?: string | null; note?: string | null; adjustmentReason?: string | null; entryDate?: string | null }) =>
       ipcRenderer.invoke("inventory:addRestock", input),
-    updateRestock: (input: { id: number; inventoryItemId: number; itemType?: "raw" | "recipe"; recipeId?: number | null; quantity: number; unitLabel?: string; totalCost?: number; supplierName?: string | null; responsiblePerson?: string | null; note?: string | null }) =>
+    updateRestock: (input: { id: number; inventoryItemId: number; itemType?: "raw" | "recipe"; entryType?: "purchase" | "adjustment"; recipeId?: number | null; quantity: number; unitLabel?: string; totalCost?: number; supplierName?: string | null; responsiblePerson?: string | null; note?: string | null; adjustmentReason?: string | null }) =>
       ipcRenderer.invoke("inventory:updateRestock", input),
     deleteRestock: (id: number) => ipcRenderer.invoke("inventory:deleteRestock", id),
     addPhysicalCount: (input: { inventoryItemId: number; quantity: number; responsiblePerson?: string | null; note?: string | null; countDate?: string | null; source?: "manual" | "restock" }) =>
       ipcRenderer.invoke("inventory:addPhysicalCount", input),
+    updatePhysicalCount: (input: { id: number; inventoryItemId: number; quantity: number; responsiblePerson?: string | null; note?: string | null; reason: string }) =>
+      ipcRenderer.invoke("inventory:updatePhysicalCount", input),
+    deletePhysicalCount: (id: number, reason: string) => ipcRenderer.invoke("inventory:deletePhysicalCount", id, reason),
     addPrice: (input: { inventoryItemId: number; pricePerBase: number; effectiveAt?: string | null; responsiblePerson?: string | null; note?: string | null }) =>
       ipcRenderer.invoke("inventory:addPrice", input),
     saveCostCategory: (input: { id?: number; name: string; active?: boolean; sortOrder?: number }) => ipcRenderer.invoke("inventory:saveCostCategory", input),
     removeCostCategory: (id: number) => ipcRenderer.invoke("inventory:removeCostCategory", id),
-    addCost: (input: { categoryId?: number | null; costName: string; quantity?: number; amount: number; paymentMethod?: string | null; responsiblePerson?: string | null; note?: string | null; costDate?: string | null }) =>
-      ipcRenderer.invoke("inventory:addCost", input)
+    addCost: (input: { categoryId?: number | null; costName: string; amount: number; paymentMethod?: string | null; responsiblePerson?: string | null; note?: string | null; costDate?: string | null }) =>
+      ipcRenderer.invoke("inventory:addCost", input),
+    updateCost: (input: { id: number; categoryId?: number | null; costName: string; amount: number; paymentMethod?: string | null; responsiblePerson?: string | null; note?: string | null; reason: string }) =>
+      ipcRenderer.invoke("inventory:updateCost", input),
+    deleteCost: (id: number, reason: string) => ipcRenderer.invoke("inventory:deleteCost", id, reason)
   },
   menu: {
     list: () => ipcRenderer.invoke("menu:list"),

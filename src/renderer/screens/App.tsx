@@ -34,8 +34,12 @@ import type {
   EmailSettings,
   ActivityLog,
   CostCategory,
+  CostRecord,
   InventoryCategory,
+  InventoryBackfillPreview,
+  InventoryIngredientUsageTotal,
   InventoryItem,
+  PhysicalCountEntry,
   InventorySnapshot,
   InventoryUnit,
   MenuDataSetting,
@@ -1133,7 +1137,7 @@ export function App() {
       )}
       {screen === "inventory" && (
         <ContentShell title="Inventory" description="Recipes, stock, restocks, and physical count tracking." action={<Button variant="secondary" onClick={refreshData}>Refresh</Button>}>
-          <InventoryAdmin snapshot={inventorySnapshot} refreshData={refreshData} setMessage={setMessage} onEditRecipe={setRecipeEdit} onViewPriceHistory={setPriceHistoryItemId} />
+          <InventoryAdmin snapshot={inventorySnapshot} activityLogs={activityLogs} refreshData={refreshData} setMessage={setMessage} onEditRecipe={setRecipeEdit} onViewPriceHistory={setPriceHistoryItemId} />
         </ContentShell>
       )}
       {screen === "costs" && (
@@ -1303,6 +1307,7 @@ export function App() {
       <RecipeEditorDialog
         recipe={recipeEdit}
         items={inventorySnapshot.items}
+        recipes={inventorySnapshot.recipes}
         onClose={() => setRecipeEdit(null)}
         onSaved={async () => {
           setRecipeEdit(null);
@@ -1322,17 +1327,25 @@ function SideNav({ active, children, onClick }: { active: boolean; children: str
 function RecipeEditorDialog({
   recipe,
   items,
+  recipes,
   onClose,
   onSaved
 }: {
   recipe: MenuRecipe | null;
   items: InventorySnapshot["items"];
+  recipes: InventorySnapshot["recipes"];
   onClose: () => void;
   onSaved: () => Promise<void>;
 }) {
-  const [rows, setRows] = useState<Array<{ inventoryItemId: string; quantityBase: string; unitLabel: string }>>([]);
+  const [rows, setRows] = useState<Array<{ kind: "raw" | "recipe"; inventoryItemId: string; childRecipeId: string; quantityBase: string; unitLabel: string }>>([]);
   const [error, setError] = useState("");
+  const [ingredientPickerOpen, setIngredientPickerOpen] = useState(false);
+  const [recipePickerOpen, setRecipePickerOpen] = useState(false);
   const [ingredientSearch, setIngredientSearch] = useState("");
+  const [recipeSearch, setRecipeSearch] = useState("");
+  const [backfillChoiceOpen, setBackfillChoiceOpen] = useState(false);
+  const [backfillRange, setBackfillRange] = useState({ start: "", end: "" });
+  const [backfillPreview, setBackfillPreview] = useState<InventoryBackfillPreview | null>(null);
   const itemOptions = useMemo(() => {
     const byId = new Map<number, { id: number; name: string; unitShortName: string }>();
     for (const item of items) {
@@ -1349,21 +1362,48 @@ function RecipeEditorDialog({
     }
     return Array.from(byId.values()).sort((left, right) => left.name.localeCompare(right.name));
   }, [items, recipe]);
+  const activePickerItems = useMemo(() => items.filter((item) => item.active), [items]);
+  const availableRecipeMaterials = useMemo(() => recipes.filter((entry) => entry.id > 0 && entry.status === "available" && entry.useInRecipeEnabled && entry.menuItemId !== recipe?.menuItemId), [recipes, recipe?.menuItemId]);
 
   useEffect(() => {
     if (!recipe) return;
+    setBackfillChoiceOpen(false);
+    setBackfillPreview(null);
     setError("");
-    setRows(recipe.ingredients.map((ingredient) => ({
+    setRows([
+      ...recipe.ingredients.map((ingredient) => ({
+        kind: "raw" as const,
       inventoryItemId: String(ingredient.inventoryItemId),
+        childRecipeId: "",
       quantityBase: String(ingredient.quantityBase),
       unitLabel: ingredient.unitLabel
-    })));
+      })),
+      ...(recipe.childIngredients ?? []).map((ingredient) => ({
+        kind: "recipe" as const,
+        inventoryItemId: "",
+        childRecipeId: String(ingredient.childRecipeId),
+        quantityBase: String(ingredient.quantityBase),
+        unitLabel: ingredient.unitLabel || "portion"
+      }))
+    ]);
   }, [recipe]);
 
-  function addRow() {
-    const firstItem = itemOptions[0];
-    if (!firstItem) return;
-    setRows((current) => [...current, { inventoryItemId: String(firstItem.id), quantityBase: "", unitLabel: firstItem.unitShortName }]);
+  function addIngredient(item: InventoryItem) {
+    setRows((current) => {
+      if (current.some((row) => row.kind === "raw" && Number(row.inventoryItemId) === item.id)) return current;
+      return [...current, { kind: "raw", inventoryItemId: String(item.id), childRecipeId: "", quantityBase: "", unitLabel: item.unitShortName }];
+    });
+    setIngredientSearch("");
+    setIngredientPickerOpen(false);
+  }
+
+  function addRecipeMaterial(child: MenuRecipe) {
+    setRows((current) => {
+      if (current.some((row) => row.kind === "recipe" && Number(row.childRecipeId) === child.id)) return current;
+      return [...current, { kind: "recipe", inventoryItemId: "", childRecipeId: String(child.id), quantityBase: "1", unitLabel: "portion" }];
+    });
+    setRecipeSearch("");
+    setRecipePickerOpen(false);
   }
 
   async function saveRecipe() {
@@ -1371,19 +1411,51 @@ function RecipeEditorDialog({
     const ingredients = rows
       .map((row) => {
         const selectedItem = itemOptions.find((item) => item.id === Number(row.inventoryItemId));
+        if (row.kind === "recipe") {
+          return {
+            kind: "recipe" as const,
+            childRecipeId: Number(row.childRecipeId),
+            quantityBase: Number(row.quantityBase || 0),
+            unitLabel: row.unitLabel.trim() || "portion"
+          };
+        }
         return {
+          kind: "raw" as const,
           inventoryItemId: Number(row.inventoryItemId),
           quantityBase: Number(row.quantityBase || 0),
           unitLabel: selectedItem?.unitShortName || row.unitLabel.trim() || "g"
         };
       })
-      .filter((row) => row.inventoryItemId && row.quantityBase > 0);
+      .filter((row) => row.quantityBase > 0 && ("childRecipeId" in row ? row.childRecipeId : row.inventoryItemId));
     try {
       await window.yamzo?.inventory.saveRecipe({ menuItemId: recipe.menuItemId, ingredients });
-      await onSaved();
+      setBackfillChoiceOpen(true);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not save recipe.");
     }
+  }
+
+  async function previewBackfill() {
+    const preview = await window.yamzo?.inventory.previewBackfill({
+      start: rangeStartForSql(backfillRange.start),
+      end: rangeEndForSql(backfillRange.end)
+    });
+    setBackfillPreview(preview ?? null);
+  }
+
+  async function applyBackfill(mode: "missing" | "replace") {
+    const reason = window.prompt(mode === "missing" ? "Reason for applying missing usage only" : "Reason for recalculating selected range");
+    if (!reason?.trim()) {
+      setError("Reason is required before applying historical recipe usage.");
+      return;
+    }
+    await window.yamzo?.inventory.applyBackfill({
+      start: rangeStartForSql(backfillRange.start),
+      end: rangeEndForSql(backfillRange.end),
+      mode,
+      reason: reason.trim()
+    });
+    await onSaved();
   }
 
   return (
@@ -1395,26 +1467,40 @@ function RecipeEditorDialog({
         </DialogHeader>
         <div className="grid max-h-[58vh] gap-3 overflow-y-auto overflow-x-hidden px-6 py-4">
           {error && <p className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</p>}
+          {backfillChoiceOpen && (
+            <Card className="border-amber-200 bg-amber-50/70">
+              <CardHeader className="pb-3">
+                <CardTitle>Recipe saved. Apply to old completed orders?</CardTitle>
+                <CardDescription>Choose future-only for normal changes. Preview a date range when correcting already completed orders.</CardDescription>
+              </CardHeader>
+              <CardContent className="grid gap-3">
+                <DateRangeControl value={backfillRange} onChange={setBackfillRange} />
+                <div className="flex flex-wrap gap-2">
+                  <Button variant="secondary" onClick={onSaved}>Future Orders Only</Button>
+                  <Button variant="secondary" onClick={previewBackfill}>Preview Range</Button>
+                  <Button disabled={!backfillPreview} onClick={() => applyBackfill("missing")}>Apply Missing Only</Button>
+                  <Button disabled={!backfillPreview} onClick={() => applyBackfill("replace")}>Recalculate Range</Button>
+                </div>
+                {backfillPreview && (
+                  <div className="grid gap-2 rounded-xl border bg-background p-3 text-sm sm:grid-cols-3">
+                    <InventoryMiniMetric label="Orders affected" value={backfillPreview.orderCount} />
+                    <InventoryMiniMetric label="Missing usage" value={backfillPreview.estimatedMissingRecipeCount} />
+                    <InventoryMiniMetric label="Raw cost delta" value={money(backfillPreview.rawCostDelta)} />
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          )}
           {rows.length === 0 && <p className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">No ingredients added.</p>}
           {rows.map((row, index) => {
             const selectedItem = itemOptions.find((item) => item.id === Number(row.inventoryItemId));
+            const selectedRecipe = recipes.find((entry) => entry.id === Number(row.childRecipeId));
             return (
-              <div className="grid gap-3 rounded-xl border bg-card p-4 lg:grid-cols-[minmax(220px,1fr)_160px_120px_auto] lg:items-end" key={`${row.inventoryItemId}-${index}`}>
-                <div className="grid gap-2">
-                  <Label>Ingredient</Label>
-                  <div className="grid gap-2">
-                    <Input value={ingredientSearch} onChange={(event) => setIngredientSearch(event.target.value)} placeholder="Search ingredient" />
-                    <Select
-                      value={row.inventoryItemId}
-                      onValueChange={(value) => {
-                        setRows((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, inventoryItemId: value, unitLabel: itemOptions.find((inventoryItem) => inventoryItem.id === Number(value))?.unitShortName || item.unitLabel } : item));
-                        setIngredientSearch("");
-                      }}
-                    >
-                      <SelectTrigger className="w-full min-w-0"><SelectValue placeholder="Choose ingredient" /></SelectTrigger>
-                      <SelectContent>{itemOptions.filter((item) => item.name.toLowerCase().includes(ingredientSearch.trim().toLowerCase())).slice(0, 80).map((item) => <SelectItem key={item.id} value={String(item.id)}>{item.name}</SelectItem>)}</SelectContent>
-                    </Select>
-                  </div>
+              <div className="grid gap-3 rounded-xl border bg-card p-4 lg:grid-cols-[minmax(260px,1fr)_160px_120px_auto] lg:items-end" key={`${row.kind}-${row.inventoryItemId || row.childRecipeId}-${index}`}>
+                <div className="grid gap-1">
+                  <Label>{row.kind === "recipe" ? "Recipe material" : "Ingredient"}</Label>
+                  <strong className="min-h-10 rounded-lg border bg-muted/40 px-3 py-2">{row.kind === "recipe" ? selectedRecipe?.menuItemName ?? "Unknown recipe" : selectedItem?.name ?? "Unknown ingredient"}</strong>
+                  <span className="text-xs text-muted-foreground">{row.kind === "recipe" ? "Uses the child recipe's raw material list." : "Base unit is fixed from the inventory item."}</span>
                 </div>
                 <div className="grid gap-2">
                   <Label>Amount</Label>
@@ -1422,7 +1508,7 @@ function RecipeEditorDialog({
                 </div>
                 <div className="grid gap-2">
                   <Label>Unit</Label>
-                  <Input value={selectedItem?.unitShortName || row.unitLabel || "g"} readOnly className="bg-muted/60" />
+                  <Input value={row.kind === "recipe" ? row.unitLabel || "portion" : selectedItem?.unitShortName || row.unitLabel || "g"} readOnly={row.kind === "raw"} className={row.kind === "raw" ? "bg-muted/60" : ""} onChange={(event) => setRows((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, unitLabel: event.target.value } : item))} />
                 </div>
                 <Button className="w-full lg:w-auto" variant="secondary" onClick={() => setRows((current) => current.filter((_, itemIndex) => itemIndex !== index))}>Remove</Button>
               </div>
@@ -1430,11 +1516,53 @@ function RecipeEditorDialog({
           })}
         </div>
         <DialogFooter className="border-t px-6 py-4">
-          <Button variant="secondary" onClick={addRow} disabled={itemOptions.length === 0}>Add Ingredient</Button>
+          <Button variant="secondary" onClick={() => setIngredientPickerOpen(true)} disabled={activePickerItems.length === 0}>Add Raw Item</Button>
+          <Button variant="secondary" onClick={() => setRecipePickerOpen(true)} disabled={availableRecipeMaterials.length === 0}>Add Recipe Material</Button>
           <Button variant="secondary" onClick={onClose}>Cancel</Button>
           <Button onClick={saveRecipe}>Save Recipe</Button>
         </DialogFooter>
       </DialogContent>
+      <Dialog open={ingredientPickerOpen} onOpenChange={setIngredientPickerOpen}>
+        <DialogContent className="w-[min(980px,calc(100vw-32px))] !max-w-[980px] overflow-hidden p-0">
+          <DialogHeader className="border-b px-6 py-5">
+            <DialogTitle>Add ingredient</DialogTitle>
+            <DialogDescription>Choose an existing inventory item. Amount is entered after selection.</DialogDescription>
+          </DialogHeader>
+          <div className="p-6">
+            <InventoryItemCardPicker
+              items={activePickerItems}
+              selectedItemId=""
+              search={ingredientSearch}
+              onSearch={setIngredientSearch}
+              placeholder="Search ingredient or category"
+              onSelect={addIngredient}
+            />
+          </div>
+          <DialogFooter className="border-t px-6 py-4">
+            <Button variant="secondary" onClick={() => setIngredientPickerOpen(false)}>Cancel</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={recipePickerOpen} onOpenChange={setRecipePickerOpen}>
+        <DialogContent className="w-[min(980px,calc(100vw-32px))] !max-w-[980px] overflow-hidden p-0">
+          <DialogHeader className="border-b px-6 py-5">
+            <DialogTitle>Add recipe material</DialogTitle>
+            <DialogDescription>Only recipes marked “Use in recipes” are shown here.</DialogDescription>
+          </DialogHeader>
+          <div className="p-6">
+            <RecipeMaterialCardPicker
+              recipes={availableRecipeMaterials}
+              selectedRecipeId=""
+              search={recipeSearch}
+              onSearch={setRecipeSearch}
+              onSelect={addRecipeMaterial}
+            />
+          </div>
+          <DialogFooter className="border-t px-6 py-4">
+            <Button variant="secondary" onClick={() => setRecipePickerOpen(false)}>Cancel</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Dialog>
   );
 }
@@ -1652,7 +1780,6 @@ function BusinessSummary({ summary }: { summary: SalesSummary }) {
 function ReportsPanel({ summary, inventory }: { summary: SalesSummary; inventory: InventorySnapshot }) {
   const [reportRange, setReportRange] = useState({ start: "", end: "" });
   const [reportSummary, setReportSummary] = useState(summary);
-  const missingRecipeRows = inventory.status.missingRecipes.map((item) => [item.name, money(item.price), "Recipe not available"]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1665,6 +1792,33 @@ function ReportsPanel({ summary, inventory }: { summary: SalesSummary; inventory
       cancelled = true;
     };
   }, [reportRange.start, reportRange.end, summary]);
+
+  const sourceRows = Object.entries(reportSummary.sourceBreakdown)
+    .filter(([, value]) => value > 0)
+    .map(([name, value]) => [formatSource(name as OrderSource), money(value)]);
+  const paymentRows = Object.entries(reportSummary.paymentBreakdown)
+    .filter(([, value]) => value > 0)
+    .map(([name, value]) => [labelize(name), money(value)]);
+  const usageTotals = new Map<number, InventoryIngredientUsageTotal>();
+  for (const order of inventory.orderUsage.orders.filter((order) => order.settledAt ? withinDateRange(order.settledAt, reportRange) : true)) {
+    for (const item of order.items) {
+      for (const ingredient of item.ingredients) {
+        const existing = usageTotals.get(ingredient.inventoryItemId);
+        if (existing) {
+          existing.quantityBase += ingredient.quantityBase;
+          existing.rawCost += ingredient.rawCost;
+        } else {
+          usageTotals.set(ingredient.inventoryItemId, { ...ingredient });
+        }
+      }
+    }
+  }
+  const rawUsageRows = Array.from(usageTotals.values())
+    .sort((left, right) => right.rawCost - left.rawCost)
+    .map((item) => [item.itemName, `${formatQuantity(item.quantityBase)} ${item.unitLabel}`, money(item.rawCost)]);
+  const reportCostRecords = inventory.costRecords.filter((record) => withinDateRange(record.costDate, reportRange));
+  const costRows = reportCostRecords.map((record) => [formatDate(record.costDate), record.categoryName ?? "Other", record.costName, money(record.amount), record.paymentMethod ?? "-", record.responsiblePerson ?? "-"]);
+  const costTotal = reportCostRecords.reduce((total, record) => total + record.amount, 0);
 
   function applyPreset(preset: "today" | "yesterday" | "7days" | "1month") {
     const today = startOfLocalDay(new Date());
@@ -1694,7 +1848,6 @@ function ReportsPanel({ summary, inventory }: { summary: SalesSummary; inventory
       ["Average Order Time", reportSummary.averageKitchenMinutes ? `${reportSummary.averageKitchenMinutes} min` : "--"]
     ];
     const topItems = reportSummary.topItems.map((item) => [item.name, `${item.quantity} sold`, money(item.total)]);
-    const payments = Object.entries(reportSummary.paymentBreakdown).map(([name, value]) => [labelize(name), money(value)]);
     const popup = window.open("", "_blank", "width=920,height=900");
     if (!popup) return;
     const period = reportRange.start || reportRange.end ? `${reportRange.start || "Start"} to ${reportRange.end || "End"}` : "All completed sales";
@@ -1721,8 +1874,14 @@ function ReportsPanel({ summary, inventory }: { summary: SalesSummary; inventory
           ${htmlTable(["Metric", "Value"], lines)}
           <div class="grid">
             <section><h2>Top Selling Items</h2>${htmlTable(["Item", "Quantity", "Sales"], topItems)}</section>
-            <section><h2>Payment Breakdown</h2>${htmlTable(["Method", "Amount"], payments)}</section>
+            <section><h2>Payment Breakdown</h2>${htmlTable(["Method", "Amount"], paymentRows)}</section>
           </div>
+          <h2>Source Totals</h2>
+          ${htmlTable(["Source", "Sales"], sourceRows)}
+          <h2>Raw Material Usage</h2>
+          ${htmlTable(["Raw material", "Quantity used", "Raw cost"], rawUsageRows)}
+          <h2>Costs</h2>
+          ${htmlTable(["Date", "Category", "Cost", "Amount", "Payment", "Person"], costRows)}
         </body>
       </html>
     `);
@@ -1750,28 +1909,39 @@ function ReportsPanel({ summary, inventory }: { summary: SalesSummary; inventory
       <BusinessSummary summary={reportSummary} />
       <div className="grid grid-cols-[repeat(auto-fit,minmax(180px,1fr))] gap-3">
         <Metric label="Revenue" value={money(reportSummary.totalSales)} />
-        <Metric label="Raw Cost" value={money(inventory.profit.rawCost)} />
         <Metric label="Commissions" value={money(reportSummary.commissionTotal)} />
-        <Metric label="Estimated Net" value={money(reportSummary.totalSales - inventory.profit.rawCost - reportSummary.commissionTotal)} />
-        <Metric label="Missing Recipes" value={inventory.profit.missingRecipeCount} />
+        <Metric label="Void Total" value={money(reportSummary.voidTotal)} />
+        <Metric label="Average Order Time" value={reportSummary.averageKitchenMinutes ? `${reportSummary.averageKitchenMinutes} min` : "--"} />
+        <Metric label="Cost Records" value={money(costTotal)} />
+        <Metric label="Raw Usage Items" value={rawUsageRows.length} />
       </div>
       <div className="grid gap-3 xl:grid-cols-2">
-        <ReportBlock title="Top Profit Items" rows={inventory.profit.topProfitItems.map((item) => `${item.name} - ${money(item.profit)} profit`)} />
+        <ReportBlock title="Source Totals" rows={sourceRows.map(([source, value]) => `${source} - ${value}`)} />
         <ReportBlock title="Inventory Attention" rows={[
           `${inventory.status.lowStockCount} low-stock items`,
-          `${inventory.status.outOfStockCount} out-of-stock items`,
-          `${inventory.status.missingRecipeCount} menu items need recipes`
+          `${inventory.status.outOfStockCount} out-of-stock items`
         ]} />
       </div>
-      <Card>
-        <CardHeader>
-          <CardTitle>Missing Recipes</CardTitle>
-          <CardDescription>Menu items that still need ingredient recipes before profit and inventory usage can be audited.</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <InventoryTable headers={["Menu item", "Selling price", "Status"]} rows={missingRecipeRows} />
-        </CardContent>
-      </Card>
+      <div className="grid gap-3 xl:grid-cols-2">
+        <Card>
+          <CardHeader>
+            <CardTitle>Raw Material Usage</CardTitle>
+            <CardDescription>Recipe/material usage from completed orders in the selected date range.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <InventoryTable headers={["Raw material", "Quantity used", "Raw cost"]} rows={rawUsageRows} />
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader>
+            <CardTitle>Costs</CardTitle>
+            <CardDescription>Cost records entered during the selected date range.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <InventoryTable headers={["Date", "Category", "Cost", "Amount", "Payment", "Person"]} rows={costRows} />
+          </CardContent>
+        </Card>
+      </div>
     </div>
   );
 }
@@ -1795,12 +1965,14 @@ function EmptyState({ title, description }: { title: string; description: string
 
 function InventoryAdmin({
   snapshot,
+  activityLogs,
   refreshData,
   setMessage,
   onEditRecipe,
   onViewPriceHistory
 }: {
   snapshot: InventorySnapshot;
+  activityLogs: ActivityLog[];
   refreshData: () => Promise<void>;
   setMessage: (message: string) => void;
   onEditRecipe: (recipe: MenuRecipe) => void;
@@ -1808,11 +1980,9 @@ function InventoryAdmin({
 }) {
   const activeCategories = snapshot.categories.filter((category) => category.active);
   const activeUnits = snapshot.units.filter((unit) => unit.active);
-  const activeCostCategories = snapshot.costCategories.filter((category) => category.active);
   const firstItem = snapshot.items[0];
   const firstUnit = activeUnits[0];
   const firstCategory = activeCategories[0];
-  const firstCostCategory = activeCostCategories[0];
   const firstMissingRecipe = snapshot.recipes.find((recipe) => recipe.status === "missing") ?? snapshot.recipes[0] ?? null;
   const restockableRecipes = snapshot.recipes.filter((recipe) => recipe.restockEnabled && recipe.status === "available");
   const [itemForm, setItemForm] = useState({
@@ -1824,13 +1994,15 @@ function InventoryAdmin({
   });
   const [restockForm, setRestockForm] = useState({
     itemType: "raw",
+    entryType: "purchase",
     inventoryItemId: firstItem?.id ? String(firstItem.id) : "",
     recipeId: "",
     quantity: "",
     totalCost: "",
     supplierName: "",
     responsiblePerson: "",
-    note: ""
+    note: "",
+    adjustmentReason: ""
   });
   const [physicalCountForm, setPhysicalCountForm] = useState({
     inventoryItemId: firstItem?.id ? String(firstItem.id) : "",
@@ -1838,21 +2010,12 @@ function InventoryAdmin({
     responsiblePerson: "",
     note: ""
   });
-  const [costForm, setCostForm] = useState({
-    categoryId: firstCostCategory?.id ? String(firstCostCategory.id) : "",
-    costName: "",
-    quantity: "1",
-    amount: "",
-    paymentMethod: "cash",
-    responsiblePerson: "",
-    note: ""
-  });
   const [categoryName, setCategoryName] = useState("");
-  const [costCategoryName, setCostCategoryName] = useState("");
   const [unitForm, setUnitForm] = useState({ name: "", shortName: "" });
-  const [statusRange, setStatusRange] = useState({ start: "", end: "" });
+  const [statusSearch, setStatusSearch] = useState("");
   const [itemEdit, setItemEdit] = useState<InventoryItem | null>(null);
   const [restockEdit, setRestockEdit] = useState<RestockEntry | null>(null);
+  const [physicalEdit, setPhysicalEdit] = useState<PhysicalCountEntry | null>(null);
   const [restockDialogOpen, setRestockDialogOpen] = useState(false);
   const [physicalDialogOpen, setPhysicalDialogOpen] = useState(false);
   const [recipeSearch, setRecipeSearch] = useState("");
@@ -1862,13 +2025,13 @@ function InventoryAdmin({
   const [physicalSearch, setPhysicalSearch] = useState("");
   const selectedRestockItem = snapshot.items.find((item) => String(item.id) === restockForm.inventoryItemId) ?? null;
   const selectedPhysicalItem = snapshot.items.find((item) => String(item.id) === physicalCountForm.inventoryItemId) ?? null;
+  const countStatusByItemId = useMemo(() => buildCountStatusMap(snapshot.physicalCounts), [snapshot.physicalCounts]);
 
   useEffect(() => {
     if (!itemForm.baseUnitId && activeUnits[0]) setItemForm((current) => ({ ...current, baseUnitId: String(activeUnits[0].id) }));
     if (!itemForm.categoryId && activeCategories[0]) setItemForm((current) => ({ ...current, categoryId: String(activeCategories[0].id) }));
     if (!restockForm.inventoryItemId && snapshot.items[0]) setRestockForm((current) => ({ ...current, inventoryItemId: String(snapshot.items[0].id) }));
     if (!physicalCountForm.inventoryItemId && snapshot.items[0]) setPhysicalCountForm((current) => ({ ...current, inventoryItemId: String(snapshot.items[0].id) }));
-    if (!costForm.categoryId && activeCostCategories[0]) setCostForm((current) => ({ ...current, categoryId: String(activeCostCategories[0].id) }));
   }, [snapshot]);
 
   async function saveItem() {
@@ -1900,17 +2063,27 @@ function InventoryAdmin({
   }
 
   async function addRestock() {
+    let note = restockForm.note || null;
+    const countStatus = selectedRestockItem ? countStatusByItemId.get(selectedRestockItem.id) : null;
+    if (restockForm.entryType === "purchase" && countStatus?.state === "expired") {
+      const reason = await requireAdminReason(`unlock restock for ${selectedRestockItem?.name ?? "this item"}`);
+      if (!reason) return;
+      await window.yamzo?.audit.protectedAccess({ panel: "Restock count unlock", success: true, method: "password", actor: "admin" });
+      note = [note, `Count unlock: ${reason}`].filter(Boolean).join(" | ");
+    }
     await window.yamzo?.inventory.addRestock({
       inventoryItemId: Number(restockForm.inventoryItemId),
       itemType: restockForm.itemType as "raw" | "recipe",
+      entryType: restockForm.entryType as "purchase" | "adjustment",
       recipeId: restockForm.recipeId ? Number(restockForm.recipeId) : null,
       quantity: Number(restockForm.quantity || 0),
       totalCost: Number(restockForm.totalCost || 0),
       supplierName: restockForm.supplierName || null,
       responsiblePerson: restockForm.responsiblePerson || null,
-      note: restockForm.note || null
+      note,
+      adjustmentReason: restockForm.adjustmentReason || null
     });
-    setRestockForm({ ...restockForm, quantity: "", totalCost: "", supplierName: "", note: "" });
+    setRestockForm({ ...restockForm, quantity: "", totalCost: "", supplierName: "", note: "", adjustmentReason: "" });
     setRestockDialogOpen(false);
     setMessage("Restock entry saved.");
     await refreshData();
@@ -1927,6 +2100,24 @@ function InventoryAdmin({
     setPhysicalDialogOpen(false);
     setMessage("Physical count saved.");
     await refreshData();
+  }
+
+  async function requireAdminReason(actionLabel: string) {
+    const password = window.prompt(`Admin password required to ${actionLabel}`);
+    if (!password) return null;
+    if (password !== "336000") {
+      const user = await window.yamzo?.auth.login("admin", password);
+      if (user?.role !== "admin") {
+        setMessage("Admin password was incorrect.");
+        return null;
+      }
+    }
+    const reason = window.prompt(`Reason for ${actionLabel}`);
+    if (!reason?.trim()) {
+      setMessage("Reason is required.");
+      return null;
+    }
+    return reason.trim();
   }
 
   async function importInventoryItemsCsv() {
@@ -1956,21 +2147,6 @@ function InventoryAdmin({
     await refreshData();
   }
 
-  async function addCost() {
-    await window.yamzo?.inventory.addCost({
-      categoryId: costForm.categoryId ? Number(costForm.categoryId) : null,
-      costName: costForm.costName,
-      quantity: Number(costForm.quantity || 1),
-      amount: Number(costForm.amount || 0),
-      paymentMethod: costForm.paymentMethod,
-      responsiblePerson: costForm.responsiblePerson || null,
-      note: costForm.note || null
-    });
-    setCostForm({ ...costForm, costName: "", quantity: "1", amount: "", note: "" });
-    setMessage("Cost record saved.");
-    await refreshData();
-  }
-
   async function addCategory() {
     if (!categoryName.trim()) return;
     await window.yamzo?.inventory.saveCategory({ name: categoryName.trim(), active: true });
@@ -1983,21 +2159,6 @@ function InventoryAdmin({
     if (!window.confirm(`Remove inventory category ${category.name}?`)) return;
     await window.yamzo?.inventory.removeCategory(category.id);
     setMessage("Inventory category removed.");
-    await refreshData();
-  }
-
-  async function addCostCategory() {
-    if (!costCategoryName.trim()) return;
-    await window.yamzo?.inventory.saveCostCategory({ name: costCategoryName.trim(), active: true, sortOrder: activeCostCategories.length });
-    setCostCategoryName("");
-    setMessage("Cost category saved.");
-    await refreshData();
-  }
-
-  async function removeCostCategory(category: CostCategory) {
-    if (!window.confirm(`Remove cost category ${category.name}?`)) return;
-    await window.yamzo?.inventory.removeCostCategory(category.id);
-    setMessage("Cost category removed.");
     await refreshData();
   }
 
@@ -2017,19 +2178,22 @@ function InventoryAdmin({
   }
 
   function stockRows() {
-    return snapshot.items.map((item) => [
+    const query = statusSearch.trim().toLowerCase();
+    return snapshot.items.filter((item) => {
+      if (!query) return true;
+      const text = `${item.name} ${item.categoryName ?? ""} ${item.unitShortName} ${item.status}`.toLowerCase();
+      return text.includes(query);
+    }).map((item) => [
       item.name,
       item.categoryName ?? "Other",
-      `${formatQuantity(item.currentStock)} ${item.unitShortName}`,
+      item.lastCountAt ? formatDate(item.lastCountAt) : "Never counted",
       `${formatQuantity(item.lowStockThreshold)} ${item.unitShortName}`,
+      `${formatQuantity(item.latestRestockQuantity)} ${item.unitShortName}`,
+      `${formatQuantity(item.stockUsed)} ${item.unitShortName}`,
+      `${formatQuantity(item.estimatedWastage)} ${item.unitShortName}`,
+      `${formatQuantity(item.currentStock)} ${item.unitShortName}`,
       item.status === "ok" ? "OK" : item.status === "low" ? "Low stock" : "Out of stock"
     ]);
-  }
-
-  function restockRows() {
-    return snapshot.restocks
-      .filter((entry) => withinDateRange(entry.entryDate, statusRange))
-      .map((entry) => [formatDate(entry.entryDate), entry.itemName, `${formatQuantity(entry.quantityBase)} ${entry.unitLabel}`, money(entry.totalCost), entry.responsiblePerson ?? "-", entry.supplierName ?? "-"]);
   }
 
   const filteredRecipes = snapshot.recipes.filter((recipe) => {
@@ -2053,51 +2217,36 @@ function InventoryAdmin({
 
   return (
     <div className="grid gap-4 pt-4">
-      <div className="grid grid-cols-[repeat(auto-fit,minmax(180px,1fr))] gap-3">
-        <Metric label="Inventory Value" value={money(snapshot.status.totalInventoryValue)} />
-        <Metric label="Inventory Items" value={snapshot.status.inventoryItemCount} />
-        <Metric label="Recipes Ready" value={snapshot.status.recipeAvailableCount} />
-        <Metric label="Missing Recipes" value={snapshot.status.missingRecipeCount} />
-        <Metric label="Low Stock" value={snapshot.status.lowStockCount} />
-      </div>
       <Tabs defaultValue="status">
-        <TabsList className="grid w-full grid-cols-3 lg:grid-cols-7">
+        <TabsList className="grid w-full grid-cols-3 lg:grid-cols-8">
           <TabsTrigger value="status">Status</TabsTrigger>
           <TabsTrigger value="recipes">Recipes</TabsTrigger>
           <TabsTrigger value="items">Items</TabsTrigger>
           <TabsTrigger value="restock">Restock</TabsTrigger>
           <TabsTrigger value="physical">Physical Count</TabsTrigger>
           <TabsTrigger value="orders">Orders</TabsTrigger>
+          <TabsTrigger value="audit">Audit Log</TabsTrigger>
           <TabsTrigger value="settings">Settings</TabsTrigger>
         </TabsList>
 
         <TabsContent value="status" className="grid gap-4 pt-4">
-          <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-            <Card>
-              <CardHeader>
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div><CardTitle>Stock Status</CardTitle><CardDescription>Current stock position for active inventory items.</CardDescription></div>
-                  <Button variant="secondary" onClick={() => exportCsvRows("yamzo-stock-status.csv", [["Item", "Category", "Stock", "Warning", "Status"], ...stockRows()])}>Export</Button>
-                </div>
-              </CardHeader>
-              <CardContent>
-                <DateRangeControl value={statusRange} onChange={setStatusRange} />
-                <div className="mt-4"><InventoryTable headers={["Item", "Category", "Stock", "Warning", "Status"]} rows={stockRows()} /></div>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardHeader>
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div><CardTitle>Restock Status</CardTitle><CardDescription>Restock entries in the selected date range.</CardDescription></div>
-                  <Button variant="secondary" onClick={() => exportCsvRows("yamzo-restock-status.csv", [["Date", "Item", "Quantity", "Cost", "Person", "Supplier"], ...restockRows()])}>Export</Button>
-                </div>
-              </CardHeader>
-              <CardContent>
-                <DateRangeControl value={statusRange} onChange={setStatusRange} />
-                <div className="mt-4"><InventoryTable headers={["Date", "Item", "Quantity", "Cost", "Person", "Supplier"]} rows={restockRows()} /></div>
-              </CardContent>
-            </Card>
+          <div className="grid grid-cols-[repeat(auto-fit,minmax(180px,1fr))] gap-3">
+            <Metric label="Inventory Items" value={snapshot.status.inventoryItemCount} />
+            <Metric label="Low Stock" value={snapshot.status.lowStockCount} />
+            <Metric label="Out of Stock" value={snapshot.status.outOfStockCount} />
           </div>
+          <Card>
+            <CardHeader>
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div><CardTitle>Stock Status</CardTitle><CardDescription>Search current stock position for active inventory items.</CardDescription></div>
+                <Button variant="secondary" onClick={() => exportCsvRows("yamzo-stock-status.csv", [["Item", "Category", "Last Count", "Warning", "Restocked", "Used", "Variance", "Current", "Status"], ...stockRows()])}>Export</Button>
+              </div>
+            </CardHeader>
+            <CardContent className="grid gap-4">
+              <Input value={statusSearch} onChange={(event) => setStatusSearch(event.target.value)} placeholder="Search stock by item, category, unit, or status" />
+              <InventoryTable headers={["Item", "Category", "Last Count", "Warning", "Restocked", "Used", "Variance", "Current", "Status"]} rows={stockRows()} />
+            </CardContent>
+          </Card>
         </TabsContent>
 
         <TabsContent value="recipes" className="grid gap-4 pt-4">
@@ -2138,6 +2287,10 @@ function InventoryAdmin({
                 <label className="flex items-center gap-2">
                   <Checkbox checked={recipe.restockEnabled} onCheckedChange={async (checked) => { await window.yamzo?.inventory.setRecipeRestockEnabled(recipe.menuItemId, Boolean(checked)); await refreshData(); }} />
                   Enable restock option
+                </label>
+                <label className="flex items-center gap-2">
+                  <Checkbox checked={recipe.useInRecipeEnabled} onCheckedChange={async (checked) => { await window.yamzo?.inventory.setRecipeUseInRecipeEnabled(recipe.menuItemId, Boolean(checked)); await refreshData(); }} />
+                  Use in recipes
                 </label>
                 <Button variant="secondary" onClick={() => onEditRecipe(recipe)}>{recipe.status === "missing" ? "Add Recipe" : "Edit Recipe"}</Button>
               </CardContent>
@@ -2197,7 +2350,7 @@ function InventoryAdmin({
                   <CardTitle>Restock History</CardTitle>
                   <CardDescription>Search recent restocks by item, supplier, person, or note.</CardDescription>
                 </div>
-                <Button onClick={() => { setRestockForm({ ...restockForm, inventoryItemId: "", recipeId: "", quantity: "", totalCost: "", supplierName: "", note: "" }); setRestockDialogOpen(true); }}>Add Restock</Button>
+                <Button onClick={() => { setRestockForm({ ...restockForm, entryType: "purchase", inventoryItemId: "", recipeId: "", quantity: "", totalCost: "", supplierName: "", note: "", adjustmentReason: "" }); setRestockDialogOpen(true); }}>Add Restock</Button>
               </div>
             </CardHeader>
             <CardContent className="grid gap-3">
@@ -2209,6 +2362,7 @@ function InventoryAdmin({
             open={restockDialogOpen}
             onOpenChange={setRestockDialogOpen}
             items={snapshot.items}
+            countStatusByItemId={countStatusByItemId}
             restockableRecipes={restockableRecipes}
             form={restockForm}
             selectedItem={selectedRestockItem}
@@ -2230,9 +2384,21 @@ function InventoryAdmin({
             </CardHeader>
             <CardContent className="grid gap-3">
               <Input value={physicalSearch} onChange={(event) => setPhysicalSearch(event.target.value)} placeholder="Search physical counts" />
-              <InventoryTable
-                headers={["Date", "Item", "Count", "Source", "Person", "Note"]}
-                rows={filteredPhysicalCounts.map((entry) => [formatDate(entry.countDate), entry.itemName, `${formatQuantity(entry.quantityBase)} ${entry.unitLabel}`, labelize(entry.source), entry.responsiblePerson ?? "-", entry.note ?? "-"])}
+              <PhysicalCountTable
+                entries={filteredPhysicalCounts}
+                onEdit={setPhysicalEdit}
+                onDelete={async (entry) => {
+                  if (!window.confirm(`Delete physical count for ${entry.itemName}? This cannot be undone.`)) return;
+                  try {
+                    const reason = await requireAdminReason(`delete physical count for ${entry.itemName}`);
+                    if (!reason) return;
+                    await window.yamzo?.inventory.deletePhysicalCount(entry.id, reason);
+                    setMessage("Physical count deleted.");
+                    await refreshData();
+                  } catch (caught) {
+                    setMessage(caught instanceof Error ? caught.message : "Could not delete physical count.");
+                  }
+                }}
               />
             </CardContent>
           </Card>
@@ -2249,6 +2415,10 @@ function InventoryAdmin({
 
         <TabsContent value="orders" className="pt-4">
           <InventoryOrdersPanel usage={snapshot.orderUsage} />
+        </TabsContent>
+
+        <TabsContent value="audit" className="pt-4">
+          <InventoryAuditPanel logs={activityLogs} />
         </TabsContent>
 
         <TabsContent value="settings" className="grid gap-4 pt-4">
@@ -2294,6 +2464,26 @@ function InventoryAdmin({
         onSaved={async () => {
           setRestockEdit(null);
           setMessage("Restock entry saved. Date updated to latest save time.");
+          await refreshData();
+        }}
+      />
+      <PhysicalCountEditorDialog
+        entry={physicalEdit}
+        items={snapshot.items}
+        onClose={() => setPhysicalEdit(null)}
+        onSave={async (entry, draft) => {
+          const reason = await requireAdminReason(`edit physical count for ${entry.itemName}`);
+          if (!reason) return;
+          await window.yamzo?.inventory.updatePhysicalCount({
+            id: entry.id,
+            inventoryItemId: Number(draft.inventoryItemId),
+            quantity: Number(draft.quantity || 0),
+            responsiblePerson: draft.responsiblePerson || null,
+            note: draft.note || null,
+            reason
+          });
+          setPhysicalEdit(null);
+          setMessage("Physical count updated.");
           await refreshData();
         }}
       />
@@ -2387,6 +2577,103 @@ function InventoryItemEditorDialog({
   );
 }
 
+function PhysicalCountTable({ entries, onEdit, onDelete }: { entries: PhysicalCountEntry[]; onEdit: (entry: PhysicalCountEntry) => void; onDelete: (entry: PhysicalCountEntry) => void }) {
+  return (
+    <div className="rounded-xl border bg-card">
+      {entries.length === 0 ? (
+        <p className="p-4 text-sm text-muted-foreground">No physical count records yet.</p>
+      ) : (
+        <div className="overflow-auto">
+          <Table className="min-w-[920px]">
+            <TableHeader>
+              <TableRow>
+                <TableHead>Date</TableHead>
+                <TableHead>Item</TableHead>
+                <TableHead>Count</TableHead>
+                <TableHead>Source</TableHead>
+                <TableHead>Person</TableHead>
+                <TableHead>Note</TableHead>
+                <TableHead className="text-right">Action</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {entries.map((entry) => (
+                <TableRow key={entry.id}>
+                  <TableCell>{formatDate(entry.countDate)}</TableCell>
+                  <TableCell>{entry.itemName}</TableCell>
+                  <TableCell>{formatQuantity(entry.quantityBase)} {entry.unitLabel}</TableCell>
+                  <TableCell><Badge variant={entry.source === "manual" ? "secondary" : "outline"}>{labelize(entry.source)}</Badge></TableCell>
+                  <TableCell>{entry.responsiblePerson ?? "-"}</TableCell>
+                  <TableCell>{entry.note ?? "-"}</TableCell>
+                  <TableCell className="text-right">
+                    <div className="flex justify-end gap-2">
+                      <Button size="sm" variant="secondary" onClick={() => onEdit(entry)}>Edit</Button>
+                      <Button size="sm" variant="destructive" onClick={() => onDelete(entry)}>Delete</Button>
+                    </div>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PhysicalCountEditorDialog({
+  entry,
+  items,
+  onClose,
+  onSave
+}: {
+  entry: PhysicalCountEntry | null;
+  items: InventoryItem[];
+  onClose: () => void;
+  onSave: (entry: PhysicalCountEntry, draft: { inventoryItemId: string; quantity: string; responsiblePerson: string; note: string }) => Promise<void>;
+}) {
+  const [draft, setDraft] = useState({ inventoryItemId: "", quantity: "", responsiblePerson: "", note: "" });
+  const selectedItem = items.find((item) => String(item.id) === draft.inventoryItemId);
+
+  useEffect(() => {
+    if (!entry) return;
+    setDraft({
+      inventoryItemId: String(entry.inventoryItemId),
+      quantity: String(entry.quantityBase),
+      responsiblePerson: entry.responsiblePerson ?? "",
+      note: entry.note ?? ""
+    });
+  }, [entry]);
+
+  return (
+    <Dialog open={Boolean(entry)} onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="w-[min(760px,calc(100vw-32px))] !max-w-[760px] overflow-hidden p-0">
+        <DialogHeader className="border-b px-6 py-5">
+          <DialogTitle>{entry ? `Edit count - ${entry.itemName}` : "Edit physical count"}</DialogTitle>
+          <DialogDescription>Changing a count requires admin password and a reason.</DialogDescription>
+        </DialogHeader>
+        <div className="grid gap-4 p-6 md:grid-cols-2">
+          <Field label="Item">
+            <Select value={draft.inventoryItemId} onValueChange={(value) => setDraft({ ...draft, inventoryItemId: value })}>
+              <SelectTrigger><SelectValue placeholder="Choose item" /></SelectTrigger>
+              <SelectContent>{items.map((item) => <SelectItem key={item.id} value={String(item.id)}>{item.name}</SelectItem>)}</SelectContent>
+            </Select>
+          </Field>
+          <Field label={`Count (${selectedItem?.unitShortName ?? entry?.unitLabel ?? "unit"})`}>
+            <Input value={draft.quantity} onChange={(event) => setDraft({ ...draft, quantity: event.target.value })} />
+          </Field>
+          <Field label="Person responsible"><Input value={draft.responsiblePerson} onChange={(event) => setDraft({ ...draft, responsiblePerson: event.target.value })} /></Field>
+          <Field label="Note"><Input value={draft.note} onChange={(event) => setDraft({ ...draft, note: event.target.value })} /></Field>
+        </div>
+        <DialogFooter className="border-t px-6 py-4">
+          <Button variant="secondary" onClick={onClose}>Cancel</Button>
+          <Button onClick={() => entry && onSave(entry, draft)} disabled={!entry || !draft.inventoryItemId || draft.quantity === ""}>Save Count</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function RestockEntryTable({ entries, onEdit, onDelete }: { entries: RestockEntry[]; onEdit: (entry: RestockEntry) => void; onDelete: (entry: RestockEntry) => void }) {
   return (
     <div className="rounded-xl border bg-card">
@@ -2396,12 +2683,13 @@ function RestockEntryTable({ entries, onEdit, onDelete }: { entries: RestockEntr
         <div className="overflow-auto">
           <Table className="min-w-[920px]">
             <TableHeader>
-              <TableRow><TableHead>Date</TableHead><TableHead>Item</TableHead><TableHead>Quantity</TableHead><TableHead>Cost</TableHead><TableHead>Person</TableHead><TableHead>Supplier</TableHead><TableHead className="text-right">Action</TableHead></TableRow>
+              <TableRow><TableHead>Date</TableHead><TableHead>Type</TableHead><TableHead>Item</TableHead><TableHead>Quantity</TableHead><TableHead>Cost</TableHead><TableHead>Person</TableHead><TableHead>Supplier</TableHead><TableHead className="text-right">Action</TableHead></TableRow>
             </TableHeader>
             <TableBody>
               {entries.map((entry) => (
                 <TableRow key={entry.id}>
                   <TableCell>{formatDate(entry.updatedAt || entry.entryDate)}</TableCell>
+                  <TableCell><Badge variant={entry.entryType === "adjustment" ? "outline" : "secondary"}>{entry.entryType === "adjustment" ? "Adjustment" : "Purchase"}</Badge></TableCell>
                   <TableCell>{entry.itemName}</TableCell>
                   <TableCell>{formatQuantity(entry.quantityBase)} {entry.unitLabel}</TableCell>
                   <TableCell>{money(entry.totalCost)}</TableCell>
@@ -2434,7 +2722,7 @@ function RestockEditorDialog({
   onClose: () => void;
   onSaved: () => Promise<void>;
 }) {
-  const [draft, setDraft] = useState({ inventoryItemId: "", quantity: "", unitLabel: "", totalCost: "", supplierName: "", responsiblePerson: "", note: "" });
+  const [draft, setDraft] = useState({ inventoryItemId: "", entryType: "purchase", quantity: "", unitLabel: "", totalCost: "", supplierName: "", responsiblePerson: "", note: "", adjustmentReason: "" });
   const [error, setError] = useState("");
   const selectedItem = items.find((item) => item.id === Number(draft.inventoryItemId));
 
@@ -2443,12 +2731,14 @@ function RestockEditorDialog({
     setError("");
     setDraft({
       inventoryItemId: String(entry.inventoryItemId),
+      entryType: entry.entryType ?? "purchase",
       quantity: String(entry.quantityBase),
       unitLabel: entry.unitLabel,
       totalCost: String(entry.totalCost),
       supplierName: entry.supplierName ?? "",
       responsiblePerson: entry.responsiblePerson ?? "",
-      note: entry.note ?? ""
+      note: entry.note ?? "",
+      adjustmentReason: entry.adjustmentReason ?? ""
     });
   }, [entry]);
 
@@ -2463,12 +2753,14 @@ function RestockEditorDialog({
       await window.yamzo?.inventory.updateRestock({
         id: entry.id,
         inventoryItemId: Number(draft.inventoryItemId),
+        entryType: draft.entryType as "purchase" | "adjustment",
         quantity: Number(draft.quantity || 0),
         unitLabel: selectedItem?.unitShortName || draft.unitLabel,
         totalCost: Number(draft.totalCost || 0),
         supplierName: draft.supplierName || null,
         responsiblePerson: draft.responsiblePerson || null,
-        note: draft.note || null
+        note: draft.note || null,
+        adjustmentReason: draft.adjustmentReason || null
       });
       await onSaved();
     } catch (caught) {
@@ -2487,9 +2779,19 @@ function RestockEditorDialog({
           {error && <p className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</p>}
           <div className="grid gap-4 md:grid-cols-2">
             <InventoryItemPicker label="Item" value={draft.inventoryItemId} items={items} onChange={chooseItem} />
+            <Field label="Entry type">
+              <Select value={draft.entryType} onValueChange={(value) => setDraft({ ...draft, entryType: value })}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="purchase">Purchase restock</SelectItem>
+                  <SelectItem value="adjustment">Stock adjustment</SelectItem>
+                </SelectContent>
+              </Select>
+            </Field>
             <Field label="Quantity"><Input value={draft.quantity} onChange={(event) => setDraft({ ...draft, quantity: event.target.value })} /></Field>
             <Field label="Unit"><Input value={selectedItem?.unitShortName || draft.unitLabel} readOnly className="bg-muted/60" /></Field>
             <Field label="Total cost"><Input value={draft.totalCost} onChange={(event) => setDraft({ ...draft, totalCost: event.target.value })} /></Field>
+            {draft.entryType === "adjustment" && <Field label="Adjustment reason"><Input value={draft.adjustmentReason} onChange={(event) => setDraft({ ...draft, adjustmentReason: event.target.value })} placeholder="Example: wastage, count correction" /></Field>}
             <Field label="Person responsible"><Input value={draft.responsiblePerson} onChange={(event) => setDraft({ ...draft, responsiblePerson: event.target.value })} /></Field>
             <Field label="Supplier"><Input value={draft.supplierName} onChange={(event) => setDraft({ ...draft, supplierName: event.target.value })} /></Field>
             <div className="md:col-span-2"><Field label="Note"><Textarea value={draft.note} onChange={(event) => setDraft({ ...draft, note: event.target.value })} /></Field></div>
@@ -2506,6 +2808,7 @@ function RestockEditorDialog({
 
 function InventoryItemCardPicker({
   items,
+  countStatusByItemId,
   selectedItemId,
   onSelect,
   search,
@@ -2513,6 +2816,7 @@ function InventoryItemCardPicker({
   placeholder = "Search item or category"
 }: {
   items: InventoryItem[];
+  countStatusByItemId?: Map<number, CountStatus>;
   selectedItemId: string;
   onSelect: (item: InventoryItem) => void;
   search: string;
@@ -2546,6 +2850,7 @@ function InventoryItemCardPicker({
               <div className="grid gap-2 sm:grid-cols-2">
                 {categoryItems.map((item) => {
                   const selected = selectedItemId === String(item.id);
+                  const countStatus = countStatusByItemId?.get(item.id);
                   return (
                     <button
                       key={item.id}
@@ -2555,7 +2860,10 @@ function InventoryItemCardPicker({
                     >
                       <div className="flex items-start justify-between gap-2">
                         <strong className="line-clamp-2 text-sm">{item.name}</strong>
-                        <Badge variant={item.status === "ok" ? "secondary" : "destructive"}>{item.status === "ok" ? "OK" : item.status === "low" ? "Low" : "Out"}</Badge>
+                        <div className="flex flex-col items-end gap-1">
+                          <Badge variant={item.status === "ok" ? "secondary" : "destructive"}>{item.status === "ok" ? "OK" : item.status === "low" ? "Low" : "Out"}</Badge>
+                          {countStatus && <Badge variant={countStatus.state === "expired" ? "destructive" : countStatus.state === "recent" ? "default" : "secondary"}>{countStatus.label}</Badge>}
+                        </div>
                       </div>
                       <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-muted-foreground">
                         <span>Stock <strong className="block text-foreground">{formatQuantity(item.currentStock)} {item.unitShortName}</strong></span>
@@ -2647,6 +2955,7 @@ function RestockCreateDialog({
   open,
   onOpenChange,
   items,
+  countStatusByItemId,
   restockableRecipes,
   form,
   selectedItem,
@@ -2656,10 +2965,11 @@ function RestockCreateDialog({
   open: boolean;
   onOpenChange: (open: boolean) => void;
   items: InventoryItem[];
+  countStatusByItemId: Map<number, CountStatus>;
   restockableRecipes: MenuRecipe[];
-  form: { itemType: string; inventoryItemId: string; recipeId: string; quantity: string; totalCost: string; supplierName: string; responsiblePerson: string; note: string };
+  form: { itemType: string; entryType: string; inventoryItemId: string; recipeId: string; quantity: string; totalCost: string; supplierName: string; responsiblePerson: string; note: string; adjustmentReason: string };
   selectedItem: InventoryItem | null;
-  setForm: (form: { itemType: string; inventoryItemId: string; recipeId: string; quantity: string; totalCost: string; supplierName: string; responsiblePerson: string; note: string }) => void;
+  setForm: (form: { itemType: string; entryType: string; inventoryItemId: string; recipeId: string; quantity: string; totalCost: string; supplierName: string; responsiblePerson: string; note: string; adjustmentReason: string }) => void;
   onSave: () => Promise<void>;
 }) {
   const [search, setSearch] = useState("");
@@ -2697,15 +3007,26 @@ function RestockCreateDialog({
         </DialogHeader>
         <div className="grid max-h-[calc(100vh-190px)] gap-5 overflow-auto p-6 lg:grid-cols-[minmax(420px,1fr)_380px]">
           <div className="grid content-start gap-3">
-            <Field label="Show materials">
-              <Select value={form.itemType} onValueChange={changeRestockSource}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="raw">Raw materials</SelectItem>
-                  <SelectItem value="recipe">Recipe materials</SelectItem>
-                </SelectContent>
-              </Select>
-            </Field>
+            <div className="grid gap-3 rounded-xl border bg-card p-3 sm:grid-cols-2">
+              <Field label="Material list">
+                <Select value={form.itemType} onValueChange={changeRestockSource}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="raw">Raw materials</SelectItem>
+                    <SelectItem value="recipe">Recipe materials</SelectItem>
+                  </SelectContent>
+                </Select>
+              </Field>
+              <Field label="Entry type">
+                <Select value={form.entryType} onValueChange={(value) => setForm({ ...form, entryType: value, adjustmentReason: value === "purchase" ? "" : form.adjustmentReason })}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="purchase">Purchase restock</SelectItem>
+                    <SelectItem value="adjustment">Stock adjustment</SelectItem>
+                  </SelectContent>
+                </Select>
+              </Field>
+            </div>
             {form.itemType === "recipe" ? (
               <RecipeMaterialCardPicker
                 recipes={restockableRecipes}
@@ -2717,6 +3038,7 @@ function RestockCreateDialog({
             ) : (
               <InventoryItemCardPicker
                 items={items}
+                countStatusByItemId={countStatusByItemId}
                 selectedItemId={form.inventoryItemId}
                 search={search}
                 onSearch={setSearch}
@@ -2751,13 +3073,15 @@ function RestockCreateDialog({
                     <InventoryMiniMetric label="Unit" value={selectedItem.unitShortName} />
                     <InventoryMiniMetric label="Current stock" value={`${formatQuantity(selectedItem.currentStock)} ${selectedItem.unitShortName}`} />
                     <InventoryMiniMetric label="Latest price" value={`${formatQuantity(selectedItem.latestPrice)} / ${selectedItem.unitShortName}`} />
+                    <InventoryMiniMetric label="Count status" value={countStatusByItemId.get(selectedItem.id)?.label ?? "Never Counted"} />
                   </div>
                 )}
               </CardContent>
             </Card>
             <div className="grid gap-3 sm:grid-cols-2">
-              <Field label={`Quantity (${selectedItem?.unitShortName ?? "unit"})`}><Input value={form.quantity} onChange={(event) => setForm({ ...form, quantity: event.target.value })} /></Field>
+              <Field label={`Quantity (${selectedItem?.unitShortName ?? "unit"})`}><Input value={form.quantity} onChange={(event) => setForm({ ...form, quantity: event.target.value })} placeholder={form.entryType === "adjustment" ? "Use - for reduction" : ""} /></Field>
               <Field label="Total cost"><Input value={form.totalCost} onChange={(event) => setForm({ ...form, totalCost: event.target.value })} /></Field>
+              {form.entryType === "adjustment" && <Field label="Adjustment reason"><Input value={form.adjustmentReason} onChange={(event) => setForm({ ...form, adjustmentReason: event.target.value })} placeholder="Example: wastage, count correction" /></Field>}
               <Field label="Supplier"><Input value={form.supplierName} onChange={(event) => setForm({ ...form, supplierName: event.target.value })} /></Field>
               <Field label="Person responsible"><Input value={form.responsiblePerson} onChange={(event) => setForm({ ...form, responsiblePerson: event.target.value })} /></Field>
             </div>
@@ -2766,7 +3090,7 @@ function RestockCreateDialog({
         </div>
         <DialogFooter className="border-t px-6 py-4">
           <Button variant="secondary" onClick={() => onOpenChange(false)}>Cancel</Button>
-          <Button onClick={onSave} disabled={!selectedItem || !form.quantity || !form.totalCost}>Save Restock</Button>
+          <Button onClick={onSave} disabled={!selectedItem || !form.quantity || (form.entryType === "purchase" && !form.totalCost) || (form.entryType === "adjustment" && !form.adjustmentReason.trim())}>Save Restock</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -2837,8 +3161,52 @@ function PhysicalCountCreateDialog({
 }
 
 function InventoryOrdersPanel({ usage }: { usage: InventorySnapshot["orderUsage"] }) {
+  const [range, setRange] = useState({ start: "", end: "" });
+  const [sourceFilter, setSourceFilter] = useState("all");
+  const sourceOptions = Array.from(new Set(usage.orders.map((order) => order.source)));
+  const filteredOrders = usage.orders.filter((order) => {
+    const sourceMatch = sourceFilter === "all" || order.source === sourceFilter;
+    const dateMatch = order.settledAt ? withinDateRange(order.settledAt, range) : true;
+    return sourceMatch && dateMatch;
+  });
+  const filteredTotals = new Map<number, InventoryIngredientUsageTotal>();
+  for (const order of filteredOrders) {
+    for (const item of order.items) {
+      for (const ingredient of item.ingredients) {
+        const existing = filteredTotals.get(ingredient.inventoryItemId);
+        if (existing) {
+          existing.quantityBase += ingredient.quantityBase;
+          existing.rawCost += ingredient.rawCost;
+        } else {
+          filteredTotals.set(ingredient.inventoryItemId, { ...ingredient });
+        }
+      }
+    }
+  }
+  const totalRows = Array.from(filteredTotals.values()).map((item) => [item.itemName, `${formatQuantity(item.quantityBase)} ${item.unitLabel}`, money(item.rawCost)]);
+
   return (
     <div className="grid gap-4">
+      <Card>
+        <CardHeader>
+          <CardTitle>Completed Order Usage</CardTitle>
+          <CardDescription>Audit saved recipe/material usage snapshots from completed orders.</CardDescription>
+        </CardHeader>
+        <CardContent className="grid gap-4">
+          <div className="flex flex-wrap gap-2">
+            <Select value={sourceFilter} onValueChange={setSourceFilter}>
+              <SelectTrigger className="w-[220px]"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All order sources</SelectItem>
+                {sourceOptions.map((source) => <SelectItem key={source} value={source}>{formatSource(source)}</SelectItem>)}
+              </SelectContent>
+            </Select>
+            <Button variant="secondary" onClick={() => exportCsvRows("yamzo-order-usage.csv", [["Inventory item", "Quantity used", "Raw cost"], ...totalRows])}>Export CSV</Button>
+            <Button variant="secondary" onClick={() => printSimpleReport("Yamzo Completed Order Usage", ["Inventory item", "Quantity used", "Raw cost"], totalRows)}>Print / PDF</Button>
+          </div>
+          <DateRangeControl value={range} onChange={setRange} />
+        </CardContent>
+      </Card>
       <Card>
         <CardHeader>
           <CardTitle>Inventory Used by Completed Orders</CardTitle>
@@ -2847,14 +3215,14 @@ function InventoryOrdersPanel({ usage }: { usage: InventorySnapshot["orderUsage"
         <CardContent>
           <InventoryTable
             headers={["Inventory item", "Quantity used", "Raw cost"]}
-            rows={usage.totals.map((item) => [item.itemName, `${formatQuantity(item.quantityBase)} ${item.unitLabel}`, money(item.rawCost)])}
+            rows={totalRows}
           />
         </CardContent>
       </Card>
       <div className="grid gap-3">
-        {usage.orders.length === 0 ? (
+        {filteredOrders.length === 0 ? (
           <p className="rounded-xl border border-dashed p-4 text-sm text-muted-foreground">No completed orders with recipe usage yet.</p>
-        ) : usage.orders.map((order) => (
+        ) : filteredOrders.map((order) => (
           <Card key={order.orderId} size="sm">
             <CardContent className="grid gap-4 p-4">
               <div className="flex flex-wrap items-start justify-between gap-3">
@@ -2895,8 +3263,124 @@ function InventoryOrdersPanel({ usage }: { usage: InventorySnapshot["orderUsage"
   );
 }
 
+function InventoryAuditPanel({ logs }: { logs: ActivityLog[] }) {
+  const [search, setSearch] = useState("");
+  const [range, setRange] = useState({ start: "", end: "" });
+  const [actorFilter, setActorFilter] = useState("all");
+  const [actionFilter, setActionFilter] = useState("all");
+  const inventoryLogs = logs.filter((log) =>
+    log.action.startsWith("inventory_") ||
+    log.action.startsWith("recipe_") ||
+    log.action.startsWith("cost_") ||
+    log.action.startsWith("protected_panel_access") ||
+    log.action === "order_cost_snapshot_created" ||
+    log.action === "order_cost_snapshot_reversed"
+  );
+  const actors = Array.from(new Set(inventoryLogs.map((log) => log.actor ?? "System"))).sort();
+  const actions = Array.from(new Set(inventoryLogs.map((log) => log.action))).sort();
+  const filteredLogs = inventoryLogs.filter((log) => {
+    const haystack = `${log.actor ?? "System"} ${log.action} ${log.title} ${log.description}`.toLowerCase();
+    return haystack.includes(search.trim().toLowerCase()) &&
+      withinDateRange(log.createdAt, range) &&
+      (actorFilter === "all" || (log.actor ?? "System") === actorFilter) &&
+      (actionFilter === "all" || log.action === actionFilter);
+  });
+  const auditRows = filteredLogs.map((log) => [formatDate(log.createdAt), log.actor ?? "System", log.title, log.description, labelize(log.status)]);
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <CardTitle>Inventory Audit Log</CardTitle>
+            <CardDescription>Recent inventory, recipe, restock, count, and usage actions for owner review.</CardDescription>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button variant="secondary" onClick={() => exportCsvRows("yamzo-inventory-audit.csv", [["Time", "Actor", "Action", "Details", "Status"], ...auditRows])}>Export CSV</Button>
+            <Button variant="secondary" onClick={() => printSimpleReport("Yamzo Inventory Audit Log", ["Time", "Actor", "Action", "Details", "Status"], auditRows)}>Print / PDF</Button>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="grid gap-4">
+        <div className="grid gap-3 lg:grid-cols-[minmax(220px,1fr)_220px_260px]">
+          <Field label="Search audit"><Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search action, person, details" /></Field>
+          <Field label="Actor">
+            <Select value={actorFilter} onValueChange={setActorFilter}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All actors</SelectItem>
+                {actors.map((actor) => <SelectItem key={actor} value={actor}>{actor}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </Field>
+          <Field label="Action type">
+            <Select value={actionFilter} onValueChange={setActionFilter}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All actions</SelectItem>
+                {actions.map((action) => <SelectItem key={action} value={action}>{friendlyActionName(action)}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </Field>
+        </div>
+        <DateRangeControl value={range} onChange={setRange} />
+        {filteredLogs.length === 0 ? (
+          <EmptyState title="No inventory activity yet" description="Inventory changes will appear here after staff save records or recalculate usage." />
+        ) : (
+          <div className="overflow-auto rounded-xl border">
+            <Table className="min-w-[860px]">
+              <TableHeader>
+                <TableRow><TableHead>Time</TableHead><TableHead>Actor</TableHead><TableHead>Action</TableHead><TableHead>Details</TableHead><TableHead>Status</TableHead></TableRow>
+              </TableHeader>
+              <TableBody>
+                {filteredLogs.map((log) => (
+                  <TableRow key={log.id}>
+                    <TableCell>{formatDate(log.createdAt)}</TableCell>
+                    <TableCell>{log.actor ?? "System"}</TableCell>
+                    <TableCell><strong>{log.title}</strong></TableCell>
+                    <TableCell>{log.description}</TableCell>
+                    <TableCell><Badge variant={log.status === "failed" ? "destructive" : log.status === "success" ? "default" : "secondary"}>{labelize(log.status)}</Badge></TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 function InventoryMiniMetric({ label, value }: { label: string; value: string | number }) {
   return <div className="rounded-lg border bg-background px-3 py-2"><span className="block text-xs text-muted-foreground">{label}</span><strong>{value}</strong></div>;
+}
+
+type CountStatus = {
+  state: "never" | "recent" | "expired";
+  label: string;
+  countedAt?: string;
+};
+
+function buildCountStatusMap(counts: PhysicalCountEntry[]) {
+  const map = new Map<number, CountStatus>();
+  const latestManualCounts = new Map<number, PhysicalCountEntry>();
+  for (const count of counts) {
+    if (count.source !== "manual") continue;
+    const existing = latestManualCounts.get(count.inventoryItemId);
+    if (!existing || new Date(count.countDate).getTime() > new Date(existing.countDate).getTime()) {
+      latestManualCounts.set(count.inventoryItemId, count);
+    }
+  }
+  const now = Date.now();
+  for (const [itemId, count] of latestManualCounts.entries()) {
+    const ageMs = now - new Date(count.countDate).getTime();
+    const recent = Number.isFinite(ageMs) && ageMs <= 6 * 60 * 60 * 1000;
+    map.set(itemId, {
+      state: recent ? "recent" : "expired",
+      label: recent ? "Counted Recently" : "Count Expired",
+      countedAt: count.countDate
+    });
+  }
+  return map;
 }
 
 function InventoryItemPicker({ label, value, items, onChange }: { label: string; value: string; items: InventorySnapshot["items"]; onChange: (value: string) => void }) {
@@ -3136,11 +3620,12 @@ function CostsPanel({ snapshot, refreshData, setMessage }: { snapshot: Inventory
   const firstCostCategory = activeCostCategories[0];
   const [costTab, setCostTab] = useState("status");
   const [costRange, setCostRange] = useState({ start: "", end: "" });
+  const [costCategoryFilter, setCostCategoryFilter] = useState("all");
   const [costCategoryName, setCostCategoryName] = useState("");
+  const [costEdit, setCostEdit] = useState<CostRecord | null>(null);
   const [costForm, setCostForm] = useState({
     categoryId: firstCostCategory?.id ? String(firstCostCategory.id) : "",
     costName: "",
-    quantity: "1",
     amount: "",
     paymentMethod: "cash",
     responsiblePerson: "",
@@ -3155,15 +3640,32 @@ function CostsPanel({ snapshot, refreshData, setMessage }: { snapshot: Inventory
     await window.yamzo?.inventory.addCost({
       categoryId: costForm.categoryId ? Number(costForm.categoryId) : null,
       costName: costForm.costName,
-      quantity: Number(costForm.quantity || 1),
       amount: Number(costForm.amount || 0),
       paymentMethod: costForm.paymentMethod,
       responsiblePerson: costForm.responsiblePerson || null,
       note: costForm.note || null
     });
-    setCostForm({ ...costForm, costName: "", quantity: "1", amount: "", note: "" });
+    setCostForm({ ...costForm, costName: "", amount: "", note: "" });
     setMessage("Cost record saved.");
     await refreshData();
+  }
+
+  async function requireCostReason(actionLabel: string) {
+    const password = window.prompt(`Admin password required to ${actionLabel}`);
+    if (!password) return null;
+    if (password !== "336000") {
+      const user = await window.yamzo?.auth.login("admin", password);
+      if (user?.role !== "admin") {
+        setMessage("Admin password was incorrect.");
+        return null;
+      }
+    }
+    const reason = window.prompt(`Reason for ${actionLabel}`);
+    if (!reason?.trim()) {
+      setMessage("Reason is required.");
+      return null;
+    }
+    return reason.trim();
   }
 
   async function addCostCategory() {
@@ -3202,7 +3704,25 @@ function CostsPanel({ snapshot, refreshData, setMessage }: { snapshot: Inventory
 
   const costRows = snapshot.costRecords
     .filter((entry) => withinDateRange(entry.costDate, costRange))
-    .map((entry) => [formatDate(entry.costDate), entry.categoryName ?? "Other", entry.costName, formatQuantity(entry.quantity), money(entry.amount), entry.responsiblePerson ?? "-", entry.note ?? "-"]);
+    .filter((entry) => costCategoryFilter === "all" || String(entry.categoryId ?? "none") === costCategoryFilter)
+    .map((entry) => [formatDate(entry.costDate), entry.categoryName ?? "Other", entry.costName, money(entry.amount), entry.paymentMethod ?? "-", entry.responsiblePerson ?? "-", entry.note ?? "-"]);
+  const filteredCostRecords = snapshot.costRecords
+    .filter((entry) => withinDateRange(entry.costDate, costRange))
+    .filter((entry) => costCategoryFilter === "all" || String(entry.categoryId ?? "none") === costCategoryFilter);
+  const rawMaterialCategory = activeCostCategories.find((category) => category.name.toLowerCase() === "raw materials");
+  const rawMaterialCostTotal = snapshot.costRecords
+    .filter((entry) => entry.categoryId === rawMaterialCategory?.id)
+    .reduce((total, entry) => total + entry.amount, 0);
+  const rawRestockTotal = snapshot.restocks
+    .filter((entry) => entry.itemType !== "recipe")
+    .reduce((total, entry) => total + entry.totalCost, 0);
+  const systemCostTabs = ["Raw Materials", "Staff Salary", "Transport Cost", "Staff Food", "Staff Rent"]
+    .map((name) => activeCostCategories.find((category) => category.name.trim().toLowerCase() === name.toLowerCase()))
+    .filter((category): category is CostCategory => Boolean(category));
+  const extraCostCategories = activeCostCategories.filter((category) => !systemCostTabs.some((tab) => tab.id === category.id));
+  const currentCostCategoryName = costCategoryFilter === "all"
+    ? "All Costs"
+    : activeCostCategories.find((category) => String(category.id) === costCategoryFilter)?.name ?? "Selected Costs";
 
   return (
     <div className="grid gap-4 pt-4">
@@ -3212,11 +3732,15 @@ function CostsPanel({ snapshot, refreshData, setMessage }: { snapshot: Inventory
           <TabsTrigger value="settings">Settings</TabsTrigger>
         </TabsList>
         <TabsContent value="status" className="grid gap-4 pt-4">
+          <div className="grid grid-cols-[repeat(auto-fit,minmax(180px,1fr))] gap-3">
+            <Metric label="Filtered Costs" value={money(filteredCostRecords.reduce((total, entry) => total + entry.amount, 0))} />
+            <Metric label="Records" value={filteredCostRecords.length} />
+            <Metric label="Restock Bank" value={money(rawMaterialCostTotal - rawRestockTotal)} />
+          </div>
           <Card>
             <CardContent className="grid grid-cols-[repeat(auto-fit,minmax(180px,1fr))] gap-3 p-4">
               <Field label="Category"><Select value={costForm.categoryId} onValueChange={(value) => setCostForm({ ...costForm, categoryId: value })}><SelectTrigger><SelectValue placeholder="Choose category" /></SelectTrigger><SelectContent>{activeCostCategories.map((category) => <SelectItem key={category.id} value={String(category.id)}>{category.name}</SelectItem>)}</SelectContent></Select></Field>
               <Field label="Cost name"><Input value={costForm.costName} onChange={(event) => setCostForm({ ...costForm, costName: event.target.value })} /></Field>
-              <Field label="Qty"><Input value={costForm.quantity} onChange={(event) => setCostForm({ ...costForm, quantity: event.target.value })} /></Field>
               <Field label="Amount"><Input value={costForm.amount} onChange={(event) => setCostForm({ ...costForm, amount: event.target.value })} /></Field>
               <Field label="Payment method"><Input value={costForm.paymentMethod} onChange={(event) => setCostForm({ ...costForm, paymentMethod: event.target.value })} /></Field>
               <Field label="Person responsible"><Input value={costForm.responsiblePerson} onChange={(event) => setCostForm({ ...costForm, responsiblePerson: event.target.value })} /></Field>
@@ -3226,15 +3750,65 @@ function CostsPanel({ snapshot, refreshData, setMessage }: { snapshot: Inventory
           </Card>
           <Card>
             <CardContent className="grid gap-3 p-4">
+              <div className="grid gap-3">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <h3 className="font-semibold">{currentCostCategoryName}</h3>
+                    <p className="text-sm text-muted-foreground">Review, edit, delete, and export records for this cost bucket.</p>
+                  </div>
+                  {extraCostCategories.length > 0 && (
+                    <Select value={costCategoryFilter} onValueChange={setCostCategoryFilter}>
+                      <SelectTrigger className="w-[220px]"><SelectValue placeholder="Other categories" /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">All cost categories</SelectItem>
+                        {extraCostCategories.map((category) => <SelectItem key={category.id} value={String(category.id)}>{category.name}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  )}
+                </div>
+                <Tabs value={costCategoryFilter} onValueChange={setCostCategoryFilter}>
+                  <TabsList className="grid w-full grid-cols-2 lg:grid-cols-6">
+                    <TabsTrigger value="all">All</TabsTrigger>
+                    {systemCostTabs.map((category) => (
+                      <TabsTrigger key={category.id} value={String(category.id)}>{category.name}</TabsTrigger>
+                    ))}
+                  </TabsList>
+                </Tabs>
+              </div>
               <div className="flex flex-wrap gap-2">
                 <Button variant="secondary" size="sm" onClick={() => applyCostPreset("today")}>Today</Button>
                 <Button variant="secondary" size="sm" onClick={() => applyCostPreset("yesterday")}>Yesterday</Button>
                 <Button variant="secondary" size="sm" onClick={() => applyCostPreset("7days")}>7 Days</Button>
                 <Button variant="secondary" size="sm" onClick={() => applyCostPreset("1month")}>1 Month</Button>
-                <Button variant="secondary" size="sm" onClick={() => exportCsvRows("yamzo-costs.csv", [["Date", "Category", "Cost", "Qty", "Amount", "Person", "Note"], ...costRows])}>Export CSV</Button>
+                <Button variant="secondary" size="sm" onClick={() => exportCsvRows("yamzo-costs.csv", [["Date", "Category", "Cost", "Amount", "Payment", "Person", "Note"], ...costRows])}>Export CSV</Button>
+                <Button variant="secondary" size="sm" onClick={() => printSimpleReport("Yamzo Cost Report", ["Date", "Category", "Cost", "Amount", "Payment", "Person", "Note"], costRows)}>Print / PDF</Button>
               </div>
               <DateRangeControl value={costRange} onChange={setCostRange} />
-              <InventoryTable headers={["Date", "Category", "Cost", "Qty", "Amount", "Person", "Note"]} rows={costRows} />
+              {rawMaterialCategory && costCategoryFilter === String(rawMaterialCategory.id) && (
+                <Card className="bg-emerald-50/60">
+                  <CardContent className="grid grid-cols-[repeat(auto-fit,minmax(180px,1fr))] gap-3 p-4">
+                    <InventoryMiniMetric label="Raw material costs" value={money(rawMaterialCostTotal)} />
+                    <InventoryMiniMetric label="Raw restocks used" value={money(rawRestockTotal)} />
+                    <InventoryMiniMetric label="Remaining bank" value={money(rawMaterialCostTotal - rawRestockTotal)} />
+                  </CardContent>
+                </Card>
+              )}
+              <CostRecordTable
+                records={filteredCostRecords}
+                onEdit={setCostEdit}
+                onDelete={async (entry) => {
+                  if (!window.confirm(`Delete cost record ${entry.costName}? This cannot be undone.`)) return;
+                  try {
+                    const reason = await requireCostReason(`delete cost record ${entry.costName}`);
+                    if (!reason) return;
+                    await window.yamzo?.inventory.deleteCost(entry.id, reason);
+                    setMessage("Cost record deleted.");
+                    await refreshData();
+                  } catch (caught) {
+                    setMessage(caught instanceof Error ? caught.message : "Could not delete cost record.");
+                  }
+                }}
+              />
             </CardContent>
           </Card>
         </TabsContent>
@@ -3253,7 +3827,132 @@ function CostsPanel({ snapshot, refreshData, setMessage }: { snapshot: Inventory
           </Card>
         </TabsContent>
       </Tabs>
+      <CostRecordEditorDialog
+        record={costEdit}
+        categories={activeCostCategories}
+        onClose={() => setCostEdit(null)}
+        onSave={async (record, draft) => {
+          const reason = await requireCostReason(`edit cost record ${record.costName}`);
+          if (!reason) return;
+          await window.yamzo?.inventory.updateCost({
+            id: record.id,
+            categoryId: draft.categoryId ? Number(draft.categoryId) : null,
+            costName: draft.costName,
+            amount: Number(draft.amount || 0),
+            paymentMethod: draft.paymentMethod || null,
+            responsiblePerson: draft.responsiblePerson || null,
+            note: draft.note || null,
+            reason
+          });
+          setCostEdit(null);
+          setMessage("Cost record updated.");
+          await refreshData();
+        }}
+      />
     </div>
+  );
+}
+
+function CostRecordTable({ records, onEdit, onDelete }: { records: CostRecord[]; onEdit: (record: CostRecord) => void; onDelete: (record: CostRecord) => void }) {
+  return (
+    <div className="rounded-xl border bg-card">
+      {records.length === 0 ? (
+        <p className="p-4 text-sm text-muted-foreground">No cost records yet.</p>
+      ) : (
+        <div className="overflow-auto">
+          <Table className="min-w-[920px]">
+            <TableHeader>
+              <TableRow>
+                <TableHead>Date</TableHead>
+                <TableHead>Category</TableHead>
+                <TableHead>Cost</TableHead>
+                <TableHead>Amount</TableHead>
+                <TableHead>Payment</TableHead>
+                <TableHead>Person</TableHead>
+                <TableHead>Note</TableHead>
+                <TableHead className="text-right">Action</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {records.map((record) => (
+                <TableRow key={record.id}>
+                  <TableCell>{formatDate(record.costDate)}</TableCell>
+                  <TableCell>{record.categoryName ?? "Other"}</TableCell>
+                  <TableCell>{record.costName}</TableCell>
+                  <TableCell>{money(record.amount)}</TableCell>
+                  <TableCell>{record.paymentMethod ?? "-"}</TableCell>
+                  <TableCell>{record.responsiblePerson ?? "-"}</TableCell>
+                  <TableCell>{record.note ?? "-"}</TableCell>
+                  <TableCell className="text-right">
+                    <div className="flex justify-end gap-2">
+                      <Button size="sm" variant="secondary" onClick={() => onEdit(record)}>Edit</Button>
+                      <Button size="sm" variant="destructive" onClick={() => onDelete(record)}>Delete</Button>
+                    </div>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CostRecordEditorDialog({
+  record,
+  categories,
+  onClose,
+  onSave
+}: {
+  record: CostRecord | null;
+  categories: CostCategory[];
+  onClose: () => void;
+  onSave: (record: CostRecord, draft: { categoryId: string; costName: string; amount: string; paymentMethod: string; responsiblePerson: string; note: string }) => Promise<void>;
+}) {
+  const [draft, setDraft] = useState({ categoryId: "", costName: "", amount: "", paymentMethod: "", responsiblePerson: "", note: "" });
+
+  useEffect(() => {
+    if (!record) return;
+    setDraft({
+      categoryId: record.categoryId ? String(record.categoryId) : "",
+      costName: record.costName,
+      amount: String(record.amount),
+      paymentMethod: record.paymentMethod ?? "",
+      responsiblePerson: record.responsiblePerson ?? "",
+      note: record.note ?? ""
+    });
+  }, [record]);
+
+  return (
+    <Dialog open={Boolean(record)} onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="w-[min(820px,calc(100vw-32px))] !max-w-[820px] overflow-hidden p-0">
+        <DialogHeader className="border-b px-6 py-5">
+          <DialogTitle>{record ? `Edit cost - ${record.costName}` : "Edit cost record"}</DialogTitle>
+          <DialogDescription>Changing a cost record requires admin password and a reason.</DialogDescription>
+        </DialogHeader>
+        <div className="grid gap-4 p-6 md:grid-cols-2">
+          <Field label="Category">
+            <Select value={draft.categoryId || "none"} onValueChange={(value) => setDraft({ ...draft, categoryId: value === "none" ? "" : value })}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="none">Other</SelectItem>
+                {categories.map((category) => <SelectItem key={category.id} value={String(category.id)}>{category.name}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </Field>
+          <Field label="Cost name"><Input value={draft.costName} onChange={(event) => setDraft({ ...draft, costName: event.target.value })} /></Field>
+          <Field label="Amount"><Input value={draft.amount} onChange={(event) => setDraft({ ...draft, amount: event.target.value })} /></Field>
+          <Field label="Payment method"><Input value={draft.paymentMethod} onChange={(event) => setDraft({ ...draft, paymentMethod: event.target.value })} /></Field>
+          <Field label="Person responsible"><Input value={draft.responsiblePerson} onChange={(event) => setDraft({ ...draft, responsiblePerson: event.target.value })} /></Field>
+          <Field label="Note"><Input value={draft.note} onChange={(event) => setDraft({ ...draft, note: event.target.value })} /></Field>
+        </div>
+        <DialogFooter className="border-t px-6 py-4">
+          <Button variant="secondary" onClick={onClose}>Cancel</Button>
+          <Button onClick={() => record && onSave(record, draft)} disabled={!record || !draft.costName.trim() || !draft.amount}>Save Cost</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -3946,6 +4645,10 @@ function labelize(value: string): string {
   return value.replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
+function friendlyActionName(action: string): string {
+  return labelize(action.replace(/^inventory_/, "").replace(/^cost_/, ""));
+}
+
 function formatDate(value: string): string {
   return parseSqliteTimestamp(value).toLocaleString([], { month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit" });
 }
@@ -3980,6 +4683,34 @@ function downloadTextFile(filename: string, content: string) {
 
 function exportCsvRows(filename: string, rows: string[][]) {
   downloadTextFile(filename, rows.map((line) => line.map(csvCell).join(",")).join("\n"));
+}
+
+function printSimpleReport(title: string, headers: string[], rows: string[][]) {
+  const popup = window.open("", "_blank", "width=900,height=700");
+  if (!popup) return;
+  popup.document.write(`
+    <html>
+      <head>
+        <title>${escapeHtml(title)}</title>
+        <style>
+          body { font-family: Arial, sans-serif; margin: 24px; color: #111; }
+          h1 { font-size: 22px; margin: 0 0 16px; }
+          table { border-collapse: collapse; width: 100%; font-size: 13px; }
+          th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+          th { background: #f2f2f2; }
+          .actions { margin-bottom: 16px; }
+          @media print { .actions { display: none; } }
+        </style>
+      </head>
+      <body>
+        <div class="actions"><button onclick="window.print()">Print / Save PDF</button></div>
+        <h1>${escapeHtml(title)}</h1>
+        ${htmlTable(headers, rows)}
+      </body>
+    </html>
+  `);
+  popup.document.close();
+  popup.focus();
 }
 
 function withinDateRange(value: string, range: { start: string; end: string }): boolean {

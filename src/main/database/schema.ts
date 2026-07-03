@@ -238,6 +238,16 @@ export function migrate(db: Database.Database): void {
       UNIQUE(recipe_id, inventory_item_id)
     );
 
+    CREATE TABLE IF NOT EXISTS recipe_child_ingredients (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      recipe_id INTEGER NOT NULL REFERENCES menu_item_recipes(id) ON DELETE CASCADE,
+      child_recipe_id INTEGER NOT NULL REFERENCES menu_item_recipes(id) ON DELETE CASCADE,
+      quantity_base REAL NOT NULL,
+      unit_label TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(recipe_id, child_recipe_id)
+    );
+
     CREATE TABLE IF NOT EXISTS inventory_adjustments (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       inventory_item_id INTEGER NOT NULL REFERENCES inventory_items(id),
@@ -309,6 +319,7 @@ export function migrate(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_inventory_physical_counts_item_date ON inventory_physical_counts(inventory_item_id, count_date);
     CREATE INDEX IF NOT EXISTS idx_inventory_price_item_date ON inventory_price_history(inventory_item_id, effective_at);
     CREATE INDEX IF NOT EXISTS idx_recipe_ingredients_recipe ON recipe_ingredients(recipe_id);
+    CREATE INDEX IF NOT EXISTS idx_recipe_child_ingredients_recipe ON recipe_child_ingredients(recipe_id);
     CREATE INDEX IF NOT EXISTS idx_inventory_adjustments_item_date ON inventory_adjustments(inventory_item_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_inventory_adjustments_order ON inventory_adjustments(order_id);
     CREATE INDEX IF NOT EXISTS idx_cost_records_date ON cost_records(cost_date);
@@ -326,7 +337,11 @@ export function migrate(db: Database.Database): void {
   ensureColumn(db, "inventory_restock_entries", "updated_at", "TEXT");
   ensureColumn(db, "inventory_restock_entries", "item_type", "TEXT NOT NULL DEFAULT 'raw'");
   ensureColumn(db, "inventory_restock_entries", "recipe_id", "INTEGER");
+  ensureColumn(db, "inventory_restock_entries", "entry_type", "TEXT NOT NULL DEFAULT 'purchase'");
+  ensureColumn(db, "inventory_restock_entries", "adjustment_reason", "TEXT");
+  ensureColumn(db, "inventory_adjustments", "restock_entry_id", "INTEGER");
   ensureColumn(db, "menu_item_recipes", "restock_enabled", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn(db, "menu_item_recipes", "use_in_recipe_enabled", "INTEGER NOT NULL DEFAULT 1");
   ensureColumn(db, "menu_items", "track_recipe", "INTEGER NOT NULL DEFAULT 1");
   ensureColumn(db, "cost_records", "quantity", "REAL NOT NULL DEFAULT 1");
   ensureColumn(db, "cost_categories", "sort_order", "INTEGER NOT NULL DEFAULT 0");

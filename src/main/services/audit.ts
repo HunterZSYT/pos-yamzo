@@ -141,14 +141,61 @@ function describeActivity(action: string, details: AuditDetails): Pick<ActivityL
   if (action === "inventory_restock_created") {
     return { title: "Restock entry added", description: `${String(details.itemName ?? "Inventory item")} | ${String(details.quantity ?? "")}`, status: "success" };
   }
+  if (action === "inventory_restock_updated") {
+    return { title: "Restock entry updated", description: `${String(details.itemName ?? "Inventory item")} | ${String(details.quantity ?? "")}`, status: "success" };
+  }
+  if (action === "inventory_restock_deleted") {
+    return { title: "Restock entry deleted", description: `${String(details.itemName ?? "Inventory item")} removed from restock history.`, status: "info" };
+  }
+  if (action === "inventory_physical_count_saved" || action === "inventory_physical_count_updated" || action === "inventory_physical_count_deleted") {
+    const itemName = String(details.itemName ?? "Inventory item");
+    if (action === "inventory_physical_count_updated") {
+      return { title: "Physical count updated", description: `${itemName} changed from ${String(details.oldQuantity ?? "-")} ${String(details.oldUnit ?? "")} to ${String(details.newQuantity ?? "-")} ${String(details.newUnit ?? "")}. Reason: ${String(details.reason ?? "-")}`, status: "info" };
+    }
+    if (action === "inventory_physical_count_deleted") {
+      return { title: "Physical count deleted", description: `${itemName} count ${String(details.oldQuantity ?? "-")} ${String(details.oldUnit ?? "")} removed. Reason: ${String(details.reason ?? "-")}`, status: "info" };
+    }
+    return { title: "Physical count saved", description: `${itemName} | ${String(details.quantity ?? "")}`, status: "success" };
+  }
+  if (action === "inventory_usage_backfilled" || action === "inventory_usage_recalculated") {
+    const orders = Number(details.orderCount ?? 0);
+    const rawCost = Number(details.estimatedRawCost ?? 0);
+    const reason = typeof details.reason === "string" && details.reason.trim() ? ` Reason: ${details.reason.trim()}.` : "";
+    return {
+      title: action === "inventory_usage_recalculated" ? "Inventory usage recalculated" : "Inventory usage backfilled",
+      description: `${orders} completed order${orders === 1 ? "" : "s"} checked | estimated raw cost ${rawCost} TK.${reason}`,
+      status: "success"
+    };
+  }
+  if (action === "inventory_order_usage_recalculated") {
+    return { title: "Order inventory usage recalculated", description: typeof details.entityId === "string" ? `Order ID ${details.entityId} recalculated.` : "Completed order recalculated.", status: "success" };
+  }
   if (action === "inventory_price_record_created") {
     return { title: "Inventory price record added", description: `${String(details.itemName ?? "Inventory item")} | ${String(details.pricePerBase ?? "")} per base unit`, status: "success" };
+  }
+  if (action === "recipe_updated" || action === "recipe_removed") {
+    const itemName = String(details.itemName ?? "Recipe");
+    const count = Number(details.ingredientCount ?? 0);
+    return {
+      title: action === "recipe_removed" ? "Recipe removed" : "Recipe updated",
+      description: action === "recipe_removed" ? `${itemName} moved back to missing recipe.` : `${itemName} saved with ${count} ingredient${count === 1 ? "" : "s"}.`,
+      status: "success"
+    };
+  }
+  if (action === "recipe_restock_option_updated" || action === "recipe_use_in_recipe_option_updated") {
+    return { title: "Recipe setting updated", description: `${String(details.itemName ?? "Recipe")} | ${details.enabled ? "Enabled" : "Disabled"}.`, status: "info" };
   }
   if (action.startsWith("cost_category_")) {
     return { title: inventoryTitle(action), description: String(details.name ?? "Cost category updated."), status: "info" };
   }
   if (action === "cost_record_created") {
     return { title: "Cost record added", description: `${String(details.costName ?? "Cost")} | ${String(details.amount ?? "")} TK`, status: "success" };
+  }
+  if (action === "cost_record_updated") {
+    return { title: "Cost record updated", description: `${String(details.costName ?? "Cost")} changed from ${String(details.oldAmount ?? "-")} TK to ${String(details.newAmount ?? "-")} TK. Reason: ${String(details.reason ?? "-")}`, status: "info" };
+  }
+  if (action === "cost_record_deleted") {
+    return { title: "Cost record deleted", description: `${String(details.costName ?? "Cost")} | ${String(details.oldAmount ?? "-")} TK. Reason: ${String(details.reason ?? "-")}`, status: "info" };
   }
   if (action === "order_cost_snapshot_created") {
     return { title: "Order cost snapshot saved", description: `Revenue ${String(details.revenue ?? 0)} TK | Raw cost ${String(details.rawCost ?? 0)} TK`, status: "info" };
