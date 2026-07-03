@@ -25,7 +25,24 @@ import {
 } from "../src/main/domain/orders";
 import { reprintKitchenCopy, reprintReceipt, voidOrderItem } from "../src/main/domain/orders";
 import { getSalesSummary } from "../src/main/domain/reports";
-import { addCostRecord, addPriceRecord, addRestockEntry, deleteRestockEntry, importInventoryItemsCsv, importRecipeInventoryCsv, listInventorySnapshot, saveMenuRecipe } from "../src/main/domain/inventory";
+import {
+  addCostRecord,
+  addPhysicalCount,
+  addPriceRecord,
+  addRestockEntry,
+  applyInventoryBackfill,
+  deleteCostRecord,
+  deletePhysicalCount,
+  deleteRestockEntry,
+  importInventoryItemsCsv,
+  importRecipeInventoryCsv,
+  listInventorySnapshot,
+  previewInventoryBackfill,
+  saveMenuRecipe,
+  setRecipeUseInRecipeEnabled,
+  updateCostRecord,
+  updatePhysicalCount
+} from "../src/main/domain/inventory";
 import { archiveMenuItem, deleteMenuItem, importMenuCsv, listMenuItems, parsePrice, saveMenuItem } from "../src/main/services/menuImport";
 import { getBrandingSettings, getHostNames, getMenuData, getTotalTables, setBrandingSettings, setHostNames, setInventoryTracking, getSetting, setMenuData, setPrinterName, setTotalTables } from "../src/main/services/settings";
 import { buildDailySalesEmail, clearGmailAuth, getEmailSettings, saveEmailSettings } from "../src/main/services/email";
@@ -352,9 +369,41 @@ describe("Yamzo POS core", () => {
     const after = listInventorySnapshot(database);
     expect(after.profit.revenue).toBe(480);
     expect(after.profit.otherCost).toBe(500);
-    expect(after.items.find((item) => item.id === chicken!.id)!.currentStock).toBe(chicken!.currentStock + 1000);
+    expect(after.items.find((item) => item.id === chicken!.id)!.currentStock).toBe(chicken!.currentStock + 800);
     fs.unlinkSync(file);
     fs.unlinkSync(itemsFile);
+  });
+
+  it("edits and deletes physical counts and costs with audit reasons", () => {
+    const database = freshDb();
+    const unit = database.prepare("SELECT id FROM inventory_units WHERE short_name = 'g'").get() as { id: number };
+    const category = database.prepare("SELECT id FROM inventory_categories LIMIT 1").get() as { id: number };
+    const chickenId = Number(database.prepare("INSERT INTO inventory_items (name, category_id, base_unit_id, low_stock_threshold) VALUES ('Chicken Breast', ?, ?, 100)").run(category.id, unit.id).lastInsertRowid);
+
+    addRestockEntry(database, { inventoryItemId: chickenId, quantity: 1000, totalCost: 900, responsiblePerson: "Cashier" });
+    expect(listInventorySnapshot(database).physicalCounts).toHaveLength(0);
+
+    const countId = addPhysicalCount(database, { inventoryItemId: chickenId, quantity: 800, responsiblePerson: "Cashier", note: "Opening count" }).id;
+    updatePhysicalCount(database, { id: countId, inventoryItemId: chickenId, quantity: 750, responsiblePerson: "Manager", note: "Rechecked", reason: "Mistyped count" });
+    let snapshot = listInventorySnapshot(database);
+    expect(snapshot.physicalCounts.find((entry) => entry.id === countId)).toMatchObject({ quantityBase: 750, responsiblePerson: "Manager" });
+    deletePhysicalCount(database, countId, "Duplicate count");
+    snapshot = listInventorySnapshot(database);
+    expect(snapshot.physicalCounts.some((entry) => entry.id === countId)).toBe(false);
+
+    const costId = addCostRecord(database, { categoryId: snapshot.costCategories[0].id, costName: "Gas", amount: 500, paymentMethod: "cash", responsiblePerson: "Owner" }).id;
+    updateCostRecord(database, { id: costId, categoryId: snapshot.costCategories[0].id, costName: "Gas cylinder", amount: 550, paymentMethod: "cash", responsiblePerson: "Owner", note: "Correct bill", reason: "Bill corrected" });
+    snapshot = listInventorySnapshot(database);
+    expect(snapshot.costRecords.find((entry) => entry.id === costId)).toMatchObject({ costName: "Gas cylinder", amount: 550 });
+    deleteCostRecord(database, costId, "Wrong date");
+    snapshot = listInventorySnapshot(database);
+    expect(snapshot.costRecords.some((entry) => entry.id === costId)).toBe(false);
+
+    const actions = listActivityLogs(database, 20).map((entry) => entry.action);
+    expect(actions).toContain("inventory_physical_count_updated");
+    expect(actions).toContain("inventory_physical_count_deleted");
+    expect(actions).toContain("cost_record_updated");
+    expect(actions).toContain("cost_record_deleted");
   });
 
   it("counts sales and inventory only for completed orders", () => {
@@ -380,12 +429,59 @@ describe("Yamzo POS core", () => {
     settleOrder(database, completed.id, "cash");
     expect(getSalesSummary(database).totalSales).toBe(240);
     expect(database.prepare("SELECT COUNT(*) AS count FROM order_item_cost_snapshots WHERE order_id = ?").get(completed.id)).toMatchObject({ count: 1 });
-    expect(database.prepare("SELECT COUNT(*) AS count FROM inventory_adjustments WHERE order_id = ?").get(completed.id)).toMatchObject({ count: 0 });
+    expect(database.prepare("SELECT COUNT(*) AS count FROM inventory_adjustments WHERE order_id = ?").get(completed.id)).toMatchObject({ count: 1 });
+    expect(listInventorySnapshot(database).items.find((item) => item.id === chicken.id)!.currentStock).toBe(900);
     reopenOrder(database, completed.id);
     expect(getSalesSummary(database).totalSales).toBe(0);
     expect(database.prepare("SELECT COUNT(*) AS count FROM order_item_cost_snapshots WHERE order_id = ?").get(completed.id)).toMatchObject({ count: 0 });
+    expect(database.prepare("SELECT COUNT(*) AS count FROM inventory_adjustments WHERE order_id = ?").get(completed.id)).toMatchObject({ count: 0 });
+    expect(listInventorySnapshot(database).items.find((item) => item.id === chicken.id)!.currentStock).toBe(1000);
     fs.unlinkSync(file);
     fs.unlinkSync(itemsFile);
+  });
+
+  it("supports nested recipe materials and explicit completed-order recalculation", () => {
+    const database = freshDb();
+    const base = saveMenuItem(database, { name: "Tartar Sauce", price: 10, category: "Sauce", available: false, trackRecipe: true });
+    const fish = saveMenuItem(database, { name: "Fish Plate", price: 300, category: "Fish", available: true, trackRecipe: true });
+    const lemonUnit = database.prepare("SELECT id FROM inventory_units WHERE short_name = 'g'").get() as { id: number };
+    const category = database.prepare("SELECT id FROM inventory_categories LIMIT 1").get() as { id: number };
+    const lemonId = Number(database.prepare("INSERT INTO inventory_items (name, category_id, base_unit_id, low_stock_threshold) VALUES ('Lemon', ?, ?, 100)").run(category.id, lemonUnit.id).lastInsertRowid);
+    addRestockEntry(database, { inventoryItemId: lemonId, quantity: 1000, totalCost: 1000 });
+    saveMenuRecipe(database, { menuItemId: base.id, ingredients: [{ inventoryItemId: lemonId, quantityBase: 5, unitLabel: "g" }] });
+    const baseRecipe = listInventorySnapshot(database).recipes.find((recipe) => recipe.menuItemId === base.id)!;
+    setRecipeUseInRecipeEnabled(database, base.id, true);
+    saveMenuRecipe(database, { menuItemId: fish.id, ingredients: [{ kind: "recipe", childRecipeId: baseRecipe.id, quantityBase: 2, unitLabel: "portion" }] });
+    const fishRecipe = listInventorySnapshot(database).recipes.find((recipe) => recipe.menuItemId === fish.id)!;
+    expect(fishRecipe.childIngredients).toHaveLength(1);
+    expect(fishRecipe.ingredients[0]).toMatchObject({ itemName: "Lemon", quantityBase: 10 });
+
+    const order = createOrder(database, { source: "in_house", tableNumber: "Table 1" });
+    addOrderItem(database, order.id, { menuItemId: fish.id, quantity: 1 });
+    settleOrder(database, order.id, "cash");
+    expect(listInventorySnapshot(database).items.find((item) => item.id === lemonId)!.currentStock).toBe(990);
+  });
+
+  it("previews and recalculates completed order usage after recipes change", () => {
+    const database = freshDb();
+    const item = saveMenuItem(database, { name: "Chicken Bowl", price: 250, category: "Rice", available: true, trackRecipe: true });
+    const unit = database.prepare("SELECT id FROM inventory_units WHERE short_name = 'g'").get() as { id: number };
+    const category = database.prepare("SELECT id FROM inventory_categories LIMIT 1").get() as { id: number };
+    const chickenId = Number(database.prepare("INSERT INTO inventory_items (name, category_id, base_unit_id, low_stock_threshold) VALUES ('Chicken Breast', ?, ?, 100)").run(category.id, unit.id).lastInsertRowid);
+    addRestockEntry(database, { inventoryItemId: chickenId, quantity: 1000, totalCost: 1000 });
+    const order = createOrder(database, { source: "in_house", tableNumber: "Table 2" });
+    addOrderItem(database, order.id, { menuItemId: item.id, quantity: 2 });
+    settleOrder(database, order.id, "cash");
+    expect(previewInventoryBackfill(database).estimatedMissingRecipeCount).toBe(1);
+    saveMenuRecipe(database, { menuItemId: item.id, ingredients: [{ inventoryItemId: chickenId, quantityBase: 100, unitLabel: "g" }] });
+    const preview = previewInventoryBackfill(database);
+    expect(preview.orderCount).toBe(1);
+    expect(preview.rawCostDelta).toBe(200);
+    applyInventoryBackfill(database, { mode: "replace", reason: "Corrected chicken recipe" });
+    const snapshot = listInventorySnapshot(database);
+    expect(snapshot.orderUsage.totals[0]).toMatchObject({ itemName: "Chicken Breast", quantityBase: 200 });
+    expect(snapshot.items.find((row) => row.id === chickenId)!.currentStock).toBe(800);
+    expect(listActivityLogs(database, 5).some((log) => log.description.includes("Corrected chicken recipe"))).toBe(true);
   });
 
   it("stores Gmail settings locally, builds summary email, clears token path, and escapes print HTML", () => {

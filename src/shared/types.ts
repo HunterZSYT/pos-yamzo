@@ -186,6 +186,13 @@ export interface InventoryItem {
   estimatedValue: number;
   lowStockThreshold: number;
   status: "ok" | "low" | "out";
+  stockUsed: number;
+  expectedLeft: number;
+  lastCountAt: string | null;
+  lastRestockAt: string | null;
+  latestRestockQuantity: number;
+  estimatedWastage: number;
+  countRequired: boolean;
   active: boolean;
 }
 
@@ -200,9 +207,20 @@ export interface RecipeIngredient {
 }
 
 export interface RecipeIngredientInput {
-  inventoryItemId: number;
+  kind?: "raw" | "recipe";
+  inventoryItemId?: number;
+  childRecipeId?: number;
   quantityBase: number;
   unitLabel: string;
+}
+
+export interface RecipeChildIngredient {
+  id: number;
+  childRecipeId: number;
+  menuItemName: string;
+  quantityBase: number;
+  unitLabel: string;
+  rawCost: number;
 }
 
 export interface MenuRecipe {
@@ -212,10 +230,23 @@ export interface MenuRecipe {
   sellingPrice: number;
   status: "available" | "missing";
   restockEnabled: boolean;
+  useInRecipeEnabled: boolean;
   rawCost: number;
   estimatedProfit: number;
   profitMargin: number;
   ingredients: RecipeIngredient[];
+  childIngredients: RecipeChildIngredient[];
+}
+
+export interface InventoryBackfillPreview {
+  orderCount: number;
+  missingSnapshotCount: number;
+  existingSnapshotCount: number;
+  estimatedRevenue: number;
+  estimatedRawCost: number;
+  currentSnapshotRawCost: number;
+  rawCostDelta: number;
+  estimatedMissingRecipeCount: number;
 }
 
 export interface RestockEntry {
@@ -223,6 +254,7 @@ export interface RestockEntry {
   inventoryItemId: number;
   itemName: string;
   itemType: "raw" | "recipe";
+  entryType: "purchase" | "adjustment";
   recipeId: number | null;
   recipeName: string | null;
   quantityBase: number;
@@ -232,6 +264,7 @@ export interface RestockEntry {
   supplierName: string | null;
   responsiblePerson: string | null;
   note: string | null;
+  adjustmentReason: string | null;
   entryDate: string;
   updatedAt: string;
 }
@@ -258,7 +291,6 @@ export interface CostRecord {
   categoryId: number | null;
   categoryName: string | null;
   costName: string;
-  quantity: number;
   amount: number;
   paymentMethod: string | null;
   responsiblePerson: string | null;

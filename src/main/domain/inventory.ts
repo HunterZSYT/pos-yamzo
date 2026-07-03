@@ -4,6 +4,7 @@ import Papa from "papaparse";
 import type {
   CostCategory,
   CostRecord,
+  InventoryBackfillPreview,
   InventoryCategory,
   InventoryImportResult,
   InventoryItemImportResult,
@@ -126,6 +127,7 @@ export function importRecipeInventoryCsv(db: Database.Database, csvPath: string,
           : Number(db.prepare("INSERT INTO menu_item_recipes (menu_item_id) VALUES (?)").run(menuItem.id).lastInsertRowid);
         if (existingRecipe) {
           db.prepare("DELETE FROM recipe_ingredients WHERE recipe_id = ?").run(recipeId);
+          db.prepare("DELETE FROM recipe_child_ingredients WHERE recipe_id = ?").run(recipeId);
           db.prepare("UPDATE menu_item_recipes SET active = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(recipeId);
           result.recipesUpdated += 1;
         } else {
@@ -165,6 +167,7 @@ export function importInventoryItemsCsv(db: Database.Database, csvPath: string, 
   const result: InventoryItemImportResult = { imported: 0, updated: 0, skipped: 0, deleted: 0, errors: [] };
   const tx = db.transaction(() => {
     result.deleted = (db.prepare("SELECT COUNT(*) AS count FROM inventory_items").get() as { count: number }).count;
+    db.prepare("DELETE FROM recipe_child_ingredients").run();
     db.prepare("DELETE FROM recipe_ingredients").run();
     db.prepare("DELETE FROM menu_item_recipes").run();
     db.prepare("DELETE FROM inventory_adjustments").run();
@@ -239,16 +242,24 @@ export function saveMenuRecipe(
   if (!menuItem) throw new Error("Menu item not found.");
   const cleanIngredients = input.ingredients
     .map((ingredient) => ({
-      inventoryItemId: Number(ingredient.inventoryItemId),
+      kind: ingredient.kind === "recipe" ? "recipe" : "raw",
+      inventoryItemId: Number(ingredient.inventoryItemId ?? 0),
+      childRecipeId: Number(ingredient.childRecipeId ?? 0),
       quantityBase: Math.max(0, Number(ingredient.quantityBase)),
-      unitLabel: cleanText(ingredient.unitLabel || "g")
+      unitLabel: cleanText(ingredient.unitLabel || (ingredient.kind === "recipe" ? "portion" : "g"))
     }))
-    .filter((ingredient) => Number.isInteger(ingredient.inventoryItemId) && ingredient.inventoryItemId > 0 && ingredient.quantityBase > 0);
+    .filter((ingredient) => {
+      if (ingredient.quantityBase <= 0) return false;
+      return ingredient.kind === "recipe"
+        ? Number.isInteger(ingredient.childRecipeId) && ingredient.childRecipeId > 0
+        : Number.isInteger(ingredient.inventoryItemId) && ingredient.inventoryItemId > 0;
+    });
   const tx = db.transaction(() => {
     const existing = db.prepare("SELECT id FROM menu_item_recipes WHERE menu_item_id = ?").get(menuItem.id) as { id: number } | undefined;
     if (cleanIngredients.length === 0) {
       if (existing) {
         db.prepare("DELETE FROM recipe_ingredients WHERE recipe_id = ?").run(existing.id);
+        db.prepare("DELETE FROM recipe_child_ingredients WHERE recipe_id = ?").run(existing.id);
         db.prepare("UPDATE menu_item_recipes SET active = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(existing.id);
       }
       return;
@@ -258,9 +269,18 @@ export function saveMenuRecipe(
       : Number(db.prepare("INSERT INTO menu_item_recipes (menu_item_id) VALUES (?)").run(menuItem.id).lastInsertRowid);
     db.prepare("UPDATE menu_item_recipes SET active = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(recipeId);
     db.prepare("DELETE FROM recipe_ingredients WHERE recipe_id = ?").run(recipeId);
-    const insert = db.prepare("INSERT INTO recipe_ingredients (recipe_id, inventory_item_id, quantity_base, unit_label) VALUES (?, ?, ?, ?)");
+    db.prepare("DELETE FROM recipe_child_ingredients WHERE recipe_id = ?").run(recipeId);
+    const insertRaw = db.prepare("INSERT INTO recipe_ingredients (recipe_id, inventory_item_id, quantity_base, unit_label) VALUES (?, ?, ?, ?)");
+    const insertChild = db.prepare("INSERT INTO recipe_child_ingredients (recipe_id, child_recipe_id, quantity_base, unit_label) VALUES (?, ?, ?, ?)");
     for (const ingredient of cleanIngredients) {
-      insert.run(recipeId, ingredient.inventoryItemId, ingredient.quantityBase, ingredient.unitLabel);
+      if (ingredient.kind === "recipe") {
+        if (ingredient.childRecipeId === recipeId) throw new Error("A recipe cannot include itself.");
+        const child = db.prepare("SELECT id FROM menu_item_recipes WHERE id = ? AND active = 1 AND use_in_recipe_enabled = 1").get(ingredient.childRecipeId) as { id: number } | undefined;
+        if (!child) throw new Error("Recipe material is not enabled for use in recipes.");
+        insertChild.run(recipeId, ingredient.childRecipeId, ingredient.quantityBase, ingredient.unitLabel || "portion");
+      } else {
+        insertRaw.run(recipeId, ingredient.inventoryItemId, ingredient.quantityBase, ingredient.unitLabel);
+      }
     }
   });
   tx();
@@ -275,6 +295,16 @@ export function setRecipeRestockEnabled(db: Database.Database, menuItemId: numbe
   const recipeId = existing?.id ?? Number(db.prepare("INSERT INTO menu_item_recipes (menu_item_id, active, restock_enabled) VALUES (?, 0, ?)").run(menuItem.id, enabled ? 1 : 0).lastInsertRowid);
   db.prepare("UPDATE menu_item_recipes SET restock_enabled = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(enabled ? 1 : 0, recipeId);
   recordActivity(db, "recipe_restock_option_updated", { entityType: "menu_item", entityId: String(menuItem.id), itemName: menuItem.name, enabled }, actor);
+  return listMenuRecipes(db).find((recipe) => recipe.menuItemId === menuItem.id)!;
+}
+
+export function setRecipeUseInRecipeEnabled(db: Database.Database, menuItemId: number, enabled: boolean, actor = "admin"): MenuRecipe {
+  const menuItem = db.prepare("SELECT id, name FROM menu_items WHERE id = ?").get(menuItemId) as { id: number; name: string } | undefined;
+  if (!menuItem) throw new Error("Menu item not found.");
+  const existing = db.prepare("SELECT id FROM menu_item_recipes WHERE menu_item_id = ?").get(menuItem.id) as { id: number } | undefined;
+  const recipeId = existing?.id ?? Number(db.prepare("INSERT INTO menu_item_recipes (menu_item_id, active, use_in_recipe_enabled) VALUES (?, 0, ?)").run(menuItem.id, enabled ? 1 : 0).lastInsertRowid);
+  db.prepare("UPDATE menu_item_recipes SET use_in_recipe_enabled = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(enabled ? 1 : 0, recipeId);
+  recordActivity(db, "recipe_use_in_recipe_option_updated", { entityType: "menu_item", entityId: String(menuItem.id), itemName: menuItem.name, enabled }, actor);
   return listMenuRecipes(db).find((recipe) => recipe.menuItemId === menuItem.id)!;
 }
 
@@ -339,6 +369,7 @@ export function addRestockEntry(
   input: {
     inventoryItemId: number;
     itemType?: "raw" | "recipe";
+    entryType?: "purchase" | "adjustment";
     recipeId?: number | null;
     quantity: number;
     unitLabel?: string;
@@ -346,27 +377,36 @@ export function addRestockEntry(
     supplierName?: string | null;
     responsiblePerson?: string | null;
     note?: string | null;
+    adjustmentReason?: string | null;
     entryDate?: string | null;
   },
   actor = "admin"
 ): RestockEntry {
   const item = getInventoryItem(db, input.inventoryItemId);
-  const quantity = Math.max(0, Number(input.quantity));
-  if (quantity <= 0) throw new Error("Restock quantity must be greater than zero.");
+  const entryType = input.entryType ?? "purchase";
+  const quantity = entryType === "adjustment" ? Number(input.quantity) : Math.max(0, Number(input.quantity));
+  if (!Number.isFinite(quantity) || quantity === 0) throw new Error(entryType === "adjustment" ? "Adjustment quantity cannot be zero." : "Restock quantity must be greater than zero.");
+  const adjustmentReason = cleanText(input.adjustmentReason ?? "");
+  if (entryType === "adjustment" && !adjustmentReason) throw new Error("Adjustment reason is required.");
   const totalCost = Math.max(0, Number(input.totalCost ?? 0));
-  const pricePerBase = quantity > 0 ? totalCost / quantity : 0;
+  const pricePerBase = entryType === "purchase" && quantity > 0 ? totalCost / quantity : 0;
   const id = Number(
     db.prepare(
       `INSERT INTO inventory_restock_entries
-       (inventory_item_id, item_type, recipe_id, quantity_base, unit_label, total_cost, price_per_base, supplier_name, responsible_person, note, entry_date)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))`
-    ).run(input.inventoryItemId, input.itemType ?? "raw", input.recipeId ?? null, quantity, item.unitShortName, totalCost, pricePerBase, input.supplierName ?? null, input.responsiblePerson ?? null, input.note ?? null, input.entryDate ?? null).lastInsertRowid
+       (inventory_item_id, item_type, entry_type, recipe_id, quantity_base, unit_label, total_cost, price_per_base, supplier_name, responsible_person, note, adjustment_reason, entry_date)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))`
+    ).run(input.inventoryItemId, input.itemType ?? "raw", entryType, input.recipeId ?? null, quantity, item.unitShortName, totalCost, pricePerBase, input.supplierName ?? null, input.responsiblePerson ?? null, input.note ?? null, adjustmentReason || null, input.entryDate ?? null).lastInsertRowid
   );
-  addPhysicalCount(db, { inventoryItemId: input.inventoryItemId, quantity, responsiblePerson: input.responsiblePerson ?? null, note: "Created from restock entry", countDate: input.entryDate ?? null, source: "restock" }, actor);
+  if (entryType === "adjustment") {
+    db.prepare(
+      `INSERT INTO inventory_adjustments (inventory_item_id, quantity_delta, reason, note, restock_entry_id, created_at)
+       VALUES (?, ?, 'Stock adjustment', ?, ?, COALESCE(?, CURRENT_TIMESTAMP))`
+    ).run(input.inventoryItemId, quantity, adjustmentReason, id, input.entryDate ?? null);
+  }
   if (pricePerBase > 0) {
     addPriceRecord(db, { inventoryItemId: input.inventoryItemId, pricePerBase, responsiblePerson: input.responsiblePerson ?? null, note: "Updated from restock entry" }, actor);
   }
-  recordActivity(db, "inventory_restock_created", { entityType: "inventory_item", entityId: String(input.inventoryItemId), itemName: item.name, quantity }, actor);
+  recordActivity(db, entryType === "adjustment" ? "inventory_stock_adjustment_created" : "inventory_restock_created", { entityType: "inventory_item", entityId: String(input.inventoryItemId), itemName: item.name, quantity, reason: adjustmentReason || null }, actor);
   return listRestockEntries(db, 1).find((entry) => entry.id === id) ?? listRestockEntries(db, 1)[0];
 }
 
@@ -376,6 +416,7 @@ export function updateRestockEntry(
     id: number;
     inventoryItemId: number;
     itemType?: "raw" | "recipe";
+    entryType?: "purchase" | "adjustment";
     recipeId?: number | null;
     quantity: number;
     unitLabel?: string;
@@ -383,26 +424,40 @@ export function updateRestockEntry(
     supplierName?: string | null;
     responsiblePerson?: string | null;
     note?: string | null;
+    adjustmentReason?: string | null;
   },
   actor = "admin"
 ): RestockEntry {
   const existing = db.prepare("SELECT id FROM inventory_restock_entries WHERE id = ?").get(input.id) as { id: number } | undefined;
   if (!existing) throw new Error("Restock entry not found.");
   const item = getInventoryItem(db, input.inventoryItemId);
-  const quantity = Math.max(0, Number(input.quantity));
-  if (quantity <= 0) throw new Error("Restock quantity must be greater than zero.");
+  const entryType = input.entryType ?? "purchase";
+  const quantity = entryType === "adjustment" ? Number(input.quantity) : Math.max(0, Number(input.quantity));
+  if (!Number.isFinite(quantity) || quantity === 0) throw new Error(entryType === "adjustment" ? "Adjustment quantity cannot be zero." : "Restock quantity must be greater than zero.");
+  const adjustmentReason = cleanText(input.adjustmentReason ?? "");
+  if (entryType === "adjustment" && !adjustmentReason) throw new Error("Adjustment reason is required.");
   const totalCost = Math.max(0, Number(input.totalCost ?? 0));
-  const pricePerBase = quantity > 0 ? totalCost / quantity : 0;
-  db.prepare(
-    `UPDATE inventory_restock_entries
-     SET inventory_item_id = ?, item_type = ?, recipe_id = ?, quantity_base = ?, unit_label = ?, total_cost = ?, price_per_base = ?,
-         supplier_name = ?, responsible_person = ?, note = ?, entry_date = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-     WHERE id = ?`
-  ).run(input.inventoryItemId, input.itemType ?? "raw", input.recipeId ?? null, quantity, item.unitShortName, totalCost, pricePerBase, input.supplierName ?? null, input.responsiblePerson ?? null, input.note ?? null, input.id);
+  const pricePerBase = entryType === "purchase" && quantity > 0 ? totalCost / quantity : 0;
+  const tx = db.transaction(() => {
+    db.prepare(
+      `UPDATE inventory_restock_entries
+       SET inventory_item_id = ?, item_type = ?, entry_type = ?, recipe_id = ?, quantity_base = ?, unit_label = ?, total_cost = ?, price_per_base = ?,
+           supplier_name = ?, responsible_person = ?, note = ?, adjustment_reason = ?, entry_date = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?`
+    ).run(input.inventoryItemId, input.itemType ?? "raw", entryType, input.recipeId ?? null, quantity, item.unitShortName, totalCost, pricePerBase, input.supplierName ?? null, input.responsiblePerson ?? null, input.note ?? null, adjustmentReason || null, input.id);
+    db.prepare("DELETE FROM inventory_adjustments WHERE restock_entry_id = ?").run(input.id);
+    if (entryType === "adjustment") {
+      db.prepare(
+        `INSERT INTO inventory_adjustments (inventory_item_id, quantity_delta, reason, note, restock_entry_id)
+         VALUES (?, ?, 'Stock adjustment', ?, ?)`
+      ).run(input.inventoryItemId, quantity, adjustmentReason, input.id);
+    }
+  });
+  tx();
   if (pricePerBase > 0) {
     addPriceRecord(db, { inventoryItemId: input.inventoryItemId, pricePerBase, responsiblePerson: input.responsiblePerson ?? null, note: "Updated from restock edit" }, actor);
   }
-  recordActivity(db, "inventory_restock_updated", { entityType: "inventory_restock", entityId: String(input.id), itemName: item.name, quantity }, actor);
+  recordActivity(db, entryType === "adjustment" ? "inventory_stock_adjustment_updated" : "inventory_restock_updated", { entityType: "inventory_restock", entityId: String(input.id), itemName: item.name, quantity, reason: adjustmentReason || null }, actor);
   return listRestockEntries(db, 200).find((entry) => entry.id === input.id)!;
 }
 
@@ -414,6 +469,7 @@ export function deleteRestockEntry(db: Database.Database, id: number, actor = "a
      WHERE re.id = ?`
   ).get(id) as { id: number; inventory_item_id: number; quantity_base: number; item_name: string } | undefined;
   if (!existing) throw new Error("Restock entry not found.");
+  db.prepare("DELETE FROM inventory_adjustments WHERE restock_entry_id = ?").run(id);
   db.prepare("DELETE FROM inventory_restock_entries WHERE id = ?").run(id);
   recordActivity(db, "inventory_restock_deleted", {
     entityType: "inventory_restock",
@@ -441,6 +497,63 @@ export function addPhysicalCount(
   return listPhysicalCounts(db, 1).find((entry) => entry.id === id)!;
 }
 
+export function updatePhysicalCount(
+  db: Database.Database,
+  input: { id: number; inventoryItemId: number; quantity: number; responsiblePerson?: string | null; note?: string | null; reason: string },
+  actor = "admin"
+): PhysicalCountEntry {
+  const existing = db.prepare(
+    `SELECT pc.id, pc.inventory_item_id, pc.quantity_base, pc.unit_label, pc.responsible_person, pc.note, ii.name AS item_name
+     FROM inventory_physical_counts pc
+     JOIN inventory_items ii ON ii.id = pc.inventory_item_id
+     WHERE pc.id = ?`
+  ).get(input.id) as { id: number; inventory_item_id: number; quantity_base: number; unit_label: string; responsible_person: string | null; note: string | null; item_name: string } | undefined;
+  if (!existing) throw new Error("Physical count entry not found.");
+  const reason = cleanText(input.reason);
+  if (!reason) throw new Error("Reason is required.");
+  const item = getInventoryItem(db, input.inventoryItemId);
+  const quantity = Math.max(0, Number(input.quantity));
+  db.prepare(
+    `UPDATE inventory_physical_counts
+     SET inventory_item_id = ?, quantity_base = ?, unit_label = ?, responsible_person = ?, note = ?, count_date = CURRENT_TIMESTAMP
+     WHERE id = ?`
+  ).run(input.inventoryItemId, quantity, item.unitShortName, input.responsiblePerson ?? null, input.note ?? null, input.id);
+  recordActivity(db, "inventory_physical_count_updated", {
+    entityType: "inventory_physical_count",
+    entityId: String(input.id),
+    itemName: item.name,
+    oldItemName: existing.item_name,
+    oldQuantity: existing.quantity_base,
+    newQuantity: quantity,
+    oldUnit: existing.unit_label,
+    newUnit: item.unitShortName,
+    reason
+  }, actor);
+  return listPhysicalCounts(db, 200).find((entry) => entry.id === input.id)!;
+}
+
+export function deletePhysicalCount(db: Database.Database, id: number, reason: string, actor = "admin"): void {
+  const existing = db.prepare(
+    `SELECT pc.id, pc.inventory_item_id, pc.quantity_base, pc.unit_label, ii.name AS item_name
+     FROM inventory_physical_counts pc
+     JOIN inventory_items ii ON ii.id = pc.inventory_item_id
+     WHERE pc.id = ?`
+  ).get(id) as { id: number; inventory_item_id: number; quantity_base: number; unit_label: string; item_name: string } | undefined;
+  if (!existing) throw new Error("Physical count entry not found.");
+  const cleanReason = cleanText(reason);
+  if (!cleanReason) throw new Error("Reason is required.");
+  db.prepare("DELETE FROM inventory_physical_counts WHERE id = ?").run(id);
+  recordActivity(db, "inventory_physical_count_deleted", {
+    entityType: "inventory_physical_count",
+    entityId: String(id),
+    inventoryItemId: existing.inventory_item_id,
+    itemName: existing.item_name,
+    oldQuantity: existing.quantity_base,
+    oldUnit: existing.unit_label,
+    reason: cleanReason
+  }, actor);
+}
+
 export function addPriceRecord(
   db: Database.Database,
   input: { inventoryItemId: number; pricePerBase: number; effectiveAt?: string | null; responsiblePerson?: string | null; note?: string | null },
@@ -464,7 +577,6 @@ export function addCostRecord(
   input: {
     categoryId?: number | null;
     costName: string;
-    quantity?: number;
     amount: number;
     paymentMethod?: string | null;
     responsiblePerson?: string | null;
@@ -477,15 +589,68 @@ export function addCostRecord(
   if (!costName) throw new Error("Cost name is required.");
   const amount = Math.max(0, Number(input.amount));
   if (amount <= 0) throw new Error("Cost amount must be greater than zero.");
-  const quantity = Math.max(0, Number(input.quantity ?? 1)) || 1;
   const id = Number(
     db.prepare(
       `INSERT INTO cost_records (cost_category_id, cost_name, quantity, amount, payment_method, responsible_person, note, cost_date)
        VALUES (?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))`
-    ).run(input.categoryId ?? null, costName, quantity, amount, input.paymentMethod ?? null, input.responsiblePerson ?? null, input.note ?? null, input.costDate ?? null).lastInsertRowid
+    ).run(input.categoryId ?? null, costName, 1, amount, input.paymentMethod ?? null, input.responsiblePerson ?? null, input.note ?? null, input.costDate ?? null).lastInsertRowid
   );
-  recordActivity(db, "cost_record_created", { entityType: "cost_record", entityId: String(id), costName, quantity, amount }, actor);
+  recordActivity(db, "cost_record_created", { entityType: "cost_record", entityId: String(id), costName, amount }, actor);
   return listCostRecords(db, 1).find((entry) => entry.id === id) ?? listCostRecords(db, 1)[0];
+}
+
+export function updateCostRecord(
+  db: Database.Database,
+  input: {
+    id: number;
+    categoryId?: number | null;
+    costName: string;
+    amount: number;
+    paymentMethod?: string | null;
+    responsiblePerson?: string | null;
+    note?: string | null;
+    reason: string;
+  },
+  actor = "admin"
+): CostRecord {
+  const existing = db.prepare("SELECT id, cost_name, amount FROM cost_records WHERE id = ?").get(input.id) as { id: number; cost_name: string; amount: number } | undefined;
+  if (!existing) throw new Error("Cost record not found.");
+  const reason = cleanText(input.reason);
+  if (!reason) throw new Error("Reason is required.");
+  const costName = cleanText(input.costName);
+  if (!costName) throw new Error("Cost name is required.");
+  const amount = Math.max(0, Number(input.amount));
+  if (amount <= 0) throw new Error("Cost amount must be greater than zero.");
+  db.prepare(
+    `UPDATE cost_records
+     SET cost_category_id = ?, cost_name = ?, quantity = 1, amount = ?, payment_method = ?, responsible_person = ?, note = ?, cost_date = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+     WHERE id = ?`
+  ).run(input.categoryId ?? null, costName, amount, input.paymentMethod ?? null, input.responsiblePerson ?? null, input.note ?? null, input.id);
+  recordActivity(db, "cost_record_updated", {
+    entityType: "cost_record",
+    entityId: String(input.id),
+    costName,
+    oldCostName: existing.cost_name,
+    oldAmount: existing.amount,
+    newAmount: amount,
+    reason
+  }, actor);
+  return listCostRecords(db, 200).find((entry) => entry.id === input.id)!;
+}
+
+export function deleteCostRecord(db: Database.Database, id: number, reason: string, actor = "admin"): void {
+  const existing = db.prepare("SELECT id, cost_name, amount FROM cost_records WHERE id = ?").get(id) as { id: number; cost_name: string; amount: number } | undefined;
+  if (!existing) throw new Error("Cost record not found.");
+  const cleanReason = cleanText(reason);
+  if (!cleanReason) throw new Error("Reason is required.");
+  db.prepare("DELETE FROM cost_records WHERE id = ?").run(id);
+  recordActivity(db, "cost_record_deleted", {
+    entityType: "cost_record",
+    entityId: String(id),
+    costName: existing.cost_name,
+    oldAmount: existing.amount,
+    reason: cleanReason
+  }, actor);
 }
 
 export function createOrderCostSnapshot(db: Database.Database, orderId: number, actor = "system"): void {
@@ -503,7 +668,7 @@ export function createOrderCostSnapshot(db: Database.Database, orderId: number, 
     for (const row of rows) {
       const itemRevenue = row.quantity * row.unit_price;
       const recipeCost = getMenuItemRawCost(db, row.menu_item_id);
-      if (!recipeCost.hasRecipe) missingRecipeCount += 1;
+      if (!recipeCost.hasRecipe || recipeCost.ingredients.length === 0) missingRecipeCount += 1;
       const itemRawCost = recipeCost.rawCost * row.quantity;
       revenue += itemRevenue;
       rawCost += itemRawCost;
@@ -512,6 +677,19 @@ export function createOrderCostSnapshot(db: Database.Database, orderId: number, 
          (order_id, order_item_id, menu_item_id, quantity, revenue, raw_cost, profit, details_json)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
       ).run(orderId, row.id, row.menu_item_id, row.quantity, itemRevenue, itemRawCost, itemRevenue - itemRawCost, JSON.stringify(recipeCost.ingredients));
+      const adjustment = db.prepare(
+        `INSERT INTO inventory_adjustments (inventory_item_id, quantity_delta, reason, order_id, order_item_id, note)
+         VALUES (?, ?, 'Order usage', ?, ?, ?)`
+      );
+      for (const ingredient of recipeCost.ingredients) {
+        adjustment.run(
+          ingredient.inventoryItemId,
+          -roundQuantity(ingredient.quantityBase * row.quantity),
+          orderId,
+          row.id,
+          `${row.name} x ${row.quantity}`
+        );
+      }
     }
     const grossProfit = revenue - rawCost;
     db.prepare(
@@ -536,6 +714,97 @@ export function reverseOrderCostSnapshot(db: Database.Database, orderId: number,
   recordActivity(db, "order_cost_snapshot_reversed", { entityType: "order", entityId: String(orderId) }, actor);
 }
 
+export function previewInventoryBackfill(
+  db: Database.Database,
+  input: { start?: string | null; end?: string | null } = {}
+): InventoryBackfillPreview {
+  const orders = listSettledOrdersForBackfill(db, input);
+  let estimatedRevenue = 0;
+  let estimatedRawCost = 0;
+  let estimatedMissingRecipeCount = 0;
+  let currentSnapshotRawCost = 0;
+  let missingSnapshotCount = 0;
+  let existingSnapshotCount = 0;
+
+  for (const order of orders) {
+    const existing = db.prepare("SELECT raw_cost FROM order_cost_snapshots WHERE order_id = ?").get(order.id) as { raw_cost: number } | undefined;
+    if (existing) {
+      existingSnapshotCount += 1;
+      currentSnapshotRawCost += Number(existing.raw_cost ?? 0);
+    } else {
+      missingSnapshotCount += 1;
+    }
+    const rows = db.prepare(
+      `SELECT menu_item_id, quantity, unit_price
+       FROM order_items
+       WHERE order_id = ? AND status = 'active'`
+    ).all(order.id) as Array<{ menu_item_id: number; quantity: number; unit_price: number }>;
+    for (const row of rows) {
+      const recipeCost = getMenuItemRawCost(db, row.menu_item_id);
+      if (!recipeCost.hasRecipe || recipeCost.ingredients.length === 0) estimatedMissingRecipeCount += 1;
+      estimatedRevenue += row.quantity * row.unit_price;
+      estimatedRawCost += recipeCost.rawCost * row.quantity;
+    }
+  }
+
+  return {
+    orderCount: orders.length,
+    missingSnapshotCount,
+    existingSnapshotCount,
+    estimatedRevenue: roundMoney(estimatedRevenue),
+    estimatedRawCost: roundMoney(estimatedRawCost),
+    currentSnapshotRawCost: roundMoney(currentSnapshotRawCost),
+    rawCostDelta: roundMoney(estimatedRawCost - currentSnapshotRawCost),
+    estimatedMissingRecipeCount
+  };
+}
+
+export function applyInventoryBackfill(
+  db: Database.Database,
+  input: { start?: string | null; end?: string | null; mode?: "missing" | "replace"; reason?: string | null } = {},
+  actor = "admin"
+): InventoryBackfillPreview {
+  const orders = listSettledOrdersForBackfill(db, input);
+  const mode = input.mode === "replace" ? "replace" : "missing";
+  let applied = 0;
+  const tx = db.transaction(() => {
+    for (const order of orders) {
+      const existing = db.prepare("SELECT id FROM order_cost_snapshots WHERE order_id = ?").get(order.id) as { id: number } | undefined;
+      if (mode === "missing" && existing) continue;
+      if (existing) reverseOrderCostSnapshot(db, order.id, actor);
+      createOrderCostSnapshot(db, order.id, actor);
+      applied += 1;
+    }
+  });
+  tx();
+  const preview = previewInventoryBackfill(db, input);
+  recordActivity(db, mode === "replace" ? "inventory_usage_recalculated" : "inventory_usage_backfilled", { mode, applied, reason: cleanText(input.reason ?? ""), ...preview }, actor);
+  return preview;
+}
+
+export function recalculateOrderUsage(db: Database.Database, orderId: number, actor = "admin"): void {
+  const order = db.prepare("SELECT id, status FROM orders WHERE id = ?").get(orderId) as { id: number; status: string } | undefined;
+  if (!order) throw new Error("Order not found.");
+  if (order.status !== "settled") throw new Error("Only completed orders can be recalculated.");
+  reverseOrderCostSnapshot(db, orderId, actor);
+  createOrderCostSnapshot(db, orderId, actor);
+  recordActivity(db, "inventory_order_usage_recalculated", { entityType: "order", entityId: String(orderId) }, actor);
+}
+
+function listSettledOrdersForBackfill(db: Database.Database, input: { start?: string | null; end?: string | null }): Array<{ id: number }> {
+  const clauses = ["status = 'settled'"];
+  const params: string[] = [];
+  if (input.start) {
+    clauses.push("datetime(COALESCE(settled_at, updated_at, created_at)) >= datetime(?)");
+    params.push(input.start);
+  }
+  if (input.end) {
+    clauses.push("datetime(COALESCE(settled_at, updated_at, created_at)) <= datetime(?)");
+    params.push(input.end);
+  }
+  return db.prepare(`SELECT id FROM orders WHERE ${clauses.join(" AND ")} ORDER BY datetime(COALESCE(settled_at, updated_at, created_at)) ASC, id ASC`).all(...params) as Array<{ id: number }>;
+}
+
 export function listInventoryCategories(db: Database.Database): InventoryCategory[] {
   return db.prepare("SELECT id, name, active FROM inventory_categories WHERE active = 1 ORDER BY name").all().map((row) => {
     const item = row as { id: number; name: string; active: number };
@@ -554,11 +823,6 @@ export function listInventoryItems(db: Database.Database): InventoryItem[] {
   const rows = db.prepare(
     `SELECT ii.id, ii.name, ii.category_id, ic.name AS category_name, ii.base_unit_id, iu.name AS unit_name,
             iu.short_name AS unit_short_name, ii.low_stock_threshold, ii.active,
-            COALESCE(
-              (SELECT quantity_base FROM inventory_physical_counts WHERE inventory_item_id = ii.id AND source = 'manual' ORDER BY datetime(count_date) DESC, id DESC LIMIT 1),
-              COALESCE((SELECT SUM(quantity_base) FROM inventory_restock_entries WHERE inventory_item_id = ii.id), 0)
-              + COALESCE((SELECT SUM(quantity_delta) FROM inventory_adjustments WHERE inventory_item_id = ii.id), 0)
-            ) AS current_stock,
             COALESCE((SELECT price_per_base FROM inventory_price_history WHERE inventory_item_id = ii.id AND active = 1 ORDER BY datetime(effective_at) DESC, id DESC LIMIT 1), 0) AS latest_price
      FROM inventory_items ii
      JOIN inventory_units iu ON iu.id = ii.base_unit_id
@@ -575,16 +839,18 @@ export function listInventoryItems(db: Database.Database): InventoryItem[] {
     unit_short_name: string;
     low_stock_threshold: number;
     active: number;
-    current_stock: number;
     latest_price: number;
   }>;
-  return rows.map((row) => toInventoryItem(row));
+  return rows.map((row) => {
+    const stats = getInventoryMovementStats(db, row.id);
+    return toInventoryItem({ ...row, ...stats });
+  });
 }
 
 export function listMenuRecipes(db: Database.Database): MenuRecipe[] {
   const menuRows = db.prepare("SELECT id, name, price, archived, track_recipe FROM menu_items WHERE (archived = 0 AND track_recipe = 1) OR id IN (SELECT menu_item_id FROM menu_item_recipes WHERE active = 1) ORDER BY archived, name").all() as Array<{ id: number; name: string; price: number; archived: number; track_recipe: number }>;
   return menuRows.map((menuItem) => {
-    const recipe = db.prepare("SELECT id, restock_enabled FROM menu_item_recipes WHERE menu_item_id = ? AND active = 1").get(menuItem.id) as { id: number; restock_enabled: number } | undefined;
+    const recipe = db.prepare("SELECT id, restock_enabled, use_in_recipe_enabled FROM menu_item_recipes WHERE menu_item_id = ? AND active = 1").get(menuItem.id) as { id: number; restock_enabled: number; use_in_recipe_enabled: number } | undefined;
     if (!recipe) {
       return {
         id: 0,
@@ -593,13 +859,16 @@ export function listMenuRecipes(db: Database.Database): MenuRecipe[] {
         sellingPrice: menuItem.price,
         status: "missing",
         restockEnabled: false,
+        useInRecipeEnabled: false,
         rawCost: 0,
         estimatedProfit: menuItem.price,
         profitMargin: 100,
-        ingredients: []
+        ingredients: [],
+        childIngredients: []
       };
     }
     const cost = getMenuItemRawCost(db, menuItem.id);
+    const childIngredients = listRecipeChildIngredients(db, recipe.id);
     const profit = menuItem.price - cost.rawCost;
     const hasIngredients = cost.ingredients.length > 0;
     return {
@@ -609,19 +878,21 @@ export function listMenuRecipes(db: Database.Database): MenuRecipe[] {
       sellingPrice: menuItem.price,
       status: hasIngredients ? "available" : "missing",
       restockEnabled: recipe.restock_enabled === 1,
+      useInRecipeEnabled: recipe.use_in_recipe_enabled === 1,
       rawCost: roundMoney(cost.rawCost),
       estimatedProfit: roundMoney(profit),
       profitMargin: menuItem.price > 0 ? Math.round((profit / menuItem.price) * 100) : 0,
-      ingredients: cost.ingredients
+      ingredients: cost.ingredients,
+      childIngredients
     };
   });
 }
 
 export function listRestockEntries(db: Database.Database, limit = 100): RestockEntry[] {
   return db.prepare(
-    `SELECT re.id, re.inventory_item_id, ii.name AS item_name, re.item_type, re.recipe_id, mi.name AS recipe_name,
+    `SELECT re.id, re.inventory_item_id, ii.name AS item_name, re.item_type, COALESCE(re.entry_type, 'purchase') AS entry_type, re.recipe_id, mi.name AS recipe_name,
             re.quantity_base, re.unit_label, re.total_cost, re.price_per_base,
-            re.supplier_name, re.responsible_person, re.note, re.entry_date, COALESCE(re.updated_at, re.entry_date) AS updated_at
+            re.supplier_name, re.responsible_person, re.note, re.adjustment_reason, re.entry_date, COALESCE(re.updated_at, re.entry_date) AS updated_at
      FROM inventory_restock_entries re
      JOIN inventory_items ii ON ii.id = re.inventory_item_id
      LEFT JOIN menu_item_recipes mr ON mr.id = re.recipe_id
@@ -634,6 +905,7 @@ export function listRestockEntries(db: Database.Database, limit = 100): RestockE
       inventory_item_id: number;
       item_name: string;
       item_type: "raw" | "recipe";
+      entry_type: "purchase" | "adjustment";
       recipe_id: number | null;
       recipe_name: string | null;
       quantity_base: number;
@@ -643,6 +915,7 @@ export function listRestockEntries(db: Database.Database, limit = 100): RestockE
       supplier_name: string | null;
       responsible_person: string | null;
       note: string | null;
+      adjustment_reason: string | null;
       entry_date: string;
       updated_at: string;
     };
@@ -651,6 +924,7 @@ export function listRestockEntries(db: Database.Database, limit = 100): RestockE
       inventoryItemId: entry.inventory_item_id,
       itemName: entry.item_name,
       itemType: entry.item_type || "raw",
+      entryType: entry.entry_type || "purchase",
       recipeId: entry.recipe_id,
       recipeName: entry.recipe_name,
       quantityBase: entry.quantity_base,
@@ -660,6 +934,7 @@ export function listRestockEntries(db: Database.Database, limit = 100): RestockE
       supplierName: entry.supplier_name,
       responsiblePerson: entry.responsible_person,
       note: entry.note,
+      adjustmentReason: entry.adjustment_reason,
       entryDate: entry.entry_date,
       updatedAt: entry.updated_at
     };
@@ -731,20 +1006,19 @@ export function listCostCategories(db: Database.Database): CostCategory[] {
 
 export function listCostRecords(db: Database.Database, limit = 120): CostRecord[] {
   return db.prepare(
-    `SELECT cr.id, cr.cost_category_id, cc.name AS category_name, cr.cost_name, cr.quantity, cr.amount, cr.payment_method,
+    `SELECT cr.id, cr.cost_category_id, cc.name AS category_name, cr.cost_name, cr.amount, cr.payment_method,
             cr.responsible_person, cr.note, cr.cost_date
      FROM cost_records cr
      LEFT JOIN cost_categories cc ON cc.id = cr.cost_category_id
      ORDER BY datetime(cr.cost_date) DESC, cr.id DESC
      LIMIT ?`
   ).all(limit).map((row) => {
-    const entry = row as { id: number; cost_category_id: number | null; category_name: string | null; cost_name: string; quantity: number; amount: number; payment_method: string | null; responsible_person: string | null; note: string | null; cost_date: string };
+    const entry = row as { id: number; cost_category_id: number | null; category_name: string | null; cost_name: string; amount: number; payment_method: string | null; responsible_person: string | null; note: string | null; cost_date: string };
     return {
       id: entry.id,
       categoryId: entry.cost_category_id,
       categoryName: entry.category_name,
       costName: entry.cost_name,
-      quantity: roundQuantity(entry.quantity),
       amount: roundMoney(entry.amount),
       paymentMethod: entry.payment_method,
       responsiblePerson: entry.responsible_person,
@@ -922,11 +1196,20 @@ function getInventoryItem(db: Database.Database, id: number): InventoryItem {
   return item;
 }
 
-function getMenuItemRawCost(db: Database.Database, menuItemId: number): { hasRecipe: boolean; rawCost: number; ingredients: MenuRecipe["ingredients"] } {
+function getMenuItemRawCost(db: Database.Database, menuItemId: number, visited = new Set<number>()): { hasRecipe: boolean; rawCost: number; ingredients: MenuRecipe["ingredients"] } {
   const recipe = db.prepare("SELECT id FROM menu_item_recipes WHERE menu_item_id = ? AND active = 1").get(menuItemId) as { id: number } | undefined;
   if (!recipe) {
     return { hasRecipe: false, rawCost: 0, ingredients: [] };
   }
+  return getRecipeRawCost(db, recipe.id, visited);
+}
+
+function getRecipeRawCost(db: Database.Database, recipeId: number, visited = new Set<number>()): { hasRecipe: boolean; rawCost: number; ingredients: MenuRecipe["ingredients"] } {
+  if (visited.has(recipeId)) {
+    return { hasRecipe: true, rawCost: 0, ingredients: [] };
+  }
+  const nextVisited = new Set(visited);
+  nextVisited.add(recipeId);
   const rows = db.prepare(
     `SELECT ri.id, ri.inventory_item_id, ii.name AS item_name, ri.quantity_base, ri.unit_label,
             COALESCE((SELECT price_per_base FROM inventory_price_history WHERE inventory_item_id = ii.id AND active = 1 ORDER BY datetime(effective_at) DESC, id DESC LIMIT 1), 0) AS latest_price
@@ -934,7 +1217,7 @@ function getMenuItemRawCost(db: Database.Database, menuItemId: number): { hasRec
      JOIN inventory_items ii ON ii.id = ri.inventory_item_id
      WHERE ri.recipe_id = ? AND ri.quantity_base > 0
      ORDER BY ii.name`
-  ).all(recipe.id) as Array<{ id: number; inventory_item_id: number; item_name: string; quantity_base: number; unit_label: string; latest_price: number }>;
+  ).all(recipeId) as Array<{ id: number; inventory_item_id: number; item_name: string; quantity_base: number; unit_label: string; latest_price: number }>;
   const ingredients = rows.map((row) => ({
     id: row.id,
     inventoryItemId: row.inventory_item_id,
@@ -944,7 +1227,57 @@ function getMenuItemRawCost(db: Database.Database, menuItemId: number): { hasRec
     latestPrice: row.latest_price,
     rawCost: roundMoney(row.quantity_base * row.latest_price)
   }));
-  return { hasRecipe: true, rawCost: ingredients.reduce((sum, item) => sum + item.rawCost, 0), ingredients };
+  const childRows = db.prepare(
+    `SELECT id, child_recipe_id, quantity_base, unit_label
+     FROM recipe_child_ingredients
+     WHERE recipe_id = ? AND quantity_base > 0
+     ORDER BY id`
+  ).all(recipeId) as Array<{ id: number; child_recipe_id: number; quantity_base: number; unit_label: string }>;
+  for (const child of childRows) {
+    const childCost = getRecipeRawCost(db, child.child_recipe_id, nextVisited);
+    for (const ingredient of childCost.ingredients) {
+      const existing = ingredients.find((item) => item.inventoryItemId === ingredient.inventoryItemId && item.unitLabel === ingredient.unitLabel);
+      const quantityBase = roundQuantity(ingredient.quantityBase * child.quantity_base);
+      const rawCost = roundMoney(ingredient.rawCost * child.quantity_base);
+      if (existing) {
+        existing.quantityBase = roundQuantity(existing.quantityBase + quantityBase);
+        existing.rawCost = roundMoney(existing.rawCost + rawCost);
+      } else {
+        ingredients.push({
+          id: ingredient.id,
+          inventoryItemId: ingredient.inventoryItemId,
+          itemName: ingredient.itemName,
+          quantityBase,
+          unitLabel: ingredient.unitLabel,
+          latestPrice: ingredient.latestPrice,
+          rawCost
+        });
+      }
+    }
+  }
+  return { hasRecipe: true, rawCost: roundMoney(ingredients.reduce((sum, item) => sum + item.rawCost, 0)), ingredients };
+}
+
+function listRecipeChildIngredients(db: Database.Database, recipeId: number): MenuRecipe["childIngredients"] {
+  return db.prepare(
+    `SELECT rci.id, rci.child_recipe_id, mi.name AS menu_item_name, rci.quantity_base, rci.unit_label
+     FROM recipe_child_ingredients rci
+     JOIN menu_item_recipes mr ON mr.id = rci.child_recipe_id
+     JOIN menu_items mi ON mi.id = mr.menu_item_id
+     WHERE rci.recipe_id = ?
+     ORDER BY mi.name`
+  ).all(recipeId).map((row) => {
+    const item = row as { id: number; child_recipe_id: number; menu_item_name: string; quantity_base: number; unit_label: string };
+    const childCost = getRecipeRawCost(db, item.child_recipe_id);
+    return {
+      id: item.id,
+      childRecipeId: item.child_recipe_id,
+      menuItemName: item.menu_item_name,
+      quantityBase: item.quantity_base,
+      unitLabel: item.unit_label,
+      rawCost: roundMoney(childCost.rawCost * item.quantity_base)
+    };
+  });
 }
 
 function ensureRecipeHolders(db: Database.Database, recipeName: string): Array<{ id: number; created: boolean }> {
@@ -1077,6 +1410,64 @@ function inferCategory(name: string): string {
   return "Other";
 }
 
+function getInventoryMovementStats(db: Database.Database, inventoryItemId: number): {
+  current_stock: number;
+  stock_used: number;
+  expected_left: number;
+  last_count_at: string | null;
+  last_restock_at: string | null;
+  latest_restock_quantity: number;
+  estimated_wastage: number;
+  count_required: number;
+} {
+  const latestManualCount = db.prepare(
+    `SELECT quantity_base, count_date
+     FROM inventory_physical_counts
+     WHERE inventory_item_id = ? AND source = 'manual'
+     ORDER BY datetime(count_date) DESC, id DESC
+     LIMIT 1`
+  ).get(inventoryItemId) as { quantity_base: number; count_date: string } | undefined;
+  const sinceClause = latestManualCount ? "AND datetime(entry_date) > datetime(?)" : "";
+  const sinceAdjustClause = latestManualCount ? "AND datetime(created_at) > datetime(?)" : "";
+  const restockParams = latestManualCount ? [inventoryItemId, latestManualCount.count_date] : [inventoryItemId];
+  const adjustParams = latestManualCount ? [inventoryItemId, latestManualCount.count_date] : [inventoryItemId];
+  const purchaseQuantity = db.prepare(
+    `SELECT COALESCE(SUM(quantity_base), 0) AS quantity
+     FROM inventory_restock_entries
+     WHERE inventory_item_id = ? AND COALESCE(entry_type, 'purchase') = 'purchase' ${sinceClause}`
+  ).get(...restockParams) as { quantity: number };
+  const adjustmentQuantity = db.prepare(
+    `SELECT COALESCE(SUM(quantity_delta), 0) AS quantity
+     FROM inventory_adjustments
+     WHERE inventory_item_id = ? ${sinceAdjustClause}`
+  ).get(...adjustParams) as { quantity: number };
+  const stockUsed = db.prepare(
+    `SELECT COALESCE(SUM(ABS(quantity_delta)), 0) AS quantity
+     FROM inventory_adjustments
+     WHERE inventory_item_id = ? AND reason = 'Order usage'`
+  ).get(inventoryItemId) as { quantity: number };
+  const latestRestock = db.prepare(
+    `SELECT quantity_base, entry_date
+     FROM inventory_restock_entries
+     WHERE inventory_item_id = ? AND COALESCE(entry_type, 'purchase') = 'purchase'
+     ORDER BY datetime(entry_date) DESC, id DESC
+     LIMIT 1`
+  ).get(inventoryItemId) as { quantity_base: number; entry_date: string } | undefined;
+  const baseline = latestManualCount?.quantity_base ?? 0;
+  const currentStock = baseline + Number(purchaseQuantity.quantity ?? 0) + Number(adjustmentQuantity.quantity ?? 0);
+  const hasRecentManualCount = latestManualCount ? Date.now() - new Date(latestManualCount.count_date).getTime() <= 6 * 60 * 60 * 1000 : false;
+  return {
+    current_stock: roundQuantity(currentStock),
+    stock_used: roundQuantity(Number(stockUsed.quantity ?? 0)),
+    expected_left: roundQuantity(currentStock),
+    last_count_at: latestManualCount?.count_date ?? null,
+    last_restock_at: latestRestock?.entry_date ?? null,
+    latest_restock_quantity: roundQuantity(Number(latestRestock?.quantity_base ?? 0)),
+    estimated_wastage: 0,
+    count_required: hasRecentManualCount ? 0 : 1
+  };
+}
+
 function toInventoryItem(row: {
   id: number;
   name: string;
@@ -1088,6 +1479,13 @@ function toInventoryItem(row: {
   low_stock_threshold: number;
   active: number;
   current_stock: number;
+  stock_used?: number;
+  expected_left?: number;
+  last_count_at?: string | null;
+  last_restock_at?: string | null;
+  latest_restock_quantity?: number;
+  estimated_wastage?: number;
+  count_required?: number;
   latest_price: number;
 }): InventoryItem {
   const stock = Number(row.current_stock ?? 0);
@@ -1106,6 +1504,13 @@ function toInventoryItem(row: {
     estimatedValue: roundMoney(stock * Number(row.latest_price ?? 0)),
     lowStockThreshold: threshold,
     status,
+    stockUsed: roundQuantity(Number(row.stock_used ?? 0)),
+    expectedLeft: roundQuantity(Number(row.expected_left ?? stock)),
+    lastCountAt: row.last_count_at ?? null,
+    lastRestockAt: row.last_restock_at ?? null,
+    latestRestockQuantity: roundQuantity(Number(row.latest_restock_quantity ?? 0)),
+    estimatedWastage: roundQuantity(Number(row.estimated_wastage ?? 0)),
+    countRequired: row.count_required === 1,
     active: row.active === 1
   };
 }

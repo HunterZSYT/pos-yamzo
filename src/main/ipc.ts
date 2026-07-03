@@ -34,11 +34,16 @@ import {
   addPriceRecord,
   addPhysicalCount,
   addRestockEntry,
+  applyInventoryBackfill,
+  deleteCostRecord,
   deleteInventoryItem,
+  deletePhysicalCount,
   deleteRestockEntry,
   importInventoryItemsCsv,
   importRecipeInventoryCsv,
   listInventorySnapshot,
+  previewInventoryBackfill,
+  recalculateOrderUsage,
   removeCostCategory,
   removeInventoryCategory,
   removeInventoryUnit,
@@ -48,6 +53,9 @@ import {
   saveInventoryUnit,
   saveMenuRecipe,
   setRecipeRestockEnabled,
+  setRecipeUseInRecipeEnabled,
+  updateCostRecord,
+  updatePhysicalCount,
   updateRestockEntry
 } from "./domain/inventory.js";
 import { archiveMenuItem, deleteMenuItem, importMenuCsv, listMenuItems, saveMenuItem } from "./services/menuImport.js";
@@ -84,6 +92,9 @@ export function registerIpc(db: Database.Database): void {
   ipcMain.handle("audit:list", (_event, limit?: number) => listActivityLogs(db, limit));
   ipcMain.handle("audit:protectedAccess", (_event, input) => recordProtectedPanelAccess(db, input));
   ipcMain.handle("inventory:snapshot", () => listInventorySnapshot(db));
+  ipcMain.handle("inventory:previewBackfill", (_event, input) => previewInventoryBackfill(db, input));
+  ipcMain.handle("inventory:applyBackfill", (_event, input) => applyInventoryBackfill(db, input));
+  ipcMain.handle("inventory:recalculateOrderUsage", (_event, orderId: number) => recalculateOrderUsage(db, orderId));
   ipcMain.handle("inventory:chooseAndImportCsv", async () => {
     const picked = await dialog.showOpenDialog({
       title: "Choose recipe or inventory CSV",
@@ -112,6 +123,7 @@ export function registerIpc(db: Database.Database): void {
   ipcMain.handle("inventory:deleteItem", (_event, id: number) => deleteInventoryItem(db, id));
   ipcMain.handle("inventory:saveRecipe", (_event, input) => saveMenuRecipe(db, input));
   ipcMain.handle("inventory:setRecipeRestockEnabled", (_event, menuItemId: number, enabled: boolean) => setRecipeRestockEnabled(db, menuItemId, enabled));
+  ipcMain.handle("inventory:setRecipeUseInRecipeEnabled", (_event, menuItemId: number, enabled: boolean) => setRecipeUseInRecipeEnabled(db, menuItemId, enabled));
   ipcMain.handle("inventory:saveCategory", (_event, input) => saveInventoryCategory(db, input));
   ipcMain.handle("inventory:removeCategory", (_event, id: number) => removeInventoryCategory(db, id));
   ipcMain.handle("inventory:saveUnit", (_event, input) => saveInventoryUnit(db, input));
@@ -120,10 +132,14 @@ export function registerIpc(db: Database.Database): void {
   ipcMain.handle("inventory:updateRestock", (_event, input) => updateRestockEntry(db, input));
   ipcMain.handle("inventory:deleteRestock", (_event, id: number) => deleteRestockEntry(db, id));
   ipcMain.handle("inventory:addPhysicalCount", (_event, input) => addPhysicalCount(db, input));
+  ipcMain.handle("inventory:updatePhysicalCount", (_event, input) => updatePhysicalCount(db, input));
+  ipcMain.handle("inventory:deletePhysicalCount", (_event, id: number, reason: string) => deletePhysicalCount(db, id, reason));
   ipcMain.handle("inventory:addPrice", (_event, input) => addPriceRecord(db, input));
   ipcMain.handle("inventory:saveCostCategory", (_event, input) => saveCostCategory(db, input));
   ipcMain.handle("inventory:removeCostCategory", (_event, id: number) => removeCostCategory(db, id));
   ipcMain.handle("inventory:addCost", (_event, input) => addCostRecord(db, input));
+  ipcMain.handle("inventory:updateCost", (_event, input) => updateCostRecord(db, input));
+  ipcMain.handle("inventory:deleteCost", (_event, id: number, reason: string) => deleteCostRecord(db, id, reason));
   ipcMain.handle("menu:list", () => listMenuItems(db));
   ipcMain.handle("menu:importCsv", (_event, csvPath: string) => importMenuCsv(db, csvPath));
   ipcMain.handle("menu:chooseAndImportCsv", async () => {
