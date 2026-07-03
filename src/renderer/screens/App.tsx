@@ -2012,7 +2012,7 @@ function InventoryAdmin({
   });
   const [categoryName, setCategoryName] = useState("");
   const [unitForm, setUnitForm] = useState({ name: "", shortName: "" });
-  const [statusRange, setStatusRange] = useState({ start: "", end: "" });
+  const [statusSearch, setStatusSearch] = useState("");
   const [itemEdit, setItemEdit] = useState<InventoryItem | null>(null);
   const [restockEdit, setRestockEdit] = useState<RestockEntry | null>(null);
   const [physicalEdit, setPhysicalEdit] = useState<PhysicalCountEntry | null>(null);
@@ -2178,7 +2178,12 @@ function InventoryAdmin({
   }
 
   function stockRows() {
-    return snapshot.items.map((item) => [
+    const query = statusSearch.trim().toLowerCase();
+    return snapshot.items.filter((item) => {
+      if (!query) return true;
+      const text = `${item.name} ${item.categoryName ?? ""} ${item.unitShortName} ${item.status}`.toLowerCase();
+      return text.includes(query);
+    }).map((item) => [
       item.name,
       item.categoryName ?? "Other",
       item.lastCountAt ? formatDate(item.lastCountAt) : "Never counted",
@@ -2189,12 +2194,6 @@ function InventoryAdmin({
       `${formatQuantity(item.currentStock)} ${item.unitShortName}`,
       item.status === "ok" ? "OK" : item.status === "low" ? "Low stock" : "Out of stock"
     ]);
-  }
-
-  function restockRows() {
-    return snapshot.restocks
-      .filter((entry) => withinDateRange(entry.entryDate, statusRange))
-      .map((entry) => [formatDate(entry.entryDate), entry.itemName, `${formatQuantity(entry.quantityBase)} ${entry.unitLabel}`, money(entry.totalCost), entry.responsiblePerson ?? "-", entry.supplierName ?? "-"]);
   }
 
   const filteredRecipes = snapshot.recipes.filter((recipe) => {
@@ -2236,32 +2235,18 @@ function InventoryAdmin({
             <Metric label="Low Stock" value={snapshot.status.lowStockCount} />
             <Metric label="Out of Stock" value={snapshot.status.outOfStockCount} />
           </div>
-          <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-            <Card>
-              <CardHeader>
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div><CardTitle>Stock Status</CardTitle><CardDescription>Current stock position for active inventory items.</CardDescription></div>
-                  <Button variant="secondary" onClick={() => exportCsvRows("yamzo-stock-status.csv", [["Item", "Category", "Last Count", "Warning", "Restocked", "Used", "Variance", "Current", "Status"], ...stockRows()])}>Export</Button>
-                </div>
-              </CardHeader>
-              <CardContent>
-                <DateRangeControl value={statusRange} onChange={setStatusRange} />
-                <div className="mt-4"><InventoryTable headers={["Item", "Category", "Last Count", "Warning", "Restocked", "Used", "Variance", "Current", "Status"]} rows={stockRows()} /></div>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardHeader>
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div><CardTitle>Restock Status</CardTitle><CardDescription>Restock entries in the selected date range.</CardDescription></div>
-                  <Button variant="secondary" onClick={() => exportCsvRows("yamzo-restock-status.csv", [["Date", "Item", "Quantity", "Cost", "Person", "Supplier"], ...restockRows()])}>Export</Button>
-                </div>
-              </CardHeader>
-              <CardContent>
-                <DateRangeControl value={statusRange} onChange={setStatusRange} />
-                <div className="mt-4"><InventoryTable headers={["Date", "Item", "Quantity", "Cost", "Person", "Supplier"]} rows={restockRows()} /></div>
-              </CardContent>
-            </Card>
-          </div>
+          <Card>
+            <CardHeader>
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div><CardTitle>Stock Status</CardTitle><CardDescription>Search current stock position for active inventory items.</CardDescription></div>
+                <Button variant="secondary" onClick={() => exportCsvRows("yamzo-stock-status.csv", [["Item", "Category", "Last Count", "Warning", "Restocked", "Used", "Variance", "Current", "Status"], ...stockRows()])}>Export</Button>
+              </div>
+            </CardHeader>
+            <CardContent className="grid gap-4">
+              <Input value={statusSearch} onChange={(event) => setStatusSearch(event.target.value)} placeholder="Search stock by item, category, unit, or status" />
+              <InventoryTable headers={["Item", "Category", "Last Count", "Warning", "Restocked", "Used", "Variance", "Current", "Status"]} rows={stockRows()} />
+            </CardContent>
+          </Card>
         </TabsContent>
 
         <TabsContent value="recipes" className="grid gap-4 pt-4">
@@ -2403,11 +2388,16 @@ function InventoryAdmin({
                 entries={filteredPhysicalCounts}
                 onEdit={setPhysicalEdit}
                 onDelete={async (entry) => {
-                  const reason = await requireAdminReason(`delete physical count for ${entry.itemName}`);
-                  if (!reason) return;
-                  await window.yamzo?.inventory.deletePhysicalCount(entry.id, reason);
-                  setMessage("Physical count deleted.");
-                  await refreshData();
+                  if (!window.confirm(`Delete physical count for ${entry.itemName}? This cannot be undone.`)) return;
+                  try {
+                    const reason = await requireAdminReason(`delete physical count for ${entry.itemName}`);
+                    if (!reason) return;
+                    await window.yamzo?.inventory.deletePhysicalCount(entry.id, reason);
+                    setMessage("Physical count deleted.");
+                    await refreshData();
+                  } catch (caught) {
+                    setMessage(caught instanceof Error ? caught.message : "Could not delete physical count.");
+                  }
                 }}
               />
             </CardContent>
@@ -3807,11 +3797,16 @@ function CostsPanel({ snapshot, refreshData, setMessage }: { snapshot: Inventory
                 records={filteredCostRecords}
                 onEdit={setCostEdit}
                 onDelete={async (entry) => {
-                  const reason = await requireCostReason(`delete cost record ${entry.costName}`);
-                  if (!reason) return;
-                  await window.yamzo?.inventory.deleteCost(entry.id, reason);
-                  setMessage("Cost record deleted.");
-                  await refreshData();
+                  if (!window.confirm(`Delete cost record ${entry.costName}? This cannot be undone.`)) return;
+                  try {
+                    const reason = await requireCostReason(`delete cost record ${entry.costName}`);
+                    if (!reason) return;
+                    await window.yamzo?.inventory.deleteCost(entry.id, reason);
+                    setMessage("Cost record deleted.");
+                    await refreshData();
+                  } catch (caught) {
+                    setMessage(caught instanceof Error ? caught.message : "Could not delete cost record.");
+                  }
                 }}
               />
             </CardContent>
