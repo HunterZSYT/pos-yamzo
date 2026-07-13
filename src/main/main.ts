@@ -5,10 +5,12 @@ import { fileURLToPath } from "node:url";
 import { openDatabase } from "./database/connection.js";
 import { getDatabasePath } from "./paths.js";
 import { registerIpc } from "./ipc.js";
+import { startDailyEmailScheduler } from "./services/email.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 let mainWindow: BrowserWindow | null = null;
+let stopDailyEmailScheduler: (() => void) | null = null;
 
 if (process.env.YAMZO_APP_DATA_DIR) {
   app.setPath("userData", process.env.YAMZO_APP_DATA_DIR);
@@ -34,6 +36,7 @@ function writeSmokeProbe(payload: Record<string, unknown>): void {
 
 async function createWindow(): Promise<void> {
   mainWindow = new BrowserWindow({
+    show: false,
     width: 1280,
     height: 820,
     minWidth: 1024,
@@ -49,7 +52,29 @@ async function createWindow(): Promise<void> {
       sandbox: false
     }
   });
-  mainWindow.maximize();
+
+  const focusRenderer = (): void => {
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      return;
+    }
+    mainWindow.focus();
+    mainWindow.webContents.focus();
+  };
+
+  mainWindow.once("ready-to-show", () => {
+    if (!mainWindow) {
+      return;
+    }
+    mainWindow.maximize();
+    mainWindow.show();
+    focusRenderer();
+  });
+  mainWindow.on("focus", () => {
+    mainWindow?.webContents.focus();
+  });
+  mainWindow.on("closed", () => {
+    mainWindow = null;
+  });
 
   mainWindow.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL) => {
     writeSmokeProbe({
@@ -94,6 +119,7 @@ app.whenReady()
     Menu.setApplicationMenu(null);
     const db = openDatabase(getDatabasePath());
     registerIpc(db);
+    stopDailyEmailScheduler = startDailyEmailScheduler(db);
     await createWindow();
   })
   .catch(logStartupError);
@@ -102,6 +128,11 @@ app.on("window-all-closed", () => {
   if (process.platform !== "darwin") {
     app.quit();
   }
+});
+
+app.on("before-quit", () => {
+  stopDailyEmailScheduler?.();
+  stopDailyEmailScheduler = null;
 });
 
 app.on("activate", () => {

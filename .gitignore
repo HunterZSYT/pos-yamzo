@@ -22,6 +22,8 @@ tokens/
 printer-config*.json
 gmail-token*.json
 gmail-credentials*.json
+google-oauth-client.json
+google-sheets-token.json
 *.secret.*
 
 # Generated local analysis/cache folders.

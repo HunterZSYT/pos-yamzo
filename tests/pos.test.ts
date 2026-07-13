@@ -44,7 +44,7 @@ import {
   updatePhysicalCount
 } from "../src/main/domain/inventory";
 import { archiveMenuItem, deleteMenuItem, importMenuCsv, listMenuItems, parsePrice, saveMenuItem } from "../src/main/services/menuImport";
-import { getBrandingSettings, getHostNames, getMenuData, getTotalTables, setBrandingSettings, setHostNames, setInventoryTracking, getSetting, setMenuData, setPrinterName, setTotalTables } from "../src/main/services/settings";
+import { getBrandingSettings, getHostNames, getMenuData, getTotalTables, setBrandingSettings, setHostNames, setInventoryTracking, getSetting, setMenuData, setMenuTypes, setPrinterName, setTotalTables } from "../src/main/services/settings";
 import { buildDailySalesEmail, clearGmailAuth, getEmailSettings, saveEmailSettings } from "../src/main/services/email";
 import { renderReceiptHtml } from "../src/main/services/printer";
 import { getPrintJob, listPrintJobs, markPrintJobFailed, markPrintJobRetry } from "../src/main/services/printQueue";
@@ -171,6 +171,31 @@ describe("Yamzo POS core", () => {
     expect(buildReceipt(database, order.id, getBrandingSettings(database))).toContain("facebook");
     expect(buildReceipt(database, order.id, getBrandingSettings(database))).toContain("@yamzo.uttara");
     expect(buildReceipt(database, order.id, getBrandingSettings(database))).not.toContain("facebook.com/yamzo.uttara/reviews");
+  });
+
+  it("prints configured menu type labels instead of internal source keys", () => {
+    const database = freshDb();
+    const internalSourceKey = "type_1782979170006";
+    setMenuTypes(database, [{
+      key: internalSourceKey,
+      label: "Drive-through",
+      menuDataKey: "in_house",
+      tablesEnabled: false,
+      commissionPercent: 0,
+      active: true
+    }]);
+    const menuItem = saveMenuItem(database, { name: "Chicken Momo", price: 190, category: "Momo", available: true });
+    const order = createOrder(database, { source: internalSourceKey });
+    const lineId = addOrderItem(database, order.id, { menuItemId: menuItem.id, quantity: 1 });
+
+    for (const output of [
+      buildKitchenTicket(database, order.id, [lineId]),
+      buildAuditCopy(database, order.id),
+      buildReceipt(database, order.id, getBrandingSettings(database))
+    ]) {
+      expect(output).toContain("Drive-through");
+      expect(output).not.toContain("Type 1782979170006");
+    }
   });
 
   it("edits running orders, prints bill copy, and deletes with an audit reason", () => {
@@ -484,20 +509,18 @@ describe("Yamzo POS core", () => {
     expect(listActivityLogs(database, 5).some((log) => log.description.includes("Corrected chicken recipe"))).toBe(true);
   });
 
-  it("stores Gmail settings locally, builds summary email, clears token path, and escapes print HTML", () => {
+  it("stores email settings locally, builds the summary, clears unified Google auth, and escapes print HTML", () => {
     const database = freshDb();
     saveEmailSettings(database, {
       enabled: true,
       recipientEmail: "owner@example.com",
       sendDailySummary: true,
-      sendEachSettledOrder: false,
-      credentialPath: "C:\\local\\gmail-credentials.json",
-      tokenPath: "C:\\local\\gmail-token.json"
+      sendEachSettledOrder: false
     });
     expect(getEmailSettings(database).recipientEmail).toBe("owner@example.com");
     expect(buildDailySalesEmail(database)).toContain("Yamzo Daily Sales Summary");
     clearGmailAuth(database);
-    expect(getEmailSettings(database).tokenPath).toBe("");
+    expect(getEmailSettings(database)).not.toHaveProperty("tokenPath");
     expect(renderReceiptHtml("<script>alert(1)</script>")).toContain("&lt;script&gt;");
   });
 });

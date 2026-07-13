@@ -5,6 +5,7 @@ import type {
   CostCategory,
   CostRecord,
   InventoryBackfillPreview,
+  InventoryBindingPreview,
   InventoryCategory,
   InventoryImportResult,
   InventoryItemImportResult,
@@ -14,11 +15,18 @@ import type {
   InventoryStatusSummary,
   InventoryUnitInput,
   InventoryUnit,
+  HistoricalScope,
+  MenuInventoryBinding,
   MenuRecipe,
   PhysicalCountEntry,
+  PhysicalCountInput,
+  PhysicalCountUpdateInput,
   PriceHistoryRecord,
   RecipeIngredientInput,
+  RecipeSaveInput,
   RestockEntry,
+  RestockEntryInput,
+  RestockEntryUpdateInput,
   SalesProfitSummary
 } from "../../shared/types.js";
 import { recordActivity } from "../services/audit.js";
@@ -50,18 +58,40 @@ type ParsedQuantity = {
 
 const MENU_PRICE_FALLBACK = 1;
 
+type HistoricalChangeOptions = {
+  snapshotMode?: boolean;
+  historicalScope?: HistoricalScope;
+  start?: string | null;
+  end?: string | null;
+  reason?: string | null;
+};
+
+type MenuBindingInput = {
+  menuItemId: number;
+  bindingType: "recipe" | "item";
+  recipeId?: number | null;
+  inventoryItemId?: number | null;
+  quantityBase?: number;
+  unitLabel?: string;
+  historicalScope?: HistoricalScope;
+  start?: string | null;
+  end?: string | null;
+  reason?: string | null;
+};
+
 export function listInventorySnapshot(db: Database.Database): InventorySnapshot {
   const items = listInventoryItems(db);
   const recipes = listMenuRecipes(db);
   const restocks = listRestockEntries(db, 120);
-  const physicalCounts = listPhysicalCounts(db, 240);
+  const physicalCounts = listPhysicalCounts(db, 10000);
   const priceHistory = listPriceHistory(db, 160);
-  const costRecords = listCostRecords(db, 160);
+  const costRecords = listCostRecords(db, 10000);
   return {
     categories: listInventoryCategories(db),
     units: listInventoryUnits(db),
     items,
     recipes,
+    bindings: listMenuInventoryBindings(db),
     restocks,
     physicalCounts,
     priceHistory,
@@ -73,7 +103,13 @@ export function listInventorySnapshot(db: Database.Database): InventorySnapshot 
   };
 }
 
-export function importRecipeInventoryCsv(db: Database.Database, csvPath: string, actor = "admin"): InventoryImportResult {
+export function importRecipeInventoryCsv(
+  db: Database.Database,
+  csvPath: string,
+  options: HistoricalChangeOptions = {},
+  actor = "admin"
+): InventoryImportResult {
+  validateHistoricalChangeOptions(options);
   const csv = fs.readFileSync(csvPath, "utf8");
   const parsed = Papa.parse<RecipeCsvRow>(csv, { header: true, skipEmptyLines: true });
   const result: InventoryImportResult = {
@@ -110,6 +146,8 @@ export function importRecipeInventoryCsv(db: Database.Database, csvPath: string,
     grouped.set(recipeName, list);
   }
 
+  const changedMenuItemIds = new Set<number>();
+  const changedVersionIds = new Map<number, number>();
   const tx = db.transaction(() => {
     for (const [recipeName, ingredients] of grouped.entries()) {
       const menuItems = ensureRecipeHolders(db, recipeName);
@@ -121,10 +159,11 @@ export function importRecipeInventoryCsv(db: Database.Database, csvPath: string,
       result.menuItemsCreated += menuItems.filter((item) => item.created).length;
 
       for (const menuItem of menuItems) {
-        const existingRecipe = db.prepare("SELECT id FROM menu_item_recipes WHERE menu_item_id = ?").get(menuItem.id) as { id: number } | undefined;
+        const existingRecipe = db.prepare("SELECT id, current_version_id FROM menu_item_recipes WHERE menu_item_id = ?").get(menuItem.id) as { id: number; current_version_id: number | null } | undefined;
         const recipeId = existingRecipe
           ? existingRecipe.id
           : Number(db.prepare("INSERT INTO menu_item_recipes (menu_item_id) VALUES (?)").run(menuItem.id).lastInsertRowid);
+        const versionId = prepareRecipeVersion(db, recipeId, Boolean(options.snapshotMode), "bulk_csv", options.reason ?? null);
         if (existingRecipe) {
           db.prepare("DELETE FROM recipe_ingredients WHERE recipe_id = ?").run(recipeId);
           db.prepare("DELETE FROM recipe_child_ingredients WHERE recipe_id = ?").run(recipeId);
@@ -133,6 +172,9 @@ export function importRecipeInventoryCsv(db: Database.Database, csvPath: string,
         } else {
           result.recipesImported += 1;
         }
+
+        db.prepare("DELETE FROM recipe_version_ingredients WHERE version_id = ?").run(versionId);
+        db.prepare("DELETE FROM recipe_version_child_ingredients WHERE version_id = ?").run(versionId);
 
         for (const ingredient of ingredients) {
           const item = findInventoryItemForRecipe(db, ingredient.ingredientName);
@@ -152,12 +194,37 @@ export function importRecipeInventoryCsv(db: Database.Database, csvPath: string,
              ON CONFLICT(recipe_id, inventory_item_id)
              DO UPDATE SET quantity_base = excluded.quantity_base, unit_label = excluded.unit_label`
           ).run(recipeId, item.id, ingredient.quantity.baseQuantity, item.unitShortName);
+          db.prepare(
+            `INSERT INTO recipe_version_ingredients (version_id, inventory_item_id, quantity_base, unit_label)
+             VALUES (?, ?, ?, ?)
+             ON CONFLICT(version_id, inventory_item_id)
+             DO UPDATE SET quantity_base = excluded.quantity_base, unit_label = excluded.unit_label`
+          ).run(versionId, item.id, ingredient.quantity.baseQuantity, item.unitShortName);
         }
+        db.prepare(
+          `INSERT INTO menu_item_inventory_bindings
+           (menu_item_id, binding_type, recipe_id, inventory_item_id, quantity_base, unit_label, updated_at)
+           VALUES (?, 'recipe', ?, NULL, 1, 'portion', CURRENT_TIMESTAMP)
+           ON CONFLICT(menu_item_id) DO UPDATE SET binding_type = 'recipe', recipe_id = excluded.recipe_id,
+             inventory_item_id = NULL, quantity_base = 1, unit_label = 'portion', updated_at = CURRENT_TIMESTAMP`
+        ).run(menuItem.id, recipeId);
+        changedMenuItemIds.add(menuItem.id);
+        changedVersionIds.set(menuItem.id, versionId);
       }
     }
   });
   tx();
-  recordActivity(db, "inventory_csv_imported", { ...result }, actor);
+  const historicalOrdersUpdated = recalculateHistoricalOrdersForMenuItems(
+    db,
+    Array.from(changedMenuItemIds),
+    options,
+    actor,
+    options.snapshotMode ? undefined : changedVersionIds
+  );
+  result.versionsCreated = options.snapshotMode ? changedMenuItemIds.size : 0;
+  result.versionsUpdated = options.snapshotMode ? 0 : changedMenuItemIds.size;
+  result.historicalOrdersUpdated = historicalOrdersUpdated;
+  recordActivity(db, "inventory_csv_imported", { ...result, snapshotMode: Boolean(options.snapshotMode), historicalScope: options.historicalScope ?? "future" }, actor);
   return result;
 }
 
@@ -167,6 +234,10 @@ export function importInventoryItemsCsv(db: Database.Database, csvPath: string, 
   const result: InventoryItemImportResult = { imported: 0, updated: 0, skipped: 0, deleted: 0, errors: [] };
   const tx = db.transaction(() => {
     result.deleted = (db.prepare("SELECT COUNT(*) AS count FROM inventory_items").get() as { count: number }).count;
+    db.prepare("DELETE FROM menu_item_inventory_bindings").run();
+    db.prepare("DELETE FROM recipe_version_child_ingredients").run();
+    db.prepare("DELETE FROM recipe_version_ingredients").run();
+    db.prepare("DELETE FROM recipe_versions").run();
     db.prepare("DELETE FROM recipe_child_ingredients").run();
     db.prepare("DELETE FROM recipe_ingredients").run();
     db.prepare("DELETE FROM menu_item_recipes").run();
@@ -235,11 +306,22 @@ export function deleteInventoryItem(db: Database.Database, id: number, actor = "
 
 export function saveMenuRecipe(
   db: Database.Database,
-  input: { menuItemId: number; ingredients: RecipeIngredientInput[] },
+  input: RecipeSaveInput,
+  options: HistoricalChangeOptions = {},
   actor = "admin"
 ): MenuRecipe {
-  const menuItem = db.prepare("SELECT id, name FROM menu_items WHERE id = ?").get(input.menuItemId) as { id: number; name: string } | undefined;
-  if (!menuItem) throw new Error("Menu item not found.");
+  validateHistoricalChangeOptions(options);
+  const standalone = input.standalone === true || !input.menuItemId;
+  const createStandalone = !input.menuItemId;
+  const recipeName = cleanText(input.recipeName ?? "");
+  let menuItem = input.menuItemId
+    ? db.prepare("SELECT id, name, category, archived FROM menu_items WHERE id = ?").get(input.menuItemId) as { id: number; name: string; category: string | null; archived: number } | undefined
+    : undefined;
+  if (input.menuItemId && !menuItem) throw new Error("Menu item not found.");
+  if (standalone && !recipeName) throw new Error("Standalone recipe name is required.");
+  if (standalone && menuItem && (menuItem.archived !== 1 || menuItem.category !== "Recipe Material")) {
+    throw new Error("Menu-backed recipe names must be changed from the Menu tab.");
+  }
   const cleanIngredients = input.ingredients
     .map((ingredient) => ({
       kind: ingredient.kind === "recipe" ? "recipe" : "raw",
@@ -254,38 +336,101 @@ export function saveMenuRecipe(
         ? Number.isInteger(ingredient.childRecipeId) && ingredient.childRecipeId > 0
         : Number.isInteger(ingredient.inventoryItemId) && ingredient.inventoryItemId > 0;
     });
+  if (standalone && cleanIngredients.length === 0) throw new Error("Standalone recipes need at least one ingredient.");
+  let savedVersionId = 0;
   const tx = db.transaction(() => {
-    const existing = db.prepare("SELECT id FROM menu_item_recipes WHERE menu_item_id = ?").get(menuItem.id) as { id: number } | undefined;
-    if (cleanIngredients.length === 0) {
-      if (existing) {
-        db.prepare("DELETE FROM recipe_ingredients WHERE recipe_id = ?").run(existing.id);
-        db.prepare("DELETE FROM recipe_child_ingredients WHERE recipe_id = ?").run(existing.id);
-        db.prepare("UPDATE menu_item_recipes SET active = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(existing.id);
-      }
-      return;
+    if (createStandalone) {
+      const duplicate = db.prepare("SELECT id FROM menu_items WHERE lower(trim(name)) = lower(trim(?)) LIMIT 1").get(recipeName) as { id: number } | undefined;
+      if (duplicate) throw new Error("A menu item or recipe with this name already exists.");
+      const menuItemId = Number(
+        db.prepare(
+          `INSERT INTO menu_items (name, price, category, track_recipe, available, archived)
+           VALUES (?, 0, 'Recipe Material', 1, 0, 1)`
+        ).run(recipeName).lastInsertRowid
+      );
+      menuItem = { id: menuItemId, name: recipeName, category: "Recipe Material", archived: 1 };
+    } else if (standalone && menuItem) {
+      const duplicate = db.prepare(
+        "SELECT id FROM menu_items WHERE lower(trim(name)) = lower(trim(?)) AND id <> ? LIMIT 1"
+      ).get(recipeName, menuItem.id) as { id: number } | undefined;
+      if (duplicate) throw new Error("A menu item or recipe with this name already exists.");
+      db.prepare("UPDATE menu_items SET name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(recipeName, menuItem.id);
+      menuItem = { ...menuItem, name: recipeName };
     }
+    if (!menuItem) throw new Error("Menu item not found.");
+    const existing = db.prepare("SELECT id FROM menu_item_recipes WHERE menu_item_id = ?").get(menuItem.id) as { id: number } | undefined;
     const recipeId = existing
       ? existing.id
       : Number(db.prepare("INSERT INTO menu_item_recipes (menu_item_id) VALUES (?)").run(menuItem.id).lastInsertRowid);
+    const versionId = prepareRecipeVersion(db, recipeId, Boolean(options.snapshotMode), "manual", options.reason ?? null);
+    savedVersionId = versionId;
+    if (cleanIngredients.length === 0) {
+      db.prepare("DELETE FROM recipe_ingredients WHERE recipe_id = ?").run(recipeId);
+      db.prepare("DELETE FROM recipe_child_ingredients WHERE recipe_id = ?").run(recipeId);
+      db.prepare("DELETE FROM recipe_version_ingredients WHERE version_id = ?").run(versionId);
+      db.prepare("DELETE FROM recipe_version_child_ingredients WHERE version_id = ?").run(versionId);
+      db.prepare(
+        "DELETE FROM menu_item_inventory_bindings WHERE menu_item_id = ? AND binding_type = 'recipe' AND recipe_id = ?"
+      ).run(menuItem.id, recipeId);
+      db.prepare("UPDATE menu_item_recipes SET active = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(recipeId);
+      return;
+    }
     db.prepare("UPDATE menu_item_recipes SET active = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(recipeId);
     db.prepare("DELETE FROM recipe_ingredients WHERE recipe_id = ?").run(recipeId);
     db.prepare("DELETE FROM recipe_child_ingredients WHERE recipe_id = ?").run(recipeId);
+    db.prepare("DELETE FROM recipe_version_ingredients WHERE version_id = ?").run(versionId);
+    db.prepare("DELETE FROM recipe_version_child_ingredients WHERE version_id = ?").run(versionId);
     const insertRaw = db.prepare("INSERT INTO recipe_ingredients (recipe_id, inventory_item_id, quantity_base, unit_label) VALUES (?, ?, ?, ?)");
     const insertChild = db.prepare("INSERT INTO recipe_child_ingredients (recipe_id, child_recipe_id, quantity_base, unit_label) VALUES (?, ?, ?, ?)");
+    const insertVersionRaw = db.prepare("INSERT INTO recipe_version_ingredients (version_id, inventory_item_id, quantity_base, unit_label) VALUES (?, ?, ?, ?)");
+    const insertVersionChild = db.prepare("INSERT INTO recipe_version_child_ingredients (version_id, child_recipe_id, child_version_id, quantity_base, unit_label) VALUES (?, ?, ?, ?, ?)");
     for (const ingredient of cleanIngredients) {
       if (ingredient.kind === "recipe") {
         if (ingredient.childRecipeId === recipeId) throw new Error("A recipe cannot include itself.");
-        const child = db.prepare("SELECT id FROM menu_item_recipes WHERE id = ? AND active = 1 AND use_in_recipe_enabled = 1").get(ingredient.childRecipeId) as { id: number } | undefined;
-        if (!child) throw new Error("Recipe material is not enabled for use in recipes.");
+        const child = db.prepare("SELECT id, current_version_id FROM menu_item_recipes WHERE id = ? AND active = 1").get(ingredient.childRecipeId) as { id: number; current_version_id: number | null } | undefined;
+        if (!child?.current_version_id) throw new Error("Linked recipe does not have an active version.");
+        if (recipeDependsOn(db, ingredient.childRecipeId, recipeId)) throw new Error("This recipe link would create a circular recipe.");
         insertChild.run(recipeId, ingredient.childRecipeId, ingredient.quantityBase, ingredient.unitLabel || "portion");
+        insertVersionChild.run(versionId, ingredient.childRecipeId, child.current_version_id, ingredient.quantityBase, ingredient.unitLabel || "portion");
       } else {
         insertRaw.run(recipeId, ingredient.inventoryItemId, ingredient.quantityBase, ingredient.unitLabel);
+        insertVersionRaw.run(versionId, ingredient.inventoryItemId, ingredient.quantityBase, ingredient.unitLabel);
       }
+    }
+    if (!standalone) {
+      db.prepare(
+        `INSERT INTO menu_item_inventory_bindings
+         (menu_item_id, binding_type, recipe_id, inventory_item_id, quantity_base, unit_label, updated_at)
+         VALUES (?, 'recipe', ?, NULL, 1, 'portion', CURRENT_TIMESTAMP)
+         ON CONFLICT(menu_item_id) DO UPDATE SET binding_type = 'recipe', recipe_id = excluded.recipe_id,
+           inventory_item_id = NULL, quantity_base = 1, unit_label = 'portion', updated_at = CURRENT_TIMESTAMP`
+      ).run(menuItem.id, recipeId);
     }
   });
   tx();
-  recordActivity(db, cleanIngredients.length === 0 ? "recipe_removed" : "recipe_updated", { entityType: "menu_item", entityId: String(menuItem.id), itemName: menuItem.name, ingredientCount: cleanIngredients.length }, actor);
-  return listMenuRecipes(db).find((recipe) => recipe.menuItemId === menuItem.id)!;
+  if (!menuItem) throw new Error("Recipe could not be saved.");
+  const savedMenuItemId = menuItem.id;
+  const historicalOrdersUpdated = standalone
+    ? 0
+    : recalculateHistoricalOrdersForMenuItems(
+      db,
+      [menuItem.id],
+      options,
+      actor,
+      options.snapshotMode ? undefined : new Map([[menuItem.id, savedVersionId]])
+    );
+  recordActivity(db, createStandalone ? "standalone_recipe_created" : cleanIngredients.length === 0 ? "recipe_removed" : options.snapshotMode ? "recipe_version_created" : "recipe_updated", {
+    entityType: "menu_item",
+    entityId: String(menuItem.id),
+    itemName: menuItem.name,
+    ingredientCount: cleanIngredients.length,
+    recipeVersionId: savedVersionId,
+    snapshotMode: Boolean(options.snapshotMode),
+    standalone,
+    historicalScope: options.historicalScope ?? "future",
+    historicalOrdersUpdated
+  }, actor);
+  return listMenuRecipes(db).find((recipe) => recipe.menuItemId === savedMenuItemId)!;
 }
 
 export function setRecipeRestockEnabled(db: Database.Database, menuItemId: number, enabled: boolean, actor = "admin"): MenuRecipe {
@@ -306,6 +451,163 @@ export function setRecipeUseInRecipeEnabled(db: Database.Database, menuItemId: n
   db.prepare("UPDATE menu_item_recipes SET use_in_recipe_enabled = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(enabled ? 1 : 0, recipeId);
   recordActivity(db, "recipe_use_in_recipe_option_updated", { entityType: "menu_item", entityId: String(menuItem.id), itemName: menuItem.name, enabled }, actor);
   return listMenuRecipes(db).find((recipe) => recipe.menuItemId === menuItem.id)!;
+}
+
+export function listMenuInventoryBindings(db: Database.Database): MenuInventoryBinding[] {
+  return db.prepare(
+    `SELECT b.id, b.menu_item_id, mi.name AS menu_item_name, b.binding_type, b.recipe_id,
+            recipe_item.name AS recipe_name, b.inventory_item_id, ii.name AS inventory_item_name,
+            b.quantity_base, b.unit_label, b.updated_at
+     FROM menu_item_inventory_bindings b
+     JOIN menu_items mi ON mi.id = b.menu_item_id
+     LEFT JOIN menu_item_recipes mr ON mr.id = b.recipe_id
+     LEFT JOIN menu_items recipe_item ON recipe_item.id = mr.menu_item_id
+     LEFT JOIN inventory_items ii ON ii.id = b.inventory_item_id
+     ORDER BY mi.name`
+  ).all().map((row) => {
+    const item = row as {
+      id: number;
+      menu_item_id: number;
+      menu_item_name: string;
+      binding_type: "recipe" | "item";
+      recipe_id: number | null;
+      recipe_name: string | null;
+      inventory_item_id: number | null;
+      inventory_item_name: string | null;
+      quantity_base: number;
+      unit_label: string;
+      updated_at: string;
+    };
+    return {
+      id: item.id,
+      menuItemId: item.menu_item_id,
+      menuItemName: item.menu_item_name,
+      bindingType: item.binding_type,
+      recipeId: item.recipe_id,
+      recipeName: item.recipe_name,
+      inventoryItemId: item.inventory_item_id,
+      inventoryItemName: item.inventory_item_name,
+      quantityBase: item.quantity_base,
+      unitLabel: item.unit_label,
+      updatedAt: item.updated_at
+    };
+  });
+}
+
+export function saveMenuInventoryBinding(db: Database.Database, input: MenuBindingInput, actor = "admin"): MenuInventoryBinding {
+  validateHistoricalChangeOptions(input);
+  const menuItem = db.prepare("SELECT id, name FROM menu_items WHERE id = ?").get(input.menuItemId) as { id: number; name: string } | undefined;
+  if (!menuItem) throw new Error("Menu item not found.");
+  const quantityBase = Number(input.quantityBase ?? 1);
+  if (!Number.isFinite(quantityBase) || quantityBase <= 0) throw new Error("Usage quantity must be greater than zero.");
+  let recipeId: number | null = null;
+  let inventoryItemId: number | null = null;
+  let unitLabel = cleanText(input.unitLabel ?? "") || "portion";
+  if (input.bindingType === "recipe") {
+    const recipe = db.prepare("SELECT id FROM menu_item_recipes WHERE id = ? AND active = 1 AND current_version_id IS NOT NULL").get(Number(input.recipeId)) as { id: number } | undefined;
+    if (!recipe) throw new Error("Choose an active recipe with a saved version.");
+    recipeId = recipe.id;
+    unitLabel = unitLabel || "portion";
+  } else {
+    const item = db.prepare(
+      `SELECT ii.id, iu.short_name
+       FROM inventory_items ii JOIN inventory_units iu ON iu.id = ii.base_unit_id
+       WHERE ii.id = ? AND ii.active = 1`
+    ).get(Number(input.inventoryItemId)) as { id: number; short_name: string } | undefined;
+    if (!item) throw new Error("Choose an active inventory item.");
+    inventoryItemId = item.id;
+    unitLabel = item.short_name;
+  }
+  db.prepare(
+    `INSERT INTO menu_item_inventory_bindings
+     (menu_item_id, binding_type, recipe_id, inventory_item_id, quantity_base, unit_label, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+     ON CONFLICT(menu_item_id) DO UPDATE SET binding_type = excluded.binding_type, recipe_id = excluded.recipe_id,
+       inventory_item_id = excluded.inventory_item_id, quantity_base = excluded.quantity_base,
+       unit_label = excluded.unit_label, updated_at = CURRENT_TIMESTAMP`
+  ).run(menuItem.id, input.bindingType, recipeId, inventoryItemId, quantityBase, unitLabel);
+  db.prepare("UPDATE menu_items SET track_recipe = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(input.bindingType === "recipe" ? 1 : 0, menuItem.id);
+  const historicalOrdersUpdated = recalculateHistoricalOrdersForMenuItems(db, [menuItem.id], input, actor);
+  recordActivity(db, "menu_inventory_binding_updated", {
+    entityType: "menu_item",
+    entityId: String(menuItem.id),
+    itemName: menuItem.name,
+    bindingType: input.bindingType,
+    recipeId,
+    inventoryItemId,
+    quantityBase,
+    historicalScope: input.historicalScope ?? "future",
+    historicalOrdersUpdated,
+    reason: cleanText(input.reason ?? "") || "Manager binding correction"
+  }, actor);
+  return listMenuInventoryBindings(db).find((binding) => binding.menuItemId === menuItem.id)!;
+}
+
+export function removeMenuInventoryBinding(
+  db: Database.Database,
+  menuItemId: number,
+  options: Omit<MenuBindingInput, "menuItemId" | "bindingType"> = {},
+  actor = "admin"
+): void {
+  validateHistoricalChangeOptions(options);
+  const menuItem = db.prepare("SELECT id, name FROM menu_items WHERE id = ?").get(menuItemId) as { id: number; name: string } | undefined;
+  if (!menuItem) throw new Error("Menu item not found.");
+  db.prepare("DELETE FROM menu_item_inventory_bindings WHERE menu_item_id = ?").run(menuItemId);
+  db.prepare("UPDATE menu_items SET track_recipe = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(menuItemId);
+  const historicalOrdersUpdated = recalculateHistoricalOrdersForMenuItems(db, [menuItemId], options, actor);
+  recordActivity(db, "menu_inventory_binding_removed", {
+    entityType: "menu_item",
+    entityId: String(menuItemId),
+    itemName: menuItem.name,
+    historicalScope: options.historicalScope ?? "future",
+    historicalOrdersUpdated,
+    reason: cleanText(options.reason ?? "") || "Manager removed inventory binding"
+  }, actor);
+}
+
+export function previewMenuBindingImpact(
+  db: Database.Database,
+  input: Pick<MenuBindingInput, "menuItemId" | "start" | "end">
+): InventoryBindingPreview {
+  validateDateRange(input, false);
+  const menuItem = db.prepare("SELECT id, name FROM menu_items WHERE id = ?").get(input.menuItemId) as { id: number; name: string } | undefined;
+  if (!menuItem) throw new Error("Menu item not found.");
+  const orders = listSettledOrdersForMenuItems(db, [menuItem.id], input);
+  let estimatedRevenue = 0;
+  let estimatedRawCost = 0;
+  let currentSnapshotRawCost = 0;
+  let estimatedMissingRecipeCount = 0;
+  let missingSnapshotCount = 0;
+  let existingSnapshotCount = 0;
+  for (const order of orders) {
+    const lines = db.prepare(
+      `SELECT oi.id, oi.quantity, oi.unit_price, oics.raw_cost
+       FROM order_items oi
+       LEFT JOIN order_item_cost_snapshots oics ON oics.order_item_id = oi.id
+       WHERE oi.order_id = ? AND oi.menu_item_id = ? AND oi.status = 'active'`
+    ).all(order.id, menuItem.id) as Array<{ id: number; quantity: number; unit_price: number; raw_cost: number | null }>;
+    for (const line of lines) {
+      const bindingCost = getMenuItemBindingCost(db, menuItem.id);
+      estimatedRevenue += line.quantity * line.unit_price;
+      estimatedRawCost += bindingCost.rawCost * line.quantity;
+      currentSnapshotRawCost += Number(line.raw_cost ?? 0);
+      if (!bindingCost.hasBinding || bindingCost.ingredients.length === 0) estimatedMissingRecipeCount += 1;
+      if (line.raw_cost == null) missingSnapshotCount += 1;
+      else existingSnapshotCount += 1;
+    }
+  }
+  return {
+    menuItemId: menuItem.id,
+    menuItemName: menuItem.name,
+    orderCount: orders.length,
+    missingSnapshotCount,
+    existingSnapshotCount,
+    estimatedRevenue: roundMoney(estimatedRevenue),
+    estimatedRawCost: roundMoney(estimatedRawCost),
+    currentSnapshotRawCost: roundMoney(currentSnapshotRawCost),
+    rawCostDelta: roundMoney(estimatedRawCost - currentSnapshotRawCost),
+    estimatedMissingRecipeCount
+  };
 }
 
 export function saveInventoryCategory(db: Database.Database, input: { id?: number; name: string; active?: boolean }, actor = "admin"): InventoryCategory {
@@ -366,20 +668,7 @@ export function removeCostCategory(db: Database.Database, id: number, actor = "a
 
 export function addRestockEntry(
   db: Database.Database,
-  input: {
-    inventoryItemId: number;
-    itemType?: "raw" | "recipe";
-    entryType?: "purchase" | "adjustment";
-    recipeId?: number | null;
-    quantity: number;
-    unitLabel?: string;
-    totalCost?: number;
-    supplierName?: string | null;
-    responsiblePerson?: string | null;
-    note?: string | null;
-    adjustmentReason?: string | null;
-    entryDate?: string | null;
-  },
+  input: RestockEntryInput,
   actor = "admin"
 ): RestockEntry {
   const item = getInventoryItem(db, input.inventoryItemId);
@@ -390,45 +679,39 @@ export function addRestockEntry(
   if (entryType === "adjustment" && !adjustmentReason) throw new Error("Adjustment reason is required.");
   const totalCost = Math.max(0, Number(input.totalCost ?? 0));
   const pricePerBase = entryType === "purchase" && quantity > 0 ? totalCost / quantity : 0;
-  const id = Number(
-    db.prepare(
+  const entryDate = normalizeOptionalInventoryTimestamp(input.entryDate, "Restock time");
+  let id = 0;
+  const tx = db.transaction(() => {
+    id = Number(db.prepare(
       `INSERT INTO inventory_restock_entries
        (inventory_item_id, item_type, entry_type, recipe_id, quantity_base, unit_label, total_cost, price_per_base, supplier_name, responsible_person, note, adjustment_reason, entry_date)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))`
-    ).run(input.inventoryItemId, input.itemType ?? "raw", entryType, input.recipeId ?? null, quantity, item.unitShortName, totalCost, pricePerBase, input.supplierName ?? null, input.responsiblePerson ?? null, input.note ?? null, adjustmentReason || null, input.entryDate ?? null).lastInsertRowid
-  );
-  if (entryType === "adjustment") {
-    db.prepare(
-      `INSERT INTO inventory_adjustments (inventory_item_id, quantity_delta, reason, note, restock_entry_id, created_at)
-       VALUES (?, ?, 'Stock adjustment', ?, ?, COALESCE(?, CURRENT_TIMESTAMP))`
-    ).run(input.inventoryItemId, quantity, adjustmentReason, id, input.entryDate ?? null);
-  }
+    ).run(input.inventoryItemId, input.itemType ?? "raw", entryType, input.recipeId ?? null, quantity, item.unitShortName, totalCost, pricePerBase, input.supplierName ?? null, input.responsiblePerson ?? null, input.note ?? null, adjustmentReason || null, entryDate).lastInsertRowid);
+    const savedTime = (db.prepare("SELECT entry_date FROM inventory_restock_entries WHERE id = ?").get(id) as { entry_date: string }).entry_date;
+    if (entryType === "adjustment") {
+      db.prepare(
+        `INSERT INTO inventory_adjustments (inventory_item_id, quantity_delta, reason, note, restock_entry_id, created_at)
+         VALUES (?, ?, 'Stock adjustment', ?, ?, ?)`
+      ).run(input.inventoryItemId, quantity, adjustmentReason, id, savedTime);
+    }
+    recalculatePhysicalCountDeltas(db, [input.inventoryItemId]);
+  });
+  tx();
+  const saved = listRestockEntries(db, 10000).find((entry) => entry.id === id);
+  if (!saved) throw new Error("Restock entry could not be saved.");
   if (pricePerBase > 0) {
-    addPriceRecord(db, { inventoryItemId: input.inventoryItemId, pricePerBase, responsiblePerson: input.responsiblePerson ?? null, note: "Updated from restock entry" }, actor);
+    addPriceRecord(db, { inventoryItemId: input.inventoryItemId, pricePerBase, effectiveAt: saved.entryDate, responsiblePerson: input.responsiblePerson ?? null, note: "Updated from restock entry" }, actor);
   }
   recordActivity(db, entryType === "adjustment" ? "inventory_stock_adjustment_created" : "inventory_restock_created", { entityType: "inventory_item", entityId: String(input.inventoryItemId), itemName: item.name, quantity, reason: adjustmentReason || null }, actor);
-  return listRestockEntries(db, 1).find((entry) => entry.id === id) ?? listRestockEntries(db, 1)[0];
+  return saved;
 }
 
 export function updateRestockEntry(
   db: Database.Database,
-  input: {
-    id: number;
-    inventoryItemId: number;
-    itemType?: "raw" | "recipe";
-    entryType?: "purchase" | "adjustment";
-    recipeId?: number | null;
-    quantity: number;
-    unitLabel?: string;
-    totalCost?: number;
-    supplierName?: string | null;
-    responsiblePerson?: string | null;
-    note?: string | null;
-    adjustmentReason?: string | null;
-  },
+  input: RestockEntryUpdateInput,
   actor = "admin"
 ): RestockEntry {
-  const existing = db.prepare("SELECT id FROM inventory_restock_entries WHERE id = ?").get(input.id) as { id: number } | undefined;
+  const existing = db.prepare("SELECT id, inventory_item_id, entry_date FROM inventory_restock_entries WHERE id = ?").get(input.id) as { id: number; inventory_item_id: number; entry_date: string } | undefined;
   if (!existing) throw new Error("Restock entry not found.");
   const item = getInventoryItem(db, input.inventoryItemId);
   const entryType = input.entryType ?? "purchase";
@@ -438,27 +721,31 @@ export function updateRestockEntry(
   if (entryType === "adjustment" && !adjustmentReason) throw new Error("Adjustment reason is required.");
   const totalCost = Math.max(0, Number(input.totalCost ?? 0));
   const pricePerBase = entryType === "purchase" && quantity > 0 ? totalCost / quantity : 0;
+  const entryDate = input.entryDate?.trim()
+    ? normalizeOptionalInventoryTimestamp(input.entryDate, "Restock time")!
+    : existing.entry_date;
   const tx = db.transaction(() => {
     db.prepare(
       `UPDATE inventory_restock_entries
        SET inventory_item_id = ?, item_type = ?, entry_type = ?, recipe_id = ?, quantity_base = ?, unit_label = ?, total_cost = ?, price_per_base = ?,
-           supplier_name = ?, responsible_person = ?, note = ?, adjustment_reason = ?, entry_date = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+           supplier_name = ?, responsible_person = ?, note = ?, adjustment_reason = ?, entry_date = ?, updated_at = CURRENT_TIMESTAMP
        WHERE id = ?`
-    ).run(input.inventoryItemId, input.itemType ?? "raw", entryType, input.recipeId ?? null, quantity, item.unitShortName, totalCost, pricePerBase, input.supplierName ?? null, input.responsiblePerson ?? null, input.note ?? null, adjustmentReason || null, input.id);
+    ).run(input.inventoryItemId, input.itemType ?? "raw", entryType, input.recipeId ?? null, quantity, item.unitShortName, totalCost, pricePerBase, input.supplierName ?? null, input.responsiblePerson ?? null, input.note ?? null, adjustmentReason || null, entryDate, input.id);
     db.prepare("DELETE FROM inventory_adjustments WHERE restock_entry_id = ?").run(input.id);
     if (entryType === "adjustment") {
       db.prepare(
-        `INSERT INTO inventory_adjustments (inventory_item_id, quantity_delta, reason, note, restock_entry_id)
-         VALUES (?, ?, 'Stock adjustment', ?, ?)`
-      ).run(input.inventoryItemId, quantity, adjustmentReason, input.id);
+        `INSERT INTO inventory_adjustments (inventory_item_id, quantity_delta, reason, note, restock_entry_id, created_at)
+         VALUES (?, ?, 'Stock adjustment', ?, ?, ?)`
+      ).run(input.inventoryItemId, quantity, adjustmentReason, input.id, entryDate);
     }
+    recalculatePhysicalCountDeltas(db, [existing.inventory_item_id, input.inventoryItemId]);
   });
   tx();
   if (pricePerBase > 0) {
-    addPriceRecord(db, { inventoryItemId: input.inventoryItemId, pricePerBase, responsiblePerson: input.responsiblePerson ?? null, note: "Updated from restock edit" }, actor);
+    addPriceRecord(db, { inventoryItemId: input.inventoryItemId, pricePerBase, effectiveAt: entryDate, responsiblePerson: input.responsiblePerson ?? null, note: "Updated from restock edit" }, actor);
   }
   recordActivity(db, entryType === "adjustment" ? "inventory_stock_adjustment_updated" : "inventory_restock_updated", { entityType: "inventory_restock", entityId: String(input.id), itemName: item.name, quantity, reason: adjustmentReason || null }, actor);
-  return listRestockEntries(db, 200).find((entry) => entry.id === input.id)!;
+  return listRestockEntries(db, 10000).find((entry) => entry.id === input.id)!;
 }
 
 export function deleteRestockEntry(db: Database.Database, id: number, actor = "admin"): void {
@@ -469,8 +756,12 @@ export function deleteRestockEntry(db: Database.Database, id: number, actor = "a
      WHERE re.id = ?`
   ).get(id) as { id: number; inventory_item_id: number; quantity_base: number; item_name: string } | undefined;
   if (!existing) throw new Error("Restock entry not found.");
-  db.prepare("DELETE FROM inventory_adjustments WHERE restock_entry_id = ?").run(id);
-  db.prepare("DELETE FROM inventory_restock_entries WHERE id = ?").run(id);
+  const tx = db.transaction(() => {
+    db.prepare("DELETE FROM inventory_adjustments WHERE restock_entry_id = ?").run(id);
+    db.prepare("DELETE FROM inventory_restock_entries WHERE id = ?").run(id);
+    recalculatePhysicalCountDeltas(db, [existing.inventory_item_id]);
+  });
+  tx();
   recordActivity(db, "inventory_restock_deleted", {
     entityType: "inventory_restock",
     entityId: String(id),
@@ -482,42 +773,58 @@ export function deleteRestockEntry(db: Database.Database, id: number, actor = "a
 
 export function addPhysicalCount(
   db: Database.Database,
-  input: { inventoryItemId: number; quantity: number; responsiblePerson?: string | null; note?: string | null; countDate?: string | null; source?: "manual" | "restock" },
+  input: PhysicalCountInput,
   actor = "admin"
 ): PhysicalCountEntry {
   const item = getInventoryItem(db, input.inventoryItemId);
-  const quantity = Math.max(0, Number(input.quantity));
-  const id = Number(
-    db.prepare(
-      `INSERT INTO inventory_physical_counts (inventory_item_id, quantity_base, unit_label, responsible_person, note, count_date, source)
-       VALUES (?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?)`
-    ).run(input.inventoryItemId, quantity, item.unitShortName, input.responsiblePerson ?? null, input.note ?? null, input.countDate ?? null, input.source ?? "manual").lastInsertRowid
-  );
-  recordActivity(db, "inventory_physical_count_saved", { entityType: "inventory_item", entityId: String(input.inventoryItemId), itemName: item.name, quantity }, actor);
-  return listPhysicalCounts(db, 1).find((entry) => entry.id === id)!;
+  const quantity = Number(input.quantity);
+  if (!Number.isFinite(quantity) || quantity < 0) throw new Error("Physical count must be zero or greater.");
+  const countDate = normalizeOptionalInventoryTimestamp(input.countDate, "Count time");
+  let id = 0;
+  const tx = db.transaction(() => {
+    id = Number(db.prepare(
+      `INSERT INTO inventory_physical_counts
+       (inventory_item_id, quantity_base, reduction_delta, unit_label, responsible_person, note, count_date, source)
+       VALUES (?, ?, 0, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?)`
+    ).run(input.inventoryItemId, quantity, item.unitShortName, input.responsiblePerson ?? null, input.note ?? null, countDate, input.source ?? "manual").lastInsertRowid);
+    recalculatePhysicalCountDeltas(db, [input.inventoryItemId]);
+  });
+  tx();
+  const saved = listPhysicalCounts(db, 10000).find((entry) => entry.id === id);
+  if (!saved) throw new Error("Physical count could not be saved.");
+  recordActivity(db, "inventory_physical_count_saved", { entityType: "inventory_item", entityId: String(input.inventoryItemId), itemName: item.name, quantity, reductionDelta: saved.reductionDelta }, actor);
+  return saved;
 }
 
 export function updatePhysicalCount(
   db: Database.Database,
-  input: { id: number; inventoryItemId: number; quantity: number; responsiblePerson?: string | null; note?: string | null; reason: string },
+  input: PhysicalCountUpdateInput,
   actor = "admin"
 ): PhysicalCountEntry {
   const existing = db.prepare(
-    `SELECT pc.id, pc.inventory_item_id, pc.quantity_base, pc.unit_label, pc.responsible_person, pc.note, ii.name AS item_name
+    `SELECT pc.id, pc.inventory_item_id, pc.quantity_base, pc.unit_label, pc.responsible_person, pc.note, pc.count_date, ii.name AS item_name
      FROM inventory_physical_counts pc
      JOIN inventory_items ii ON ii.id = pc.inventory_item_id
      WHERE pc.id = ?`
-  ).get(input.id) as { id: number; inventory_item_id: number; quantity_base: number; unit_label: string; responsible_person: string | null; note: string | null; item_name: string } | undefined;
+  ).get(input.id) as { id: number; inventory_item_id: number; quantity_base: number; unit_label: string; responsible_person: string | null; note: string | null; count_date: string; item_name: string } | undefined;
   if (!existing) throw new Error("Physical count entry not found.");
-  const reason = cleanText(input.reason);
-  if (!reason) throw new Error("Reason is required.");
+  const reason = cleanText(input.reason ?? "") || "Manager corrected physical count";
   const item = getInventoryItem(db, input.inventoryItemId);
-  const quantity = Math.max(0, Number(input.quantity));
-  db.prepare(
-    `UPDATE inventory_physical_counts
-     SET inventory_item_id = ?, quantity_base = ?, unit_label = ?, responsible_person = ?, note = ?, count_date = CURRENT_TIMESTAMP
-     WHERE id = ?`
-  ).run(input.inventoryItemId, quantity, item.unitShortName, input.responsiblePerson ?? null, input.note ?? null, input.id);
+  const quantity = Number(input.quantity);
+  if (!Number.isFinite(quantity) || quantity < 0) throw new Error("Physical count must be zero or greater.");
+  const countDate = input.countDate?.trim()
+    ? normalizeOptionalInventoryTimestamp(input.countDate, "Count time")!
+    : existing.count_date;
+  const tx = db.transaction(() => {
+    db.prepare(
+      `UPDATE inventory_physical_counts
+       SET inventory_item_id = ?, quantity_base = ?, reduction_delta = 0, unit_label = ?, responsible_person = ?, note = ?,
+           count_date = ?, updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?`
+    ).run(input.inventoryItemId, quantity, item.unitShortName, input.responsiblePerson ?? null, input.note ?? null, countDate, input.id);
+    recalculatePhysicalCountDeltas(db, [existing.inventory_item_id, input.inventoryItemId]);
+  });
+  tx();
   recordActivity(db, "inventory_physical_count_updated", {
     entityType: "inventory_physical_count",
     entityId: String(input.id),
@@ -529,10 +836,11 @@ export function updatePhysicalCount(
     newUnit: item.unitShortName,
     reason
   }, actor);
-  return listPhysicalCounts(db, 200).find((entry) => entry.id === input.id)!;
+  const saved = listPhysicalCounts(db, 10000).find((entry) => entry.id === input.id)!;
+  return saved;
 }
 
-export function deletePhysicalCount(db: Database.Database, id: number, reason: string, actor = "admin"): void {
+export function deletePhysicalCount(db: Database.Database, id: number, reason = "Manager deleted incorrect physical count", actor = "admin"): void {
   const existing = db.prepare(
     `SELECT pc.id, pc.inventory_item_id, pc.quantity_base, pc.unit_label, ii.name AS item_name
      FROM inventory_physical_counts pc
@@ -540,9 +848,12 @@ export function deletePhysicalCount(db: Database.Database, id: number, reason: s
      WHERE pc.id = ?`
   ).get(id) as { id: number; inventory_item_id: number; quantity_base: number; unit_label: string; item_name: string } | undefined;
   if (!existing) throw new Error("Physical count entry not found.");
-  const cleanReason = cleanText(reason);
-  if (!cleanReason) throw new Error("Reason is required.");
-  db.prepare("DELETE FROM inventory_physical_counts WHERE id = ?").run(id);
+  const cleanReason = cleanText(reason) || "Manager deleted incorrect physical count";
+  const tx = db.transaction(() => {
+    db.prepare("DELETE FROM inventory_physical_counts WHERE id = ?").run(id);
+    recalculatePhysicalCountDeltas(db, [existing.inventory_item_id]);
+  });
+  tx();
   recordActivity(db, "inventory_physical_count_deleted", {
     entityType: "inventory_physical_count",
     entityId: String(id),
@@ -589,14 +900,15 @@ export function addCostRecord(
   if (!costName) throw new Error("Cost name is required.");
   const amount = Math.max(0, Number(input.amount));
   if (amount <= 0) throw new Error("Cost amount must be greater than zero.");
+  const costDate = normalizeOptionalBusinessDate(input.costDate, "Cost date");
   const id = Number(
     db.prepare(
       `INSERT INTO cost_records (cost_category_id, cost_name, quantity, amount, payment_method, responsible_person, note, cost_date)
        VALUES (?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))`
-    ).run(input.categoryId ?? null, costName, 1, amount, input.paymentMethod ?? null, input.responsiblePerson ?? null, input.note ?? null, input.costDate ?? null).lastInsertRowid
+    ).run(input.categoryId ?? null, costName, 1, amount, input.paymentMethod ?? null, input.responsiblePerson ?? null, input.note ?? null, costDate).lastInsertRowid
   );
   recordActivity(db, "cost_record_created", { entityType: "cost_record", entityId: String(id), costName, amount }, actor);
-  return listCostRecords(db, 1).find((entry) => entry.id === id) ?? listCostRecords(db, 1)[0];
+  return listCostRecords(db, 10000).find((entry) => entry.id === id)!;
 }
 
 export function updateCostRecord(
@@ -609,23 +921,25 @@ export function updateCostRecord(
     paymentMethod?: string | null;
     responsiblePerson?: string | null;
     note?: string | null;
-    reason: string;
+    costDate?: string | null;
+    reason?: string | null;
   },
   actor = "admin"
 ): CostRecord {
   const existing = db.prepare("SELECT id, cost_name, amount FROM cost_records WHERE id = ?").get(input.id) as { id: number; cost_name: string; amount: number } | undefined;
   if (!existing) throw new Error("Cost record not found.");
-  const reason = cleanText(input.reason);
-  if (!reason) throw new Error("Reason is required.");
+  const reason = cleanText(input.reason ?? "") || "Manager corrected cost record";
   const costName = cleanText(input.costName);
   if (!costName) throw new Error("Cost name is required.");
   const amount = Math.max(0, Number(input.amount));
   if (amount <= 0) throw new Error("Cost amount must be greater than zero.");
+  const costDate = normalizeOptionalBusinessDate(input.costDate, "Cost date");
   db.prepare(
     `UPDATE cost_records
-     SET cost_category_id = ?, cost_name = ?, quantity = 1, amount = ?, payment_method = ?, responsible_person = ?, note = ?, cost_date = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+     SET cost_category_id = ?, cost_name = ?, quantity = 1, amount = ?, payment_method = ?, responsible_person = ?, note = ?,
+         cost_date = COALESCE(?, cost_date), updated_at = CURRENT_TIMESTAMP
      WHERE id = ?`
-  ).run(input.categoryId ?? null, costName, amount, input.paymentMethod ?? null, input.responsiblePerson ?? null, input.note ?? null, input.id);
+  ).run(input.categoryId ?? null, costName, amount, input.paymentMethod ?? null, input.responsiblePerson ?? null, input.note ?? null, costDate, input.id);
   recordActivity(db, "cost_record_updated", {
     entityType: "cost_record",
     entityId: String(input.id),
@@ -635,14 +949,13 @@ export function updateCostRecord(
     newAmount: amount,
     reason
   }, actor);
-  return listCostRecords(db, 200).find((entry) => entry.id === input.id)!;
+  return listCostRecords(db, 10000).find((entry) => entry.id === input.id)!;
 }
 
-export function deleteCostRecord(db: Database.Database, id: number, reason: string, actor = "admin"): void {
+export function deleteCostRecord(db: Database.Database, id: number, reason = "Manager deleted incorrect cost record", actor = "admin"): void {
   const existing = db.prepare("SELECT id, cost_name, amount FROM cost_records WHERE id = ?").get(id) as { id: number; cost_name: string; amount: number } | undefined;
   if (!existing) throw new Error("Cost record not found.");
-  const cleanReason = cleanText(reason);
-  if (!cleanReason) throw new Error("Reason is required.");
+  const cleanReason = cleanText(reason) || "Manager deleted incorrect cost record";
   db.prepare("DELETE FROM cost_records WHERE id = ?").run(id);
   recordActivity(db, "cost_record_deleted", {
     entityType: "cost_record",
@@ -656,6 +969,10 @@ export function deleteCostRecord(db: Database.Database, id: number, reason: stri
 export function createOrderCostSnapshot(db: Database.Database, orderId: number, actor = "system"): void {
   const existing = db.prepare("SELECT id FROM order_cost_snapshots WHERE order_id = ?").get(orderId) as { id: number } | undefined;
   if (existing) return;
+  const orderTiming = db.prepare(
+    "SELECT COALESCE(settled_at, CURRENT_TIMESTAMP) AS effective_at FROM orders WHERE id = ?"
+  ).get(orderId) as { effective_at: string } | undefined;
+  if (!orderTiming) throw new Error("Order not found.");
   const rows = db.prepare(
     `SELECT oi.id, oi.menu_item_id, oi.quantity, oi.unit_price, oi.name
      FROM order_items oi
@@ -664,31 +981,47 @@ export function createOrderCostSnapshot(db: Database.Database, orderId: number, 
   let revenue = 0;
   let rawCost = 0;
   let missingRecipeCount = 0;
+  const affectedInventoryItems = new Set<number>();
   const tx = db.transaction(() => {
     for (const row of rows) {
       const itemRevenue = row.quantity * row.unit_price;
-      const recipeCost = getMenuItemRawCost(db, row.menu_item_id);
-      if (!recipeCost.hasRecipe || recipeCost.ingredients.length === 0) missingRecipeCount += 1;
-      const itemRawCost = recipeCost.rawCost * row.quantity;
+      const bindingCost = getMenuItemBindingCost(db, row.menu_item_id);
+      if (!bindingCost.hasBinding || bindingCost.ingredients.length === 0) missingRecipeCount += 1;
+      const itemRawCost = bindingCost.rawCost * row.quantity;
       revenue += itemRevenue;
       rawCost += itemRawCost;
       db.prepare(
         `INSERT INTO order_item_cost_snapshots
-         (order_id, order_item_id, menu_item_id, quantity, revenue, raw_cost, profit, details_json)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-      ).run(orderId, row.id, row.menu_item_id, row.quantity, itemRevenue, itemRawCost, itemRevenue - itemRawCost, JSON.stringify(recipeCost.ingredients));
-      const adjustment = db.prepare(
-        `INSERT INTO inventory_adjustments (inventory_item_id, quantity_delta, reason, order_id, order_item_id, note)
-         VALUES (?, ?, 'Order usage', ?, ?, ?)`
+         (order_id, order_item_id, menu_item_id, quantity, revenue, raw_cost, profit, details_json,
+          recipe_version_id, binding_type, binding_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(
+        orderId,
+        row.id,
+        row.menu_item_id,
+        row.quantity,
+        itemRevenue,
+        itemRawCost,
+        itemRevenue - itemRawCost,
+        JSON.stringify(bindingCost.ingredients),
+        bindingCost.recipeVersionId,
+        bindingCost.bindingType,
+        bindingCost.bindingId
       );
-      for (const ingredient of recipeCost.ingredients) {
+      const adjustment = db.prepare(
+        `INSERT INTO inventory_adjustments (inventory_item_id, quantity_delta, reason, order_id, order_item_id, note, created_at)
+         VALUES (?, ?, 'Order usage', ?, ?, ?, ?)`
+      );
+      for (const ingredient of bindingCost.ingredients) {
         adjustment.run(
           ingredient.inventoryItemId,
           -roundQuantity(ingredient.quantityBase * row.quantity),
           orderId,
           row.id,
-          `${row.name} x ${row.quantity}`
+          `${row.name} x ${row.quantity}`,
+          orderTiming.effective_at
         );
+        affectedInventoryItems.add(ingredient.inventoryItemId);
       }
     }
     const grossProfit = revenue - rawCost;
@@ -697,6 +1030,7 @@ export function createOrderCostSnapshot(db: Database.Database, orderId: number, 
        (order_id, revenue, raw_cost, other_cost, gross_profit, net_profit, missing_recipe_count)
        VALUES (?, ?, ?, 0, ?, ?, ?)`
     ).run(orderId, revenue, rawCost, grossProfit, grossProfit, missingRecipeCount);
+    recalculatePhysicalCountDeltas(db, Array.from(affectedInventoryItems));
   });
   tx();
   recordActivity(db, "order_cost_snapshot_created", { entityType: "order", entityId: String(orderId), revenue, rawCost, missingRecipeCount }, actor);
@@ -705,10 +1039,14 @@ export function createOrderCostSnapshot(db: Database.Database, orderId: number, 
 export function reverseOrderCostSnapshot(db: Database.Database, orderId: number, actor = "system"): void {
   const existing = db.prepare("SELECT id FROM order_cost_snapshots WHERE order_id = ?").get(orderId) as { id: number } | undefined;
   if (!existing) return;
+  const affectedInventoryItems = (db.prepare(
+    "SELECT DISTINCT inventory_item_id FROM inventory_adjustments WHERE order_id = ? AND reason = 'Order usage'"
+  ).all(orderId) as Array<{ inventory_item_id: number }>).map((row) => row.inventory_item_id);
   const tx = db.transaction(() => {
     db.prepare("DELETE FROM inventory_adjustments WHERE order_id = ? AND reason = 'Order usage'").run(orderId);
     db.prepare("DELETE FROM order_item_cost_snapshots WHERE order_id = ?").run(orderId);
     db.prepare("DELETE FROM order_cost_snapshots WHERE order_id = ?").run(orderId);
+    recalculatePhysicalCountDeltas(db, affectedInventoryItems);
   });
   tx();
   recordActivity(db, "order_cost_snapshot_reversed", { entityType: "order", entityId: String(orderId) }, actor);
@@ -740,8 +1078,8 @@ export function previewInventoryBackfill(
        WHERE order_id = ? AND status = 'active'`
     ).all(order.id) as Array<{ menu_item_id: number; quantity: number; unit_price: number }>;
     for (const row of rows) {
-      const recipeCost = getMenuItemRawCost(db, row.menu_item_id);
-      if (!recipeCost.hasRecipe || recipeCost.ingredients.length === 0) estimatedMissingRecipeCount += 1;
+      const recipeCost = getMenuItemBindingCost(db, row.menu_item_id);
+      if (!recipeCost.hasBinding || recipeCost.ingredients.length === 0) estimatedMissingRecipeCount += 1;
       estimatedRevenue += row.quantity * row.unit_price;
       estimatedRawCost += recipeCost.rawCost * row.quantity;
     }
@@ -848,9 +1186,12 @@ export function listInventoryItems(db: Database.Database): InventoryItem[] {
 }
 
 export function listMenuRecipes(db: Database.Database): MenuRecipe[] {
-  const menuRows = db.prepare("SELECT id, name, price, archived, track_recipe FROM menu_items WHERE (archived = 0 AND track_recipe = 1) OR id IN (SELECT menu_item_id FROM menu_item_recipes WHERE active = 1) ORDER BY archived, name").all() as Array<{ id: number; name: string; price: number; archived: number; track_recipe: number }>;
+  const menuRows = db.prepare("SELECT id, name, price, category, available, archived, track_recipe FROM menu_items WHERE (archived = 0 AND track_recipe = 1) OR id IN (SELECT menu_item_id FROM menu_item_recipes WHERE active = 1) ORDER BY archived, name").all() as Array<{ id: number; name: string; price: number; category: string | null; available: number; archived: number; track_recipe: number }>;
   return menuRows.map((menuItem) => {
-    const recipe = db.prepare("SELECT id, restock_enabled, use_in_recipe_enabled FROM menu_item_recipes WHERE menu_item_id = ? AND active = 1").get(menuItem.id) as { id: number; restock_enabled: number; use_in_recipe_enabled: number } | undefined;
+    const standalone = menuItem.archived === 1
+      && menuItem.available === 0
+      && menuItem.category?.trim().toLowerCase() === "recipe material";
+    const recipe = db.prepare("SELECT id, restock_enabled, use_in_recipe_enabled, current_version_id FROM menu_item_recipes WHERE menu_item_id = ? AND active = 1").get(menuItem.id) as { id: number; restock_enabled: number; use_in_recipe_enabled: number; current_version_id: number | null } | undefined;
     if (!recipe) {
       return {
         id: 0,
@@ -858,8 +1199,12 @@ export function listMenuRecipes(db: Database.Database): MenuRecipe[] {
         menuItemName: menuItem.name,
         sellingPrice: menuItem.price,
         status: "missing",
+        standalone,
         restockEnabled: false,
         useInRecipeEnabled: false,
+        currentVersionId: null,
+        versionNumber: 0,
+        versions: [],
         rawCost: 0,
         estimatedProfit: menuItem.price,
         profitMargin: 100,
@@ -869,6 +1214,21 @@ export function listMenuRecipes(db: Database.Database): MenuRecipe[] {
     }
     const cost = getMenuItemRawCost(db, menuItem.id);
     const childIngredients = listRecipeChildIngredients(db, recipe.id);
+    const versions = db.prepare(
+      `SELECT id, version_number, change_note, source, created_at, updated_at
+       FROM recipe_versions WHERE recipe_id = ? ORDER BY version_number DESC`
+    ).all(recipe.id).map((row) => {
+      const version = row as { id: number; version_number: number; change_note: string | null; source: string; created_at: string; updated_at: string };
+      return {
+        id: version.id,
+        versionNumber: version.version_number,
+        changeNote: version.change_note,
+        source: version.source,
+        createdAt: version.created_at,
+        updatedAt: version.updated_at,
+        current: version.id === recipe.current_version_id
+      };
+    });
     const profit = menuItem.price - cost.rawCost;
     const hasIngredients = cost.ingredients.length > 0;
     return {
@@ -877,8 +1237,12 @@ export function listMenuRecipes(db: Database.Database): MenuRecipe[] {
       menuItemName: menuItem.name,
       sellingPrice: menuItem.price,
       status: hasIngredients ? "available" : "missing",
+      standalone,
       restockEnabled: recipe.restock_enabled === 1,
       useInRecipeEnabled: recipe.use_in_recipe_enabled === 1,
+      currentVersionId: recipe.current_version_id,
+      versionNumber: versions.find((version) => version.current)?.versionNumber ?? 0,
+      versions,
       rawCost: roundMoney(cost.rawCost),
       estimatedProfit: roundMoney(profit),
       profitMargin: menuItem.price > 0 ? Math.round((profit / menuItem.price) * 100) : 0,
@@ -943,8 +1307,8 @@ export function listRestockEntries(db: Database.Database, limit = 100): RestockE
 
 export function listPhysicalCounts(db: Database.Database, limit = 200): PhysicalCountEntry[] {
   return db.prepare(
-    `SELECT pc.id, pc.inventory_item_id, ii.name AS item_name, pc.quantity_base, pc.unit_label,
-            pc.responsible_person, pc.note, pc.count_date, pc.source
+    `SELECT pc.id, pc.inventory_item_id, ii.name AS item_name, pc.quantity_base, pc.reduction_delta, pc.unit_label,
+            pc.responsible_person, pc.note, pc.count_date, pc.source, COALESCE(pc.updated_at, pc.created_at) AS updated_at
      FROM inventory_physical_counts pc
      JOIN inventory_items ii ON ii.id = pc.inventory_item_id
      ORDER BY datetime(pc.count_date) DESC, pc.id DESC
@@ -955,21 +1319,25 @@ export function listPhysicalCounts(db: Database.Database, limit = 200): Physical
       inventory_item_id: number;
       item_name: string;
       quantity_base: number;
+      reduction_delta: number | null;
       unit_label: string;
       responsible_person: string | null;
       note: string | null;
       count_date: string;
       source: "manual" | "restock";
+      updated_at: string;
     };
     return {
       id: entry.id,
       inventoryItemId: entry.inventory_item_id,
       itemName: entry.item_name,
       quantityBase: entry.quantity_base,
+      reductionDelta: entry.reduction_delta === null ? null : roundQuantity(entry.reduction_delta),
       unitLabel: entry.unit_label,
       responsiblePerson: entry.responsible_person,
       note: entry.note,
       countDate: entry.count_date,
+      updatedAt: entry.updated_at,
       source: entry.source
     };
   });
@@ -1007,13 +1375,13 @@ export function listCostCategories(db: Database.Database): CostCategory[] {
 export function listCostRecords(db: Database.Database, limit = 120): CostRecord[] {
   return db.prepare(
     `SELECT cr.id, cr.cost_category_id, cc.name AS category_name, cr.cost_name, cr.amount, cr.payment_method,
-            cr.responsible_person, cr.note, cr.cost_date
+            cr.responsible_person, cr.note, cr.cost_date, cr.created_at, cr.updated_at
      FROM cost_records cr
      LEFT JOIN cost_categories cc ON cc.id = cr.cost_category_id
      ORDER BY datetime(cr.cost_date) DESC, cr.id DESC
      LIMIT ?`
   ).all(limit).map((row) => {
-    const entry = row as { id: number; cost_category_id: number | null; category_name: string | null; cost_name: string; amount: number; payment_method: string | null; responsible_person: string | null; note: string | null; cost_date: string };
+    const entry = row as { id: number; cost_category_id: number | null; category_name: string | null; cost_name: string; amount: number; payment_method: string | null; responsible_person: string | null; note: string | null; cost_date: string; created_at: string; updated_at: string };
     return {
       id: entry.id,
       categoryId: entry.cost_category_id,
@@ -1023,14 +1391,16 @@ export function listCostRecords(db: Database.Database, limit = 120): CostRecord[
       paymentMethod: entry.payment_method,
       responsiblePerson: entry.responsible_person,
       note: entry.note,
-      costDate: entry.cost_date
+      costDate: entry.cost_date,
+      createdAt: entry.created_at,
+      updatedAt: entry.updated_at
     };
   });
 }
 
 export function listInventoryOrderUsage(db: Database.Database, limit = 120): InventoryOrderUsageSnapshot {
   const rows = db.prepare(
-    `SELECT o.id AS order_id, o.order_number, o.source, o.table_number, o.settled_at, COALESCE(ocs.revenue, 0) AS order_total,
+    `SELECT o.id AS order_id, o.order_number, o.order_date, o.source, o.table_number, o.settled_at, COALESCE(ocs.revenue, 0) AS order_total,
             oi.id AS order_item_id, oi.name AS menu_item_name, oics.quantity, oics.revenue, oics.raw_cost, oics.details_json
      FROM order_item_cost_snapshots oics
      JOIN orders o ON o.id = oics.order_id
@@ -1042,6 +1412,7 @@ export function listInventoryOrderUsage(db: Database.Database, limit = 120): Inv
   ).all(limit) as Array<{
     order_id: number;
     order_number: string;
+    order_date: string;
     source: InventoryOrderUsageSnapshot["orders"][number]["source"];
     table_number: string | null;
     settled_at: string | null;
@@ -1060,6 +1431,7 @@ export function listInventoryOrderUsage(db: Database.Database, limit = 120): Inv
     const order = orders.get(row.order_id) ?? {
       orderId: row.order_id,
       orderNumber: row.order_number,
+      orderDate: row.order_date,
       source: row.source,
       tableNumber: row.table_number,
       settledAt: row.settled_at,
@@ -1204,20 +1576,217 @@ function getMenuItemRawCost(db: Database.Database, menuItemId: number, visited =
   return getRecipeRawCost(db, recipe.id, visited);
 }
 
+function prepareRecipeVersion(
+  db: Database.Database,
+  recipeId: number,
+  snapshotMode: boolean,
+  source: string,
+  changeNote?: string | null
+): number {
+  const recipe = db.prepare("SELECT current_version_id FROM menu_item_recipes WHERE id = ?").get(recipeId) as { current_version_id: number | null } | undefined;
+  if (!recipe) throw new Error("Recipe not found.");
+  if (!snapshotMode && recipe.current_version_id) {
+    db.prepare(
+      `UPDATE recipe_versions SET change_note = COALESCE(?, change_note), source = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`
+    ).run(cleanText(changeNote ?? "") || null, source, recipe.current_version_id);
+    return recipe.current_version_id;
+  }
+  const next = db.prepare("SELECT COALESCE(MAX(version_number), 0) + 1 AS version_number FROM recipe_versions WHERE recipe_id = ?").get(recipeId) as { version_number: number };
+  const versionId = Number(
+    db.prepare(
+      `INSERT INTO recipe_versions (recipe_id, version_number, change_note, source)
+       VALUES (?, ?, ?, ?)`
+    ).run(recipeId, next.version_number, cleanText(changeNote ?? "") || null, source).lastInsertRowid
+  );
+  db.prepare("UPDATE menu_item_recipes SET current_version_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(versionId, recipeId);
+  return versionId;
+}
+
+function recipeDependsOn(db: Database.Database, recipeId: number, targetRecipeId: number, visited = new Set<number>()): boolean {
+  if (recipeId === targetRecipeId) return true;
+  if (visited.has(recipeId)) return false;
+  const nextVisited = new Set(visited);
+  nextVisited.add(recipeId);
+  const children = db.prepare("SELECT child_recipe_id FROM recipe_child_ingredients WHERE recipe_id = ?").all(recipeId) as Array<{ child_recipe_id: number }>;
+  return children.some((child) => recipeDependsOn(db, child.child_recipe_id, targetRecipeId, nextVisited));
+}
+
+function listSettledOrdersForMenuItems(
+  db: Database.Database,
+  menuItemIds: number[],
+  input: { start?: string | null; end?: string | null }
+): Array<{ id: number }> {
+  if (menuItemIds.length === 0) return [];
+  const clauses = ["o.status = 'settled'", `oi.menu_item_id IN (${menuItemIds.map(() => "?").join(",")})`, "oi.status = 'active'"];
+  const params: Array<number | string> = [...menuItemIds];
+  if (input.start) {
+    clauses.push("date(COALESCE(o.order_date, o.created_at)) >= date(?)");
+    params.push(input.start);
+  }
+  if (input.end) {
+    clauses.push("date(COALESCE(o.order_date, o.created_at)) <= date(?)");
+    params.push(input.end);
+  }
+  return db.prepare(
+    `SELECT DISTINCT o.id
+     FROM orders o JOIN order_items oi ON oi.order_id = o.id
+     WHERE ${clauses.join(" AND ")}
+     ORDER BY date(COALESCE(o.order_date, o.created_at)), o.id`
+  ).all(...params) as Array<{ id: number }>;
+}
+
+function recalculateHistoricalOrdersForMenuItems(
+  db: Database.Database,
+  menuItemIds: number[],
+  options: { historicalScope?: HistoricalScope; start?: string | null; end?: string | null; reason?: string | null },
+  actor = "admin",
+  recipeVersionFilterByMenu?: Map<number, number>
+): number {
+  const scope = options.historicalScope ?? "future";
+  if (scope === "future" || menuItemIds.length === 0) return 0;
+  const range: { start?: string | null; end?: string | null } = scope === "all" ? {} : { start: options.start ?? null, end: options.end ?? null };
+  if (scope === "range" && !range.start && !range.end) throw new Error("Choose at least one date for a custom historical range.");
+  const orders = listSettledOrdersForMenuItems(db, Array.from(new Set(menuItemIds)), range);
+  let changedOrders = 0;
+  const tx = db.transaction(() => {
+    for (const order of orders) {
+      if (recalculateOrderItemsForMenuItems(db, order.id, menuItemIds, recipeVersionFilterByMenu)) changedOrders += 1;
+    }
+  });
+  tx();
+  if (changedOrders > 0) {
+    recordActivity(db, "inventory_historical_usage_recalculated", {
+      entityType: "orders",
+      entityId: orders.map((order) => order.id).join(","),
+      orderCount: changedOrders,
+      menuItemIds,
+      historicalScope: scope,
+      start: range.start ?? null,
+      end: range.end ?? null,
+      reason: cleanText(options.reason ?? "") || "Manager historical correction"
+    }, actor);
+  }
+  return changedOrders;
+}
+
+function recalculateOrderItemsForMenuItems(
+  db: Database.Database,
+  orderId: number,
+  menuItemIds: number[],
+  recipeVersionFilterByMenu?: Map<number, number>
+): boolean {
+  const orderTiming = db.prepare(
+    "SELECT COALESCE(settled_at, updated_at, created_at) AS effective_at FROM orders WHERE id = ?"
+  ).get(orderId) as { effective_at: string } | undefined;
+  if (!orderTiming) throw new Error("Order not found.");
+  const existingOrderSnapshot = db.prepare("SELECT id FROM order_cost_snapshots WHERE order_id = ?").get(orderId) as { id: number } | undefined;
+  if (!existingOrderSnapshot) {
+    if (recipeVersionFilterByMenu) return false;
+    createOrderCostSnapshot(db, orderId, "system");
+    return true;
+  }
+  const rows = db.prepare(
+    `SELECT oi.id, oi.menu_item_id, oi.quantity, oi.unit_price, oi.name, oics.recipe_version_id
+     FROM order_items oi
+     LEFT JOIN order_item_cost_snapshots oics ON oics.order_item_id = oi.id
+     WHERE oi.order_id = ? AND oi.status = 'active'
+       AND oi.menu_item_id IN (${menuItemIds.map(() => "?").join(",")})`
+  ).all(orderId, ...menuItemIds) as Array<{
+    id: number;
+    menu_item_id: number;
+    quantity: number;
+    unit_price: number;
+    name: string;
+    recipe_version_id: number | null;
+  }>;
+  const eligible = rows.filter((row) => {
+    const requiredVersion = recipeVersionFilterByMenu?.get(row.menu_item_id);
+    return requiredVersion === undefined || row.recipe_version_id === requiredVersion;
+  });
+  if (eligible.length === 0) return false;
+  const insertSnapshot = db.prepare(
+    `INSERT INTO order_item_cost_snapshots
+     (order_id, order_item_id, menu_item_id, quantity, revenue, raw_cost, profit, details_json,
+      recipe_version_id, binding_type, binding_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  );
+  const insertAdjustment = db.prepare(
+    `INSERT INTO inventory_adjustments (inventory_item_id, quantity_delta, reason, order_id, order_item_id, note, created_at)
+     VALUES (?, ?, 'Order usage', ?, ?, ?, ?)`
+  );
+  const affectedInventoryItems = new Set<number>();
+  for (const row of eligible) {
+    for (const old of db.prepare(
+      "SELECT DISTINCT inventory_item_id FROM inventory_adjustments WHERE order_id = ? AND order_item_id = ? AND reason = 'Order usage'"
+    ).all(orderId, row.id) as Array<{ inventory_item_id: number }>) {
+      affectedInventoryItems.add(old.inventory_item_id);
+    }
+    db.prepare("DELETE FROM inventory_adjustments WHERE order_id = ? AND order_item_id = ? AND reason = 'Order usage'").run(orderId, row.id);
+    db.prepare("DELETE FROM order_item_cost_snapshots WHERE order_item_id = ?").run(row.id);
+    const bindingCost = getMenuItemBindingCost(db, row.menu_item_id);
+    const revenue = row.quantity * row.unit_price;
+    const rawCost = bindingCost.rawCost * row.quantity;
+    insertSnapshot.run(
+      orderId,
+      row.id,
+      row.menu_item_id,
+      row.quantity,
+      revenue,
+      rawCost,
+      revenue - rawCost,
+      JSON.stringify(bindingCost.ingredients),
+      bindingCost.recipeVersionId,
+      bindingCost.bindingType,
+      bindingCost.bindingId
+    );
+    for (const ingredient of bindingCost.ingredients) {
+      insertAdjustment.run(
+        ingredient.inventoryItemId,
+        -roundQuantity(ingredient.quantityBase * row.quantity),
+        orderId,
+        row.id,
+        `${row.name} x ${row.quantity}`,
+        orderTiming.effective_at
+      );
+      affectedInventoryItems.add(ingredient.inventoryItemId);
+    }
+  }
+  const totals = db.prepare(
+    `SELECT COALESCE(SUM(revenue), 0) AS revenue, COALESCE(SUM(raw_cost), 0) AS raw_cost,
+            COALESCE(SUM(profit), 0) AS gross_profit,
+            COALESCE(SUM(CASE WHEN details_json IS NULL OR details_json = '[]' THEN 1 ELSE 0 END), 0) AS missing_recipe_count
+     FROM order_item_cost_snapshots WHERE order_id = ?`
+  ).get(orderId) as { revenue: number; raw_cost: number; gross_profit: number; missing_recipe_count: number };
+  db.prepare(
+    `UPDATE order_cost_snapshots
+     SET revenue = ?, raw_cost = ?, gross_profit = ?, net_profit = ? - other_cost,
+         missing_recipe_count = ?, created_at = CURRENT_TIMESTAMP
+     WHERE order_id = ?`
+  ).run(totals.revenue, totals.raw_cost, totals.gross_profit, totals.gross_profit, totals.missing_recipe_count, orderId);
+  recalculatePhysicalCountDeltas(db, Array.from(affectedInventoryItems));
+  return true;
+}
+
 function getRecipeRawCost(db: Database.Database, recipeId: number, visited = new Set<number>()): { hasRecipe: boolean; rawCost: number; ingredients: MenuRecipe["ingredients"] } {
-  if (visited.has(recipeId)) {
+  const recipe = db.prepare("SELECT current_version_id FROM menu_item_recipes WHERE id = ? AND active = 1").get(recipeId) as { current_version_id: number | null } | undefined;
+  if (!recipe?.current_version_id) return { hasRecipe: false, rawCost: 0, ingredients: [] };
+  return getRecipeVersionRawCost(db, recipe.current_version_id, visited);
+}
+
+function getRecipeVersionRawCost(db: Database.Database, versionId: number, visited = new Set<number>()): { hasRecipe: boolean; rawCost: number; ingredients: MenuRecipe["ingredients"] } {
+  if (visited.has(versionId)) {
     return { hasRecipe: true, rawCost: 0, ingredients: [] };
   }
   const nextVisited = new Set(visited);
-  nextVisited.add(recipeId);
+  nextVisited.add(versionId);
   const rows = db.prepare(
     `SELECT ri.id, ri.inventory_item_id, ii.name AS item_name, ri.quantity_base, ri.unit_label,
             COALESCE((SELECT price_per_base FROM inventory_price_history WHERE inventory_item_id = ii.id AND active = 1 ORDER BY datetime(effective_at) DESC, id DESC LIMIT 1), 0) AS latest_price
-     FROM recipe_ingredients ri
+     FROM recipe_version_ingredients ri
      JOIN inventory_items ii ON ii.id = ri.inventory_item_id
-     WHERE ri.recipe_id = ? AND ri.quantity_base > 0
+     WHERE ri.version_id = ? AND ri.quantity_base > 0
      ORDER BY ii.name`
-  ).all(recipeId) as Array<{ id: number; inventory_item_id: number; item_name: string; quantity_base: number; unit_label: string; latest_price: number }>;
+  ).all(versionId) as Array<{ id: number; inventory_item_id: number; item_name: string; quantity_base: number; unit_label: string; latest_price: number }>;
   const ingredients = rows.map((row) => ({
     id: row.id,
     inventoryItemId: row.inventory_item_id,
@@ -1228,13 +1797,16 @@ function getRecipeRawCost(db: Database.Database, recipeId: number, visited = new
     rawCost: roundMoney(row.quantity_base * row.latest_price)
   }));
   const childRows = db.prepare(
-    `SELECT id, child_recipe_id, quantity_base, unit_label
-     FROM recipe_child_ingredients
-     WHERE recipe_id = ? AND quantity_base > 0
-     ORDER BY id`
-  ).all(recipeId) as Array<{ id: number; child_recipe_id: number; quantity_base: number; unit_label: string }>;
+    `SELECT rci.id, rci.child_recipe_id, COALESCE(rci.child_version_id, child.current_version_id) AS child_version_id,
+            rci.quantity_base, rci.unit_label
+     FROM recipe_version_child_ingredients rci
+     JOIN menu_item_recipes child ON child.id = rci.child_recipe_id
+     WHERE rci.version_id = ? AND rci.quantity_base > 0
+     ORDER BY rci.id`
+  ).all(versionId) as Array<{ id: number; child_recipe_id: number; child_version_id: number | null; quantity_base: number; unit_label: string }>;
   for (const child of childRows) {
-    const childCost = getRecipeRawCost(db, child.child_recipe_id, nextVisited);
+    if (!child.child_version_id) continue;
+    const childCost = getRecipeVersionRawCost(db, child.child_version_id, nextVisited);
     for (const ingredient of childCost.ingredients) {
       const existing = ingredients.find((item) => item.inventoryItemId === ingredient.inventoryItemId && item.unitLabel === ingredient.unitLabel);
       const quantityBase = roundQuantity(ingredient.quantityBase * child.quantity_base);
@@ -1256,6 +1828,60 @@ function getRecipeRawCost(db: Database.Database, recipeId: number, visited = new
     }
   }
   return { hasRecipe: true, rawCost: roundMoney(ingredients.reduce((sum, item) => sum + item.rawCost, 0)), ingredients };
+}
+
+function getMenuItemBindingCost(db: Database.Database, menuItemId: number): {
+  hasBinding: boolean;
+  rawCost: number;
+  ingredients: MenuRecipe["ingredients"];
+  recipeVersionId: number | null;
+  bindingType: "recipe" | "item" | null;
+  bindingId: number | null;
+} {
+  const binding = db.prepare(
+    `SELECT id, binding_type, recipe_id, inventory_item_id, quantity_base, unit_label
+     FROM menu_item_inventory_bindings WHERE menu_item_id = ?`
+  ).get(menuItemId) as {
+    id: number;
+    binding_type: "recipe" | "item";
+    recipe_id: number | null;
+    inventory_item_id: number | null;
+    quantity_base: number;
+    unit_label: string;
+  } | undefined;
+  if (!binding) {
+    return { hasBinding: false, rawCost: 0, ingredients: [], recipeVersionId: null, bindingType: null, bindingId: null };
+  }
+  if (binding.binding_type === "recipe" && binding.recipe_id) {
+    const recipe = db.prepare("SELECT current_version_id FROM menu_item_recipes WHERE id = ? AND active = 1").get(binding.recipe_id) as { current_version_id: number | null } | undefined;
+    if (!recipe?.current_version_id) return { hasBinding: false, rawCost: 0, ingredients: [], recipeVersionId: null, bindingType: "recipe", bindingId: binding.id };
+    const cost = getRecipeVersionRawCost(db, recipe.current_version_id);
+    const multiplier = binding.quantity_base || 1;
+    const ingredients = cost.ingredients.map((ingredient) => ({
+      ...ingredient,
+      quantityBase: roundQuantity(ingredient.quantityBase * multiplier),
+      rawCost: roundMoney(ingredient.rawCost * multiplier)
+    }));
+    return { hasBinding: true, rawCost: roundMoney(cost.rawCost * multiplier), ingredients, recipeVersionId: recipe.current_version_id, bindingType: "recipe", bindingId: binding.id };
+  }
+  if (binding.binding_type === "item" && binding.inventory_item_id) {
+    const item = db.prepare(
+      `SELECT ii.id, ii.name, iu.short_name,
+              COALESCE((SELECT price_per_base FROM inventory_price_history WHERE inventory_item_id = ii.id AND active = 1 ORDER BY datetime(effective_at) DESC, id DESC LIMIT 1), 0) AS latest_price
+       FROM inventory_items ii JOIN inventory_units iu ON iu.id = ii.base_unit_id WHERE ii.id = ?`
+    ).get(binding.inventory_item_id) as { id: number; name: string; short_name: string; latest_price: number } | undefined;
+    if (!item) return { hasBinding: false, rawCost: 0, ingredients: [], recipeVersionId: null, bindingType: "item", bindingId: binding.id };
+    const rawCost = roundMoney(item.latest_price * binding.quantity_base);
+    return {
+      hasBinding: true,
+      rawCost,
+      ingredients: [{ id: item.id, inventoryItemId: item.id, itemName: item.name, quantityBase: binding.quantity_base, unitLabel: item.short_name, latestPrice: item.latest_price, rawCost }],
+      recipeVersionId: null,
+      bindingType: "item",
+      bindingId: binding.id
+    };
+  }
+  return { hasBinding: false, rawCost: 0, ingredients: [], recipeVersionId: null, bindingType: binding.binding_type, bindingId: binding.id };
 }
 
 function listRecipeChildIngredients(db: Database.Database, recipeId: number): MenuRecipe["childIngredients"] {
@@ -1410,6 +2036,85 @@ function inferCategory(name: string): string {
   return "Other";
 }
 
+type InventoryTimelineEvent = {
+  event_kind: "restock" | "adjustment" | "count";
+  event_time: string;
+  event_priority: number;
+  event_id: number;
+  quantity_delta: number;
+  counted_quantity: number | null;
+  reduction_delta: number | null;
+};
+
+function listInventoryTimeline(db: Database.Database, inventoryItemId: number): InventoryTimelineEvent[] {
+  return db.prepare(
+    `SELECT * FROM (
+       SELECT 'restock' AS event_kind, entry_date AS event_time, 10 AS event_priority, id AS event_id,
+              quantity_base AS quantity_delta, NULL AS counted_quantity, NULL AS reduction_delta
+       FROM inventory_restock_entries
+       WHERE inventory_item_id = ? AND COALESCE(entry_type, 'purchase') = 'purchase'
+       UNION ALL
+       SELECT 'adjustment', created_at, 20, id, quantity_delta, NULL, NULL
+       FROM inventory_adjustments
+       WHERE inventory_item_id = ?
+       UNION ALL
+       SELECT 'count', count_date, 30, id, 0, quantity_base, reduction_delta
+       FROM inventory_physical_counts
+       WHERE inventory_item_id = ?
+     )
+     ORDER BY datetime(event_time) ASC, event_priority ASC, event_id ASC`
+  ).all(inventoryItemId, inventoryItemId, inventoryItemId) as InventoryTimelineEvent[];
+}
+
+function replayInventoryTimeline(
+  db: Database.Database,
+  inventoryItemId: number,
+  recalculateCounts: boolean
+): { currentStock: number; physicalReduction: number } {
+  let stock = 0;
+  let physicalReduction = 0;
+  const updateDelta = recalculateCounts
+    ? db.prepare("UPDATE inventory_physical_counts SET reduction_delta = ? WHERE id = ?")
+    : null;
+  for (const event of listInventoryTimeline(db, inventoryItemId)) {
+    if (event.event_kind !== "count") {
+      stock = roundQuantity(stock + Number(event.quantity_delta ?? 0));
+      continue;
+    }
+    const counted = roundQuantity(Number(event.counted_quantity ?? 0));
+    if (event.reduction_delta === null) {
+      // Existing installations may contain pre-v3 absolute counts. They remain a baseline
+      // until a manager edits them, which converts them to a validated reduction event.
+      physicalReduction += Math.max(0, stock - counted);
+      stock = counted;
+      continue;
+    }
+    let delta = roundQuantity(Number(event.reduction_delta ?? 0));
+    if (recalculateCounts) {
+      if (counted > stock + 0.0005) {
+        throw new Error(
+          `Physical count cannot increase stock. Calculated stock immediately before this count is ${roundQuantity(stock)}; enter that amount or less, or use Restock for increases.`
+        );
+      }
+      delta = roundQuantity(counted - stock);
+      if (Math.abs(delta) < 0.0005) delta = 0;
+      updateDelta!.run(delta, event.event_id);
+    }
+    if (delta > 0) {
+      throw new Error("Physical count cannot increase stock. Use Restock for increases.");
+    }
+    physicalReduction += Math.abs(Math.min(0, delta));
+    stock = roundQuantity(stock + delta);
+  }
+  return { currentStock: roundQuantity(stock), physicalReduction: roundQuantity(physicalReduction) };
+}
+
+function recalculatePhysicalCountDeltas(db: Database.Database, inventoryItemIds: number[]): void {
+  for (const inventoryItemId of Array.from(new Set(inventoryItemIds.filter((id) => Number.isInteger(id) && id > 0)))) {
+    replayInventoryTimeline(db, inventoryItemId, true);
+  }
+}
+
 function getInventoryMovementStats(db: Database.Database, inventoryItemId: number): {
   current_stock: number;
   stock_used: number;
@@ -1427,20 +2132,6 @@ function getInventoryMovementStats(db: Database.Database, inventoryItemId: numbe
      ORDER BY datetime(count_date) DESC, id DESC
      LIMIT 1`
   ).get(inventoryItemId) as { quantity_base: number; count_date: string } | undefined;
-  const sinceClause = latestManualCount ? "AND datetime(entry_date) > datetime(?)" : "";
-  const sinceAdjustClause = latestManualCount ? "AND datetime(created_at) > datetime(?)" : "";
-  const restockParams = latestManualCount ? [inventoryItemId, latestManualCount.count_date] : [inventoryItemId];
-  const adjustParams = latestManualCount ? [inventoryItemId, latestManualCount.count_date] : [inventoryItemId];
-  const purchaseQuantity = db.prepare(
-    `SELECT COALESCE(SUM(quantity_base), 0) AS quantity
-     FROM inventory_restock_entries
-     WHERE inventory_item_id = ? AND COALESCE(entry_type, 'purchase') = 'purchase' ${sinceClause}`
-  ).get(...restockParams) as { quantity: number };
-  const adjustmentQuantity = db.prepare(
-    `SELECT COALESCE(SUM(quantity_delta), 0) AS quantity
-     FROM inventory_adjustments
-     WHERE inventory_item_id = ? ${sinceAdjustClause}`
-  ).get(...adjustParams) as { quantity: number };
   const stockUsed = db.prepare(
     `SELECT COALESCE(SUM(ABS(quantity_delta)), 0) AS quantity
      FROM inventory_adjustments
@@ -1453,8 +2144,8 @@ function getInventoryMovementStats(db: Database.Database, inventoryItemId: numbe
      ORDER BY datetime(entry_date) DESC, id DESC
      LIMIT 1`
   ).get(inventoryItemId) as { quantity_base: number; entry_date: string } | undefined;
-  const baseline = latestManualCount?.quantity_base ?? 0;
-  const currentStock = baseline + Number(purchaseQuantity.quantity ?? 0) + Number(adjustmentQuantity.quantity ?? 0);
+  const timeline = replayInventoryTimeline(db, inventoryItemId, false);
+  const currentStock = timeline.currentStock;
   const hasRecentManualCount = latestManualCount ? Date.now() - new Date(latestManualCount.count_date).getTime() <= 6 * 60 * 60 * 1000 : false;
   return {
     current_stock: roundQuantity(currentStock),
@@ -1463,7 +2154,7 @@ function getInventoryMovementStats(db: Database.Database, inventoryItemId: numbe
     last_count_at: latestManualCount?.count_date ?? null,
     last_restock_at: latestRestock?.entry_date ?? null,
     latest_restock_quantity: roundQuantity(Number(latestRestock?.quantity_base ?? 0)),
-    estimated_wastage: 0,
+    estimated_wastage: timeline.physicalReduction,
     count_required: hasRecentManualCount ? 0 : 1
   };
 }
@@ -1517,6 +2208,68 @@ function toInventoryItem(row: {
 
 function cleanText(value: string): string {
   return value.replace(/\s+/g, " ").trim();
+}
+
+function validateHistoricalChangeOptions(options: HistoricalChangeOptions): void {
+  const scope = options.historicalScope ?? "future";
+  if (!(["future", "all", "range"] as const).includes(scope)) {
+    throw new Error("Historical scope must be future, all, or range.");
+  }
+  if (scope === "range") {
+    validateDateRange(options, true);
+  }
+}
+
+function validateDateRange(
+  input: { start?: string | null; end?: string | null },
+  requireBoundary: boolean
+): void {
+  const start = input.start?.trim() || null;
+  const end = input.end?.trim() || null;
+  if (requireBoundary && !start && !end) {
+    throw new Error("Choose at least one date for a custom historical range.");
+  }
+  if (start) validateBusinessDate(start, "Start date");
+  if (end) validateBusinessDate(end, "End date");
+  if (start && end && start > end) {
+    throw new Error("Start date cannot be after end date.");
+  }
+}
+
+function validateBusinessDate(value: string, label: string): void {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) throw new Error(`${label} must use YYYY-MM-DD.`);
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const parsed = new Date(Date.UTC(year, month - 1, day));
+  if (parsed.getUTCFullYear() !== year || parsed.getUTCMonth() !== month - 1 || parsed.getUTCDate() !== day) {
+    throw new Error(`${label} is invalid.`);
+  }
+}
+
+function normalizeOptionalBusinessDate(value: string | null | undefined, label: string): string | null {
+  const date = value?.trim() || null;
+  if (!date) return null;
+  validateBusinessDate(date, label);
+  return date;
+}
+
+function normalizeOptionalInventoryTimestamp(value: string | null | undefined, label: string): string | null {
+  const timestamp = value?.trim() || null;
+  if (!timestamp) return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(timestamp)) {
+    validateBusinessDate(timestamp, label);
+    return `${timestamp} 00:00:00`;
+  }
+  const match = /^(\d{4}-\d{2}-\d{2})[ T](\d{2}):(\d{2})(?::(\d{2})(\.\d{1,3})?)?$/.exec(timestamp);
+  if (!match) throw new Error(`${label} must use YYYY-MM-DDTHH:mm or YYYY-MM-DDTHH:mm:ss.`);
+  validateBusinessDate(match[1], label);
+  const hour = Number(match[2]);
+  const minute = Number(match[3]);
+  const second = Number(match[4] ?? 0);
+  if (hour > 23 || minute > 59 || second > 59) throw new Error(`${label} is invalid.`);
+  return `${match[1]} ${match[2]}:${match[3]}:${String(second).padStart(2, "0")}${match[5] ?? ""}`;
 }
 
 function roundMoney(value: number): number {

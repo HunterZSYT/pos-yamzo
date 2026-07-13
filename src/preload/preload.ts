@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron";
-import type { BrandingSettings, EmailSettings, GmailOAuthConfig, MenuDataSetting, MenuItemInput, MenuTypeSetting, OrderItemInput, OrderSource, PaymentMethod, ReceiptPaymentInfo } from "../shared/types.js";
+import type { BrandingSettings, EmailSettingsInput, GoogleOAuthClientInput, GoogleSheetsSettingsInput, HistoricalScope, MenuDataSetting, MenuItemInput, MenuTypeSetting, OrderItemInput, OrderSource, PaymentMethod, PhysicalCountInput, PhysicalCountUpdateInput, ReceiptPaymentInfo, RecipeSaveInput, RestockEntryInput, RestockEntryUpdateInput, SalesSummary } from "../shared/types.js";
 
 const api = {
   auth: {
@@ -17,40 +17,44 @@ const api = {
     previewBackfill: (input?: { start?: string | null; end?: string | null }) => ipcRenderer.invoke("inventory:previewBackfill", input),
     applyBackfill: (input?: { start?: string | null; end?: string | null; mode?: "missing" | "replace"; reason?: string | null }) => ipcRenderer.invoke("inventory:applyBackfill", input),
     recalculateOrderUsage: (orderId: number) => ipcRenderer.invoke("inventory:recalculateOrderUsage", orderId),
-    chooseAndImportCsv: () => ipcRenderer.invoke("inventory:chooseAndImportCsv"),
-    importCsv: (csvPath: string) => ipcRenderer.invoke("inventory:importCsv", csvPath),
+    chooseAndImportCsv: (options?: { snapshotMode?: boolean; historicalScope?: HistoricalScope; start?: string | null; end?: string | null; reason?: string | null }) => ipcRenderer.invoke("inventory:chooseAndImportCsv", options),
+    importCsv: (csvPath: string, options?: { snapshotMode?: boolean; historicalScope?: HistoricalScope; start?: string | null; end?: string | null; reason?: string | null }) => ipcRenderer.invoke("inventory:importCsv", csvPath, options),
     chooseAndImportItemsCsv: () => ipcRenderer.invoke("inventory:chooseAndImportItemsCsv"),
     importItemsCsv: (csvPath: string) => ipcRenderer.invoke("inventory:importItemsCsv", csvPath),
     saveItem: (input: { id?: number; name: string; categoryId?: number | null; baseUnitId: number; lowStockThreshold?: number; active?: boolean }) =>
       ipcRenderer.invoke("inventory:saveItem", input),
     deleteItem: (id: number) => ipcRenderer.invoke("inventory:deleteItem", id),
-    saveRecipe: (input: { menuItemId: number; ingredients: Array<{ kind?: "raw" | "recipe"; inventoryItemId?: number; childRecipeId?: number; quantityBase: number; unitLabel: string }> }) =>
-      ipcRenderer.invoke("inventory:saveRecipe", input),
+    saveRecipe: (input: RecipeSaveInput, options?: { snapshotMode?: boolean; historicalScope?: HistoricalScope; start?: string | null; end?: string | null; reason?: string | null }) =>
+      ipcRenderer.invoke("inventory:saveRecipe", input, options),
+    listBindings: () => ipcRenderer.invoke("inventory:listBindings"),
+    previewBindingImpact: (input: { menuItemId: number; start?: string | null; end?: string | null }) => ipcRenderer.invoke("inventory:previewBindingImpact", input),
+    saveBinding: (input: { menuItemId: number; bindingType: "recipe" | "item"; recipeId?: number | null; inventoryItemId?: number | null; quantityBase?: number; unitLabel?: string; historicalScope?: HistoricalScope; start?: string | null; end?: string | null; reason?: string | null }) => ipcRenderer.invoke("inventory:saveBinding", input),
+    removeBinding: (menuItemId: number, options?: { historicalScope?: HistoricalScope; start?: string | null; end?: string | null; reason?: string | null }) => ipcRenderer.invoke("inventory:removeBinding", menuItemId, options),
     setRecipeRestockEnabled: (menuItemId: number, enabled: boolean) => ipcRenderer.invoke("inventory:setRecipeRestockEnabled", menuItemId, enabled),
     setRecipeUseInRecipeEnabled: (menuItemId: number, enabled: boolean) => ipcRenderer.invoke("inventory:setRecipeUseInRecipeEnabled", menuItemId, enabled),
     saveCategory: (input: { id?: number; name: string; active?: boolean }) => ipcRenderer.invoke("inventory:saveCategory", input),
     removeCategory: (id: number) => ipcRenderer.invoke("inventory:removeCategory", id),
     saveUnit: (input: { id?: number; name: string; shortName: string; active?: boolean }) => ipcRenderer.invoke("inventory:saveUnit", input),
     removeUnit: (id: number) => ipcRenderer.invoke("inventory:removeUnit", id),
-    addRestock: (input: { inventoryItemId: number; itemType?: "raw" | "recipe"; entryType?: "purchase" | "adjustment"; recipeId?: number | null; quantity: number; unitLabel?: string; totalCost?: number; supplierName?: string | null; responsiblePerson?: string | null; note?: string | null; adjustmentReason?: string | null; entryDate?: string | null }) =>
+    addRestock: (input: RestockEntryInput) =>
       ipcRenderer.invoke("inventory:addRestock", input),
-    updateRestock: (input: { id: number; inventoryItemId: number; itemType?: "raw" | "recipe"; entryType?: "purchase" | "adjustment"; recipeId?: number | null; quantity: number; unitLabel?: string; totalCost?: number; supplierName?: string | null; responsiblePerson?: string | null; note?: string | null; adjustmentReason?: string | null }) =>
+    updateRestock: (input: RestockEntryUpdateInput) =>
       ipcRenderer.invoke("inventory:updateRestock", input),
     deleteRestock: (id: number) => ipcRenderer.invoke("inventory:deleteRestock", id),
-    addPhysicalCount: (input: { inventoryItemId: number; quantity: number; responsiblePerson?: string | null; note?: string | null; countDate?: string | null; source?: "manual" | "restock" }) =>
+    addPhysicalCount: (input: PhysicalCountInput) =>
       ipcRenderer.invoke("inventory:addPhysicalCount", input),
-    updatePhysicalCount: (input: { id: number; inventoryItemId: number; quantity: number; responsiblePerson?: string | null; note?: string | null; reason: string }) =>
+    updatePhysicalCount: (input: PhysicalCountUpdateInput) =>
       ipcRenderer.invoke("inventory:updatePhysicalCount", input),
-    deletePhysicalCount: (id: number, reason: string) => ipcRenderer.invoke("inventory:deletePhysicalCount", id, reason),
+    deletePhysicalCount: (id: number, reason?: string) => ipcRenderer.invoke("inventory:deletePhysicalCount", id, reason),
     addPrice: (input: { inventoryItemId: number; pricePerBase: number; effectiveAt?: string | null; responsiblePerson?: string | null; note?: string | null }) =>
       ipcRenderer.invoke("inventory:addPrice", input),
     saveCostCategory: (input: { id?: number; name: string; active?: boolean; sortOrder?: number }) => ipcRenderer.invoke("inventory:saveCostCategory", input),
     removeCostCategory: (id: number) => ipcRenderer.invoke("inventory:removeCostCategory", id),
     addCost: (input: { categoryId?: number | null; costName: string; amount: number; paymentMethod?: string | null; responsiblePerson?: string | null; note?: string | null; costDate?: string | null }) =>
       ipcRenderer.invoke("inventory:addCost", input),
-    updateCost: (input: { id: number; categoryId?: number | null; costName: string; amount: number; paymentMethod?: string | null; responsiblePerson?: string | null; note?: string | null; reason: string }) =>
+    updateCost: (input: { id: number; categoryId?: number | null; costName: string; amount: number; paymentMethod?: string | null; responsiblePerson?: string | null; note?: string | null; costDate?: string | null; reason?: string | null }) =>
       ipcRenderer.invoke("inventory:updateCost", input),
-    deleteCost: (id: number, reason: string) => ipcRenderer.invoke("inventory:deleteCost", id, reason)
+    deleteCost: (id: number, reason?: string) => ipcRenderer.invoke("inventory:deleteCost", id, reason)
   },
   menu: {
     list: () => ipcRenderer.invoke("menu:list"),
@@ -61,13 +65,14 @@ const api = {
     deleteItem: (id: number) => ipcRenderer.invoke("menu:deleteItem", id)
   },
   orders: {
-    create: (input: { source: OrderSource; tableNumber?: string; note?: string; externalOrderId?: string | null }) => ipcRenderer.invoke("orders:create", input),
+    create: (input: { source: OrderSource; tableNumber?: string; note?: string; externalOrderId?: string | null; orderDate?: string }) => ipcRenderer.invoke("orders:create", input),
     addItem: (orderId: number, input: OrderItemInput) => ipcRenderer.invoke("orders:addItem", orderId, input),
     sendKitchen: (orderId: number, allowExternal?: boolean) => ipcRenderer.invoke("orders:sendKitchen", orderId, allowExternal),
     discount: (orderId: number, discount: number) => ipcRenderer.invoke("orders:discount", orderId, discount),
     updateNote: (orderId: number, note: string) => ipcRenderer.invoke("orders:updateNote", orderId, note),
     updateInfo: (orderId: number, input: { source: OrderSource; tableNumber?: string | null; note?: string | null; externalOrderId?: string | null }) =>
       ipcRenderer.invoke("orders:updateInfo", orderId, input),
+    updateDate: (orderId: number, orderDate: string) => ipcRenderer.invoke("orders:updateDate", orderId, orderDate),
     updateItem: (orderItemId: number, input: { quantity: number; note?: string | null; parcel?: boolean }) => ipcRenderer.invoke("orders:updateItem", orderItemId, input),
     removeItem: (orderItemId: number, reason?: string) => ipcRenderer.invoke("orders:removeItem", orderItemId, reason),
     settle: (orderId: number, method: PaymentMethod, amount?: number, reference?: string, host?: string) => ipcRenderer.invoke("orders:settle", orderId, method, amount, reference, host),
@@ -96,7 +101,7 @@ const api = {
     sample: (type: "test" | "kot" | "receipt") => ipcRenderer.invoke("print:sample", type)
   },
   reports: {
-    sales: (start?: string, end?: string) => ipcRenderer.invoke("reports:sales", start, end)
+    sales: (range?: { startDate?: string; endDate?: string }): Promise<SalesSummary> => ipcRenderer.invoke("reports:sales", range)
   },
   settings: {
     getBranding: () => ipcRenderer.invoke("settings:getBranding"),
@@ -115,12 +120,21 @@ const api = {
     getMenuData: () => ipcRenderer.invoke("settings:getMenuData"),
     setMenuData: (menuData: MenuDataSetting[]) => ipcRenderer.invoke("settings:setMenuData", menuData),
     getMenuTypes: () => ipcRenderer.invoke("settings:getMenuTypes"),
-    setMenuTypes: (menuTypes: MenuTypeSetting[]) => ipcRenderer.invoke("settings:setMenuTypes", menuTypes)
+    setMenuTypes: (menuTypes: MenuTypeSetting[]) => ipcRenderer.invoke("settings:setMenuTypes", menuTypes),
+    getGoogleSheets: () => ipcRenderer.invoke("settings:getGoogleSheets"),
+    saveGoogleOAuthClient: (input: GoogleOAuthClientInput) => ipcRenderer.invoke("settings:saveGoogleOAuthClient", input),
+    setGoogleSheets: (settings: GoogleSheetsSettingsInput) => ipcRenderer.invoke("settings:setGoogleSheets", settings),
+    connectGoogleSheets: () => ipcRenderer.invoke("settings:connectGoogleSheets"),
+    disconnectGoogle: () => ipcRenderer.invoke("settings:disconnectGoogle"),
+    listGoogleSpreadsheets: () => ipcRenderer.invoke("settings:listGoogleSpreadsheets"),
+    listGoogleSheetTabs: (spreadsheetId?: string) => ipcRenderer.invoke("settings:listGoogleSheetTabs", spreadsheetId),
+    openGoogleAppsScriptSettings: () => ipcRenderer.invoke("settings:openGoogleAppsScriptSettings"),
+    syncGoogleSheets: () => ipcRenderer.invoke("settings:syncGoogleSheets"),
+    installGoogleReportTool: () => ipcRenderer.invoke("settings:installGoogleReportTool")
   },
   email: {
     getSettings: () => ipcRenderer.invoke("email:getSettings"),
-    saveSettings: (settings: EmailSettings) => ipcRenderer.invoke("email:saveSettings", settings),
-    authUrl: (config: GmailOAuthConfig) => ipcRenderer.invoke("email:authUrl", config),
+    saveSettings: (settings: EmailSettingsInput) => ipcRenderer.invoke("email:saveSettings", settings),
     clearAuth: () => ipcRenderer.invoke("email:clearAuth"),
     dailyPreview: () => ipcRenderer.invoke("email:dailyPreview"),
     sendDaily: () => ipcRenderer.invoke("email:sendDaily")

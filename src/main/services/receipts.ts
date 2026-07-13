@@ -2,9 +2,11 @@ import type Database from "better-sqlite3";
 import { calculateOrderTotals } from "../domain/pricing.js";
 import type { BrandingSettings, ReceiptPaymentInfo } from "../../shared/types.js";
 import { centerReceiptText, formatReceiptDateTime, formatSourceLabel, formatTk, leftRightReceiptLine, receiptSeparator, receiptTextLine, wrapReceiptText } from "./receiptFormatter.js";
+import { getMenuTypes } from "./settings.js";
 
 export function buildKitchenTicket(db: Database.Database, orderId: number, itemIds: number[], title = "Yamzo Kitchen Order"): string {
   const order = db.prepare("SELECT * FROM orders WHERE id = ?").get(orderId) as Record<string, unknown>;
+  const sourceLabel = configuredSourceLabel(db, String(order.source));
   const placeholders = itemIds.map(() => "?").join(",");
   const items = placeholders
     ? (db
@@ -18,9 +20,9 @@ export function buildKitchenTicket(db: Database.Database, orderId: number, itemI
     receiptSeparator(),
     "",
     `ORDER: ${order.order_number}`,
-    order.table_number ? `TABLE: ${order.table_number}` : `Order type: ${formatSource(String(order.source))}`,
+    order.table_number ? `TABLE: ${order.table_number}` : `Order type: ${sourceLabel}`,
     `TIME:  ${new Date().toLocaleString()}`,
-    `TYPE:  ${formatSourceLabel(String(order.source))}`,
+    `TYPE:  ${sourceLabel}`,
     "",
     receiptSeparator(),
     "",
@@ -38,6 +40,7 @@ export function buildKitchenTicket(db: Database.Database, orderId: number, itemI
 
 export function buildAuditCopy(db: Database.Database, orderId: number): string {
   const order = db.prepare("SELECT * FROM orders WHERE id = ?").get(orderId) as Record<string, unknown>;
+  const sourceLabel = configuredSourceLabel(db, String(order.source));
   const items = db
     .prepare("SELECT name, quantity, unit_price, note, parcel, status FROM order_items WHERE order_id = ? ORDER BY id")
     .all(orderId) as Array<{ name: string; quantity: number; unit_price: number; note: string | null; parcel: number; status: string }>;
@@ -46,7 +49,7 @@ export function buildAuditCopy(db: Database.Database, orderId: number): string {
   return [
     "YAMZO INTERNAL ORDER COPY",
     "--------------------------------",
-    order.table_number ? `TABLE: ${order.table_number}` : `ORDER TYPE: ${formatSource(String(order.source))}`,
+    order.table_number ? `TABLE: ${order.table_number}` : `ORDER TYPE: ${sourceLabel}`,
     `RECEIPT: ${order.order_number}`,
     `STATUS: ${formatSource(String(order.status))}`,
     `CREATED: ${order.created_at}`,
@@ -90,6 +93,7 @@ export function buildReceipt(
   const paymentLines = renderPaymentLines(payments, paymentInfo);
   const printsLogo = Boolean(branding.showLogo && branding.logoPath);
   const hostName = paymentInfo?.host?.trim() || "Cashier";
+  const sourceLabel = configuredSourceLabel(db, String(order.source));
 
   return cleanReceiptLines([
     printsLogo ? "[[YAMZO_LOGO]]" : "",
@@ -105,7 +109,7 @@ export function buildReceipt(
     leftRightReceiptLine(`HOST: ${hostName}`, date),
     leftRightReceiptLine(`ORDER: ${String(order.order_number)}`, time),
     order.table_number ? receiptTextLine(`TABLE: ${order.table_number}`) : "",
-    receiptTextLine(`TYPE:  ${formatSourceLabel(String(order.source))}`),
+    receiptTextLine(`TYPE:  ${sourceLabel}`),
     "",
     receiptSeparator(),
     "",
@@ -154,6 +158,10 @@ function loadReceiptItems(db: Database.Database, orderId: number, consolidateUnm
 
 function formatSource(value: string): string {
   return value.replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function configuredSourceLabel(db: Database.Database, value: string): string {
+  return getMenuTypes(db).find((type) => type.key === value)?.label.trim() || formatSourceLabel(value);
 }
 
 function splitAddress(address: string): string[] {

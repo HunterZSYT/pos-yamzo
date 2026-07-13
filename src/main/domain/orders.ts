@@ -8,13 +8,18 @@ import { createOrderCostSnapshot, reverseOrderCostSnapshot } from "./inventory.j
 
 export function createOrder(
   db: Database.Database,
-  input: { source: OrderSource; tableNumber?: string; note?: string; externalOrderId?: string | null }
+  input: { source: OrderSource; tableNumber?: string; note?: string; externalOrderId?: string | null; orderDate?: string }
 ): OrderSummary {
-  const orderNumber = nextOrderNumber(db);
-  const result = db
-    .prepare("INSERT INTO orders (order_number, source, table_number, note, external_order_id) VALUES (?, ?, ?, ?, ?)")
-    .run(orderNumber, input.source, input.tableNumber ?? null, input.note ?? null, cleanExternalOrderId(input.externalOrderId));
-  return getOrderSummary(db, Number(result.lastInsertRowid));
+  const orderDate = normalizeBusinessDate(input.orderDate ?? localBusinessDate());
+  const create = db.transaction(() => {
+    const orderNumber = nextOrderNumber(db, orderDate);
+    return Number(
+      db
+        .prepare("INSERT INTO orders (order_number, source, table_number, note, external_order_id, order_date) VALUES (?, ?, ?, ?, ?, ?)")
+        .run(orderNumber, input.source, input.tableNumber ?? null, input.note ?? null, cleanExternalOrderId(input.externalOrderId), orderDate).lastInsertRowid
+    );
+  });
+  return getOrderSummary(db, create());
 }
 
 export function addOrderItem(db: Database.Database, orderId: number, input: OrderItemInput): number {
@@ -112,6 +117,37 @@ export function applyDiscount(db: Database.Database, orderId: number, discount: 
 
 export function updateOrderNote(db: Database.Database, orderId: number, note: string): OrderSummary {
   db.prepare("UPDATE orders SET note = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(note.trim() || null, orderId);
+  return getOrderSummary(db, orderId);
+}
+
+export function updateOrderDate(db: Database.Database, orderId: number, value: string): OrderSummary {
+  const orderDate = normalizeBusinessDate(value);
+  const update = db.transaction(() => {
+    const order = db
+      .prepare("SELECT order_number, order_date, external_order_id FROM orders WHERE id = ?")
+      .get(orderId) as { order_number: string; order_date: string; external_order_id: string | null } | undefined;
+    if (!order) {
+      throw new Error("Order not found.");
+    }
+    if (order.order_date === orderDate) {
+      return;
+    }
+
+    const orderNumber = nextOrderNumber(db, orderDate);
+    db.prepare("UPDATE orders SET order_number = ?, order_date = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(orderNumber, orderDate, orderId);
+    db.prepare(
+      "INSERT INTO audit_logs (action, entity_type, entity_id, details) VALUES ('update_order_date', 'order', ?, ?)"
+    ).run(
+      String(orderId),
+      JSON.stringify({
+        reason: "Manager date correction",
+        before: { orderDate: order.order_date, orderNumber: order.order_number },
+        after: { orderDate, orderNumber },
+        externalOrderId: order.external_order_id
+      })
+    );
+  });
+  update();
   return getOrderSummary(db, orderId);
 }
 
@@ -278,7 +314,18 @@ export function settleOrder(db: Database.Database, orderId: number, method: Paym
   const tx = db.transaction(() => {
     db.prepare("INSERT INTO payments (order_id, method, amount) VALUES (?, ?, ?)").run(orderId, method, paidAmount);
     createOrderCostSnapshot(db, orderId);
-    db.prepare("UPDATE orders SET status = 'settled', settled_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(orderId);
+    db.prepare("UPDATE kitchen_tickets SET completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP) WHERE order_id = ? AND completed_at IS NULL").run(orderId);
+    db.prepare(
+      `UPDATE orders
+       SET status = 'settled',
+           settled_at = CURRENT_TIMESTAMP,
+           kitchen_completed_at = CASE
+             WHEN first_kitchen_sent_at IS NOT NULL THEN COALESCE(kitchen_completed_at, CURRENT_TIMESTAMP)
+             ELSE kitchen_completed_at
+           END,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?`
+    ).run(orderId);
     enqueuePrintJob(db, "receipt", buildReceipt(db, orderId, branding, "RECEIPT", { paid: true, method, amount: paidAmount, reference, host }), getPrinterName(db) || null);
   });
   tx();
@@ -293,6 +340,7 @@ export function getOrderSummary(db: Database.Database, orderId: number): OrderSu
     source: OrderSource;
     table_number: string | null;
     status: OrderSummary["status"];
+    order_date: string;
     created_at: string;
     updated_at: string;
     first_kitchen_sent_at: string | null;
@@ -313,6 +361,7 @@ export function getOrderSummary(db: Database.Database, orderId: number): OrderSu
     source: order.source,
     tableNumber: order.table_number,
     status: order.status,
+    orderDate: order.order_date,
     subtotal: totals.subtotal,
     discount: totals.discount,
     total: totals.total,
@@ -504,14 +553,41 @@ function cleanExternalOrderId(value?: string | null): string | null {
   return value?.trim() || null;
 }
 
-function nextOrderNumber(db: Database.Database): string {
-  const now = new Date();
-  const year = now.getFullYear();
-  const month = now.toLocaleString("en-US", { month: "short" }).toLowerCase();
-  const day = String(now.getDate()).padStart(2, "0");
+function nextOrderNumber(db: Database.Database, orderDate: string): string {
+  const [year, monthNumber, day] = orderDate.split("-");
+  const month = MONTH_NAMES[Number(monthNumber) - 1];
   const prefix = `yamzo-${year}-${month}-${day}`;
-  const row = db
-    .prepare("SELECT COUNT(*) AS count FROM orders WHERE order_number LIKE ?")
-    .get(`${prefix}-%`) as { count: number };
-  return `${prefix}-${String(row.count + 111).padStart(3, "0")}`;
+  const rows = db
+    .prepare("SELECT order_number FROM orders WHERE order_number LIKE ?")
+    .all(`${prefix}-%`) as Array<{ order_number: string }>;
+  const highestSuffix = rows.reduce((highest, row) => {
+    const suffix = Number(row.order_number.slice(prefix.length + 1));
+    return Number.isInteger(suffix) && suffix >= 111 ? Math.max(highest, suffix) : highest;
+  }, 110);
+  return `${prefix}-${String(highestSuffix + 1).padStart(3, "0")}`;
+}
+
+const MONTH_NAMES = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"] as const;
+
+function localBusinessDate(now = new Date()): string {
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function normalizeBusinessDate(value: string): string {
+  const date = value.trim();
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
+  if (!match) {
+    throw new Error("Order date must use YYYY-MM-DD.");
+  }
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const parsed = new Date(Date.UTC(year, month - 1, day));
+  if (parsed.getUTCFullYear() !== year || parsed.getUTCMonth() !== month - 1 || parsed.getUTCDate() !== day) {
+    throw new Error("Order date is invalid.");
+  }
+  return date;
 }

@@ -1,4 +1,4 @@
-import { dialog, ipcMain } from "electron";
+import { dialog, ipcMain, shell } from "electron";
 import type Database from "better-sqlite3";
 import { login, changePassword } from "./domain/auth.js";
 import {
@@ -25,6 +25,7 @@ import {
   sendNewItemsToKitchen,
   settleOrder,
   updateOrderInfo,
+  updateOrderDate,
   updateOrderItem,
   updateOrderNote
 } from "./domain/orders.js";
@@ -41,7 +42,9 @@ import {
   deleteRestockEntry,
   importInventoryItemsCsv,
   importRecipeInventoryCsv,
+  listMenuInventoryBindings,
   listInventorySnapshot,
+  previewMenuBindingImpact,
   previewInventoryBackfill,
   recalculateOrderUsage,
   removeCostCategory,
@@ -52,6 +55,8 @@ import {
   saveInventoryItem,
   saveInventoryUnit,
   saveMenuRecipe,
+  saveMenuInventoryBinding,
+  removeMenuInventoryBinding,
   setRecipeRestockEnabled,
   setRecipeUseInRecipeEnabled,
   updateCostRecord,
@@ -79,10 +84,36 @@ import {
 } from "./services/settings.js";
 import { enqueuePrintJob, listPrintJobs } from "./services/printQueue.js";
 import { listWindowsPrinters, printJob, retryPrintJob } from "./services/printer.js";
-import { buildDailySalesEmail, clearGmailAuth, createGmailAuthUrl, getEmailSettings, saveEmailSettings, sendDailySalesEmail } from "./services/email.js";
+import { buildDailySalesEmail, clearGmailAuth, getEmailSettings, saveEmailSettings, sendDailySalesEmail } from "./services/email.js";
 import { listActivityLogs, recordActivity, recordProtectedPanelAccess } from "./services/audit.js";
+import {
+  connectGoogleSheets,
+  disconnectGoogle,
+  GOOGLE_APPS_SCRIPT_USER_SETTINGS_URL,
+  getGoogleSheetsSettings,
+  installGoogleReportTool,
+  listGoogleSpreadsheets,
+  listGoogleSheetTabs,
+  queueGoogleSheetsSync,
+  saveGoogleOAuthClient,
+  setGoogleSheetsSettings,
+  syncGoogleSheets
+} from "./services/googleSheets.js";
 
 export function registerIpc(db: Database.Database): void {
+  const queueSheetsWithoutBlockingPos = (): void => {
+    try {
+      queueGoogleSheetsSync(db);
+    } catch {
+      // Google sync is best effort. A remote/configuration failure must never undo local POS work.
+    }
+  };
+  const withSheetSync = <T>(operation: () => T): T => {
+    const result = operation();
+    queueSheetsWithoutBlockingPos();
+    return result;
+  };
+
   ipcMain.handle("auth:login", (_event, username: string, password: string) => login(db, username, password));
   ipcMain.handle("auth:changePassword", (_event, username: string, currentPassword: string, nextPassword: string) => {
     const changed = changePassword(db, username, currentPassword, nextPassword);
@@ -95,7 +126,7 @@ export function registerIpc(db: Database.Database): void {
   ipcMain.handle("inventory:previewBackfill", (_event, input) => previewInventoryBackfill(db, input));
   ipcMain.handle("inventory:applyBackfill", (_event, input) => applyInventoryBackfill(db, input));
   ipcMain.handle("inventory:recalculateOrderUsage", (_event, orderId: number) => recalculateOrderUsage(db, orderId));
-  ipcMain.handle("inventory:chooseAndImportCsv", async () => {
+  ipcMain.handle("inventory:chooseAndImportCsv", async (_event, options) => {
     const picked = await dialog.showOpenDialog({
       title: "Choose recipe or inventory CSV",
       properties: ["openFile"],
@@ -104,9 +135,9 @@ export function registerIpc(db: Database.Database): void {
     if (picked.canceled || !picked.filePaths[0]) {
       return { recipesImported: 0, recipesUpdated: 0, inventoryItemsCreated: 0, menuItemsCreated: 0, rowsSkipped: 0, errors: [], cancelled: true };
     }
-    return importRecipeInventoryCsv(db, picked.filePaths[0]);
+    return importRecipeInventoryCsv(db, picked.filePaths[0], options ?? {});
   });
-  ipcMain.handle("inventory:importCsv", (_event, csvPath: string) => importRecipeInventoryCsv(db, csvPath));
+  ipcMain.handle("inventory:importCsv", (_event, csvPath: string, options) => importRecipeInventoryCsv(db, csvPath, options ?? {}));
   ipcMain.handle("inventory:chooseAndImportItemsCsv", async () => {
     const picked = await dialog.showOpenDialog({
       title: "Choose inventory items CSV",
@@ -121,7 +152,11 @@ export function registerIpc(db: Database.Database): void {
   ipcMain.handle("inventory:importItemsCsv", (_event, csvPath: string) => importInventoryItemsCsv(db, csvPath));
   ipcMain.handle("inventory:saveItem", (_event, input) => saveInventoryItem(db, input));
   ipcMain.handle("inventory:deleteItem", (_event, id: number) => deleteInventoryItem(db, id));
-  ipcMain.handle("inventory:saveRecipe", (_event, input) => saveMenuRecipe(db, input));
+  ipcMain.handle("inventory:saveRecipe", (_event, input, options) => saveMenuRecipe(db, input, options ?? {}));
+  ipcMain.handle("inventory:listBindings", () => listMenuInventoryBindings(db));
+  ipcMain.handle("inventory:previewBindingImpact", (_event, input) => previewMenuBindingImpact(db, input));
+  ipcMain.handle("inventory:saveBinding", (_event, input) => saveMenuInventoryBinding(db, input));
+  ipcMain.handle("inventory:removeBinding", (_event, menuItemId: number, options) => removeMenuInventoryBinding(db, menuItemId, options ?? {}));
   ipcMain.handle("inventory:setRecipeRestockEnabled", (_event, menuItemId: number, enabled: boolean) => setRecipeRestockEnabled(db, menuItemId, enabled));
   ipcMain.handle("inventory:setRecipeUseInRecipeEnabled", (_event, menuItemId: number, enabled: boolean) => setRecipeUseInRecipeEnabled(db, menuItemId, enabled));
   ipcMain.handle("inventory:saveCategory", (_event, input) => saveInventoryCategory(db, input));
@@ -135,11 +170,11 @@ export function registerIpc(db: Database.Database): void {
   ipcMain.handle("inventory:updatePhysicalCount", (_event, input) => updatePhysicalCount(db, input));
   ipcMain.handle("inventory:deletePhysicalCount", (_event, id: number, reason: string) => deletePhysicalCount(db, id, reason));
   ipcMain.handle("inventory:addPrice", (_event, input) => addPriceRecord(db, input));
-  ipcMain.handle("inventory:saveCostCategory", (_event, input) => saveCostCategory(db, input));
-  ipcMain.handle("inventory:removeCostCategory", (_event, id: number) => removeCostCategory(db, id));
-  ipcMain.handle("inventory:addCost", (_event, input) => addCostRecord(db, input));
-  ipcMain.handle("inventory:updateCost", (_event, input) => updateCostRecord(db, input));
-  ipcMain.handle("inventory:deleteCost", (_event, id: number, reason: string) => deleteCostRecord(db, id, reason));
+  ipcMain.handle("inventory:saveCostCategory", (_event, input) => withSheetSync(() => saveCostCategory(db, input)));
+  ipcMain.handle("inventory:removeCostCategory", (_event, id: number) => withSheetSync(() => removeCostCategory(db, id)));
+  ipcMain.handle("inventory:addCost", (_event, input) => withSheetSync(() => addCostRecord(db, input)));
+  ipcMain.handle("inventory:updateCost", (_event, input) => withSheetSync(() => updateCostRecord(db, input)));
+  ipcMain.handle("inventory:deleteCost", (_event, id: number, reason?: string) => withSheetSync(() => deleteCostRecord(db, id, reason)));
   ipcMain.handle("menu:list", () => listMenuItems(db));
   ipcMain.handle("menu:importCsv", (_event, csvPath: string) => importMenuCsv(db, csvPath));
   ipcMain.handle("menu:chooseAndImportCsv", async () => {
@@ -168,27 +203,28 @@ export function registerIpc(db: Database.Database): void {
     deleteMenuItem(db, id);
     recordActivity(db, "menu_item_deleted", { entityType: "menu_item", entityId: String(id) }, "admin");
   });
-  ipcMain.handle("orders:create", (_event, input) => createOrder(db, input));
-  ipcMain.handle("orders:addItem", (_event, orderId: number, input) => addOrderItem(db, orderId, input));
-  ipcMain.handle("orders:sendKitchen", (_event, orderId: number, allowExternal?: boolean) => sendNewItemsToKitchen(db, orderId, allowExternal));
-  ipcMain.handle("orders:discount", (_event, orderId: number, discount: number) => applyDiscount(db, orderId, discount));
-  ipcMain.handle("orders:updateNote", (_event, orderId: number, note: string) => updateOrderNote(db, orderId, note));
-  ipcMain.handle("orders:updateInfo", (_event, orderId: number, input) => updateOrderInfo(db, orderId, input));
-  ipcMain.handle("orders:updateItem", (_event, orderItemId: number, input) => updateOrderItem(db, orderItemId, input));
-  ipcMain.handle("orders:removeItem", (_event, orderItemId: number, reason?: string) => removeOrderItem(db, orderItemId, reason));
-  ipcMain.handle("orders:settle", (_event, orderId: number, method, amount?: number, reference?: string, host?: string) => settleOrder(db, orderId, method, amount, reference, host));
-  ipcMain.handle("orders:delete", (_event, orderId: number, reason?: string) => deleteOrder(db, orderId, reason));
-  ipcMain.handle("orders:reopen", (_event, orderId: number) => reopenOrder(db, orderId));
-  ipcMain.handle("orders:markKitchenDelivered", (_event, orderId: number) => markKitchenDelivered(db, orderId));
-  ipcMain.handle("orders:restartKitchenTimer", (_event, orderId: number) => restartKitchenTimer(db, orderId));
-  ipcMain.handle("orders:markKitchenBatchDelivered", (_event, ticketId: number) => markKitchenBatchDelivered(db, ticketId));
-  ipcMain.handle("orders:restartKitchenBatchTimer", (_event, ticketId: number) => restartKitchenBatchTimer(db, ticketId));
+  ipcMain.handle("orders:create", (_event, input) => withSheetSync(() => createOrder(db, input)));
+  ipcMain.handle("orders:addItem", (_event, orderId: number, input) => withSheetSync(() => addOrderItem(db, orderId, input)));
+  ipcMain.handle("orders:sendKitchen", (_event, orderId: number, allowExternal?: boolean) => withSheetSync(() => sendNewItemsToKitchen(db, orderId, allowExternal)));
+  ipcMain.handle("orders:discount", (_event, orderId: number, discount: number) => withSheetSync(() => applyDiscount(db, orderId, discount)));
+  ipcMain.handle("orders:updateNote", (_event, orderId: number, note: string) => withSheetSync(() => updateOrderNote(db, orderId, note)));
+  ipcMain.handle("orders:updateInfo", (_event, orderId: number, input) => withSheetSync(() => updateOrderInfo(db, orderId, input)));
+  ipcMain.handle("orders:updateDate", (_event, orderId: number, orderDate: string) => withSheetSync(() => updateOrderDate(db, orderId, orderDate)));
+  ipcMain.handle("orders:updateItem", (_event, orderItemId: number, input) => withSheetSync(() => updateOrderItem(db, orderItemId, input)));
+  ipcMain.handle("orders:removeItem", (_event, orderItemId: number, reason?: string) => withSheetSync(() => removeOrderItem(db, orderItemId, reason)));
+  ipcMain.handle("orders:settle", (_event, orderId: number, method, amount?: number, reference?: string, host?: string) => withSheetSync(() => settleOrder(db, orderId, method, amount, reference, host)));
+  ipcMain.handle("orders:delete", (_event, orderId: number, reason?: string) => withSheetSync(() => deleteOrder(db, orderId, reason)));
+  ipcMain.handle("orders:reopen", (_event, orderId: number) => withSheetSync(() => reopenOrder(db, orderId)));
+  ipcMain.handle("orders:markKitchenDelivered", (_event, orderId: number) => withSheetSync(() => markKitchenDelivered(db, orderId)));
+  ipcMain.handle("orders:restartKitchenTimer", (_event, orderId: number) => withSheetSync(() => restartKitchenTimer(db, orderId)));
+  ipcMain.handle("orders:markKitchenBatchDelivered", (_event, ticketId: number) => withSheetSync(() => markKitchenBatchDelivered(db, ticketId)));
+  ipcMain.handle("orders:restartKitchenBatchTimer", (_event, ticketId: number) => withSheetSync(() => restartKitchenBatchTimer(db, ticketId)));
   ipcMain.handle("orders:hasKitchenPrintedItems", (_event, orderId: number) => orderHasKitchenPrintedItems(db, orderId));
   ipcMain.handle("orders:detail", (_event, orderId: number) => getOrderDetail(db, orderId));
   ipcMain.handle("orders:open", () => listOpenOrders(db));
   ipcMain.handle("orders:history", () => listOrderHistory(db));
-  ipcMain.handle("orders:clearHistory", () => clearOrderHistory(db));
-  ipcMain.handle("orders:deleteClosedRecord", (_event, orderId: number) => deleteClosedOrderRecord(db, orderId));
+  ipcMain.handle("orders:clearHistory", () => withSheetSync(() => clearOrderHistory(db)));
+  ipcMain.handle("orders:deleteClosedRecord", (_event, orderId: number) => withSheetSync(() => deleteClosedOrderRecord(db, orderId)));
   ipcMain.handle("orders:reprintKitchen", (_event, orderId: number) => reprintKitchenCopy(db, orderId));
   ipcMain.handle("orders:reprintReceipt", (_event, orderId: number) => reprintReceipt(db, orderId));
   ipcMain.handle("orders:printBill", (_event, orderId: number, paymentInfo) => printBillCopy(db, orderId, paymentInfo));
@@ -207,7 +243,7 @@ export function registerIpc(db: Database.Database): void {
     const id = enqueuePrintJob(db, type === "kot" ? "kot" : type === "receipt" ? "receipt" : "test", content, getPrinterName(db) || null);
     return printJob(db, id);
   });
-  ipcMain.handle("reports:sales", (_event, start?: string, end?: string) => getSalesSummary(db, start, end));
+  ipcMain.handle("reports:sales", (_event, rangeOrStart?: { startDate?: string; endDate?: string } | string, end?: string) => getSalesSummary(db, rangeOrStart, end));
   ipcMain.handle("settings:getBranding", () => getBrandingSettings(db));
   ipcMain.handle("settings:setBranding", (_event, branding) => {
     setBrandingSettings(db, branding);
@@ -256,16 +292,68 @@ export function registerIpc(db: Database.Database): void {
     setMenuTypes(db, menuTypes);
     recordActivity(db, "menu_types_updated", { count: menuTypes.length }, "admin");
   });
+  ipcMain.handle("settings:getGoogleSheets", () => getGoogleSheetsSettings(db));
+  ipcMain.handle("settings:saveGoogleOAuthClient", (_event, input) => {
+    const saved = saveGoogleOAuthClient(db, input ?? {});
+    recordActivity(db, "google_oauth_client_saved", { clientIdConfigured: saved.hasClientCredentials }, "admin");
+    return saved;
+  });
+  ipcMain.handle("settings:setGoogleSheets", (_event, settings) => {
+    const saved = setGoogleSheetsSettings(db, settings ?? {});
+    recordActivity(db, "google_sheets_settings_updated", {
+      enabled: saved.enabled,
+      ordersTab: saved.ordersTab,
+      orderItemsTab: saved.orderItemsTab,
+      costsTab: saved.costsTab
+    }, "admin");
+    queueSheetsWithoutBlockingPos();
+    return saved;
+  });
+  ipcMain.handle("settings:connectGoogleSheets", async () => {
+    const result = await connectGoogleSheets(db);
+    recordActivity(db, "google_sheets_connected", { spreadsheetTitle: result.spreadsheetTitle }, "admin");
+    queueSheetsWithoutBlockingPos();
+    return result;
+  });
+  ipcMain.handle("settings:disconnectGoogle", () => {
+    const settings = disconnectGoogle(db);
+    recordActivity(db, "google_connection_cleared", {}, "admin");
+    return settings;
+  });
+  ipcMain.handle("settings:listGoogleSpreadsheets", () => listGoogleSpreadsheets(db));
+  ipcMain.handle("settings:listGoogleSheetTabs", (_event, spreadsheetId?: string) =>
+    listGoogleSheetTabs(db, spreadsheetId));
+  ipcMain.handle("settings:openGoogleAppsScriptSettings", async () => {
+    await shell.openExternal(GOOGLE_APPS_SCRIPT_USER_SETTINGS_URL);
+    return true;
+  });
+  ipcMain.handle("settings:syncGoogleSheets", async () => {
+    const result = await syncGoogleSheets(db);
+    recordActivity(db, "google_sheets_synced", {
+      orders: result.orders,
+      orderItems: result.orderItems,
+      costs: result.costs
+    }, "admin");
+    return result;
+  });
+  ipcMain.handle("settings:installGoogleReportTool", async () => {
+    await syncGoogleSheets(db);
+    const result = await installGoogleReportTool(db);
+    recordActivity(db, "google_report_tool_installed", {}, "admin");
+    return result;
+  });
   ipcMain.handle("email:getSettings", () => getEmailSettings(db));
   ipcMain.handle("email:saveSettings", (_event, settings) => {
-    saveEmailSettings(db, settings);
-    recordActivity(db, "email_notification_settings_updated", { enabled: Boolean(settings?.enabled), recipientEmail: settings?.recipientEmail ?? "" }, "admin");
+    const saved = saveEmailSettings(db, settings ?? {});
+    recordActivity(db, "email_notification_settings_updated", { enabled: saved.enabled, recipientEmail: saved.recipientEmail }, "admin");
+    return saved;
   });
-  ipcMain.handle("email:authUrl", (_event, config) => createGmailAuthUrl(config));
   ipcMain.handle("email:clearAuth", () => {
     clearGmailAuth(db);
     recordActivity(db, "gmail_connection_cleared", {}, "admin");
   });
   ipcMain.handle("email:dailyPreview", () => buildDailySalesEmail(db));
   ipcMain.handle("email:sendDaily", () => sendDailySalesEmail(db));
+
+  queueSheetsWithoutBlockingPos();
 }

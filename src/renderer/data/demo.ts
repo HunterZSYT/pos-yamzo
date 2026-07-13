@@ -11,6 +11,10 @@ export const demoOrders: OrderSummary[] = [];
 
 export const demoSummary: SalesSummary = {
   totalSales: 0,
+  grossSales: 0,
+  netSales: 0,
+  averageOrderValue: 0,
+  netAfterCommission: 0,
   totalOrders: 0,
   openOrders: 0,
   settledOrders: 0,
@@ -19,6 +23,17 @@ export const demoSummary: SalesSummary = {
   commissionTotal: 0,
   paymentBreakdown: {},
   sourceBreakdown: {},
+  sourceTotals: [],
+  paymentTotals: [],
   topItems: [],
+  rawMaterialCost: 0,
+  recordedCostTotal: 0,
+  costRecordCount: 0,
+  inventoryRestockSpend: 0,
+  inventoryRestockCount: 0,
+  inventoryPhysicalCountCount: 0,
+  inventoryEvents: [],
+  operatingProfit: 0,
+  rawMaterialUsage: [],
   averageKitchenMinutes: 0
 };

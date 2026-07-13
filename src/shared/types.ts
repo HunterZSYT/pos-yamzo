@@ -98,6 +98,7 @@ export interface OrderBatch {
 export interface OrderSummary {
   id: number;
   orderNumber: string;
+  orderDate: string;
   externalOrderId: string | null;
   source: OrderSource;
   tableNumber: string | null;
@@ -121,6 +122,10 @@ export interface OrderDetail extends OrderSummary {
 
 export interface SalesSummary {
   totalSales: number;
+  grossSales: number;
+  netSales: number;
+  averageOrderValue: number;
+  netAfterCommission: number;
   totalOrders: number;
   openOrders: number;
   settledOrders: number;
@@ -129,8 +134,43 @@ export interface SalesSummary {
   commissionTotal: number;
   paymentBreakdown: Record<string, number>;
   sourceBreakdown: Record<string, number>;
+  sourceTotals: Array<{
+    source: string;
+    orders: number;
+    grossSales: number;
+    discount: number;
+    netSales: number;
+    commission: number;
+    netAfterCommission: number;
+  }>;
+  paymentTotals: Array<{ method: string; orders: number; amount: number }>;
   topItems: Array<{ name: string; quantity: number; total: number }>;
+  rawMaterialCost: number;
+  recordedCostTotal: number;
+  costRecordCount: number;
+  inventoryRestockSpend: number;
+  inventoryRestockCount: number;
+  inventoryPhysicalCountCount: number;
+  inventoryEvents: InventoryReportEvent[];
+  operatingProfit: number;
+  rawMaterialUsage: Array<{
+    inventoryItemId: number;
+    itemName: string;
+    quantityBase: number;
+    unitLabel: string;
+    rawCost: number;
+  }>;
   averageKitchenMinutes: number;
+}
+
+export interface InventoryReportEvent {
+  id: number;
+  eventType: "restock" | "adjustment" | "physical_count";
+  timestamp: string;
+  itemName: string;
+  quantityBase: number;
+  unitLabel: string;
+  totalCost: number;
 }
 
 export interface PrintJob {
@@ -196,6 +236,33 @@ export interface InventoryItem {
   active: boolean;
 }
 
+export type InventoryBindingType = "recipe" | "item";
+export type HistoricalScope = "future" | "all" | "range";
+
+export interface MenuInventoryBinding {
+  id: number;
+  menuItemId: number;
+  menuItemName: string;
+  bindingType: InventoryBindingType;
+  recipeId: number | null;
+  recipeName: string | null;
+  inventoryItemId: number | null;
+  inventoryItemName: string | null;
+  quantityBase: number;
+  unitLabel: string;
+  updatedAt: string;
+}
+
+export interface RecipeVersionSummary {
+  id: number;
+  versionNumber: number;
+  changeNote: string | null;
+  source: string;
+  createdAt: string;
+  updatedAt: string;
+  current: boolean;
+}
+
 export interface RecipeIngredient {
   id: number;
   inventoryItemId: number;
@@ -229,8 +296,12 @@ export interface MenuRecipe {
   menuItemName: string;
   sellingPrice: number;
   status: "available" | "missing";
+  standalone: boolean;
   restockEnabled: boolean;
   useInRecipeEnabled: boolean;
+  currentVersionId: number | null;
+  versionNumber: number;
+  versions: RecipeVersionSummary[];
   rawCost: number;
   estimatedProfit: number;
   profitMargin: number;
@@ -247,6 +318,18 @@ export interface InventoryBackfillPreview {
   currentSnapshotRawCost: number;
   rawCostDelta: number;
   estimatedMissingRecipeCount: number;
+}
+
+export interface RecipeSaveInput {
+  menuItemId?: number;
+  recipeName?: string;
+  standalone?: boolean;
+  ingredients: RecipeIngredientInput[];
+}
+
+export interface InventoryBindingPreview extends InventoryBackfillPreview {
+  menuItemId: number;
+  menuItemName: string;
 }
 
 export interface RestockEntry {
@@ -296,6 +379,28 @@ export interface CostRecord {
   responsiblePerson: string | null;
   note: string | null;
   costDate: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RestockEntryInput {
+  inventoryItemId: number;
+  itemType?: "raw" | "recipe";
+  entryType?: "purchase" | "adjustment";
+  recipeId?: number | null;
+  quantity: number;
+  unitLabel?: string;
+  totalCost?: number;
+  supplierName?: string | null;
+  responsiblePerson?: string | null;
+  note?: string | null;
+  adjustmentReason?: string | null;
+  /** Local inventory event time. Accepts YYYY-MM-DD or YYYY-MM-DDTHH:mm[:ss]. */
+  entryDate?: string | null;
+}
+
+export interface RestockEntryUpdateInput extends RestockEntryInput {
+  id: number;
 }
 
 export interface PhysicalCountEntry {
@@ -303,10 +408,12 @@ export interface PhysicalCountEntry {
   inventoryItemId: number;
   itemName: string;
   quantityBase: number;
+  reductionDelta: number | null;
   unitLabel: string;
   responsiblePerson: string | null;
   note: string | null;
   countDate: string;
+  updatedAt: string;
   source: "manual" | "restock";
 }
 
@@ -326,6 +433,9 @@ export interface InventoryImportResult {
   menuItemsCreated: number;
   rowsSkipped: number;
   errors: string[];
+  versionsCreated?: number;
+  versionsUpdated?: number;
+  historicalOrdersUpdated?: number;
   cancelled?: boolean;
 }
 
@@ -371,6 +481,7 @@ export interface InventoryOrderUsageMenuItem {
 export interface InventoryOrderUsageSummary {
   orderId: number;
   orderNumber: string;
+  orderDate: string;
   source: OrderSource;
   tableNumber: string | null;
   settledAt: string | null;
@@ -396,6 +507,7 @@ export interface InventorySnapshot {
   units: InventoryUnit[];
   items: InventoryItem[];
   recipes: MenuRecipe[];
+  bindings: MenuInventoryBinding[];
   restocks: RestockEntry[];
   physicalCounts: PhysicalCountEntry[];
   priceHistory: PriceHistoryRecord[];
@@ -404,6 +516,112 @@ export interface InventorySnapshot {
   orderUsage: InventoryOrderUsageSnapshot;
   status: InventoryStatusSummary;
   profit: SalesProfitSummary;
+}
+
+export interface PhysicalCountInput {
+  inventoryItemId: number;
+  quantity: number;
+  responsiblePerson?: string | null;
+  note?: string | null;
+  /** Local inventory event time. Accepts YYYY-MM-DD or YYYY-MM-DDTHH:mm[:ss]. */
+  countDate?: string | null;
+  source?: "manual" | "restock";
+}
+
+export interface PhysicalCountUpdateInput extends PhysicalCountInput {
+  id: number;
+  reason?: string | null;
+}
+
+export type GoogleSheetsSyncStatus = "disconnected" | "ready" | "pending" | "syncing" | "synced" | "error";
+
+export type GoogleIntegrationErrorCode =
+  | "apps_script_user_setting_disabled"
+  | "credentials_missing"
+  | "authorization_required"
+  | "authorization_expired"
+  | "permission_missing"
+  | "invalid_client"
+  | "invalid_spreadsheet"
+  | "google_request_failed";
+
+export interface GoogleOAuthClientInput {
+  clientId: string;
+  /** Leave blank to retain the locally saved secret for the same client ID. */
+  clientSecret?: string;
+}
+
+export interface GoogleSpreadsheetOption {
+  id: string;
+  name: string;
+  modifiedTime: string | null;
+  webViewLink: string | null;
+}
+
+export interface GoogleSheetTabOption {
+  id: number;
+  title: string;
+  index: number;
+  hidden: boolean;
+}
+
+export interface GoogleSheetTabListResult {
+  spreadsheetId: string;
+  spreadsheetTitle: string;
+  tabs: GoogleSheetTabOption[];
+}
+
+export interface GoogleSheetsSettings {
+  enabled: boolean;
+  redirectUri: string;
+  spreadsheetId: string;
+  spreadsheetTitle: string | null;
+  ordersTab: string;
+  orderItemsTab: string;
+  costsTab: string;
+  clientId: string;
+  hasClientCredentials: boolean;
+  connectedEmail: string | null;
+  connected: boolean;
+  syncStatus: GoogleSheetsSyncStatus;
+  pending: boolean;
+  lastSyncedAt: string | null;
+  lastAttemptAt: string | null;
+  lastError: string | null;
+  lastErrorCode: GoogleIntegrationErrorCode | null;
+  lastErrorActionUrl: string | null;
+  scriptProjectId: string | null;
+  reportToolInstalled: boolean;
+}
+
+export interface GoogleSheetsSettingsInput {
+  enabled?: boolean;
+  spreadsheetId?: string;
+  ordersTab?: string;
+  orderItemsTab?: string;
+  costsTab?: string;
+}
+
+export interface GoogleSheetsConnectionResult {
+  settings: GoogleSheetsSettings;
+  spreadsheetTitle: string | null;
+  connectedEmail: string | null;
+  redirectUri: string;
+}
+
+export interface GoogleSheetsSyncResult {
+  spreadsheetId: string;
+  spreadsheetTitle: string;
+  orders: number;
+  orderItems: number;
+  costs: number;
+  syncedAt: string;
+}
+
+export interface GoogleReportToolResult {
+  scriptProjectId: string;
+  editorUrl: string;
+  installedAt: string;
 }
 
 export interface ReceiptPaymentInfo {
@@ -419,14 +637,25 @@ export interface EmailSettings {
   recipientEmail: string;
   sendDailySummary: boolean;
   sendEachSettledOrder: boolean;
-  credentialPath: string;
-  tokenPath: string;
+  sendTime?: string;
+  connectedEmail?: string | null;
+  lastDailySummaryDate?: string | null;
+  lastDailySummarySentAt?: string | null;
+  lastError?: string | null;
 }
 
-export interface GmailOAuthConfig {
-  clientId: string;
-  clientSecret: string;
-  redirectUri: string;
+export interface EmailSettingsInput {
+  enabled?: boolean;
+  recipientEmail?: string;
+  sendDailySummary?: boolean;
+  sendEachSettledOrder?: boolean;
+  sendTime?: string;
+}
+
+export interface EmailSendResult {
+  recipientEmail: string;
+  connectedEmail: string;
+  sentAt: string;
 }
 
 export interface BrandingSettings {

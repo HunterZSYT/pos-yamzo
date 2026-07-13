@@ -2,6 +2,7 @@ import type Database from "better-sqlite3";
 import bcrypt from "bcryptjs";
 
 const BRANDING_DEFAULTS_VERSION = 2;
+export const DATABASE_SCHEMA_VERSION = 3;
 
 const defaultBranding = {
   restaurantName: "Yamzo",
@@ -56,6 +57,7 @@ export function migrate(db: Database.Database): void {
     CREATE TABLE IF NOT EXISTS orders (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       order_number TEXT NOT NULL UNIQUE,
+      order_date TEXT,
       source TEXT NOT NULL,
       table_number TEXT,
       status TEXT NOT NULL DEFAULT 'open',
@@ -138,6 +140,10 @@ export function migrate(db: Database.Database): void {
       recipient_email TEXT,
       send_daily_summary INTEGER NOT NULL DEFAULT 0,
       send_each_settled_order INTEGER NOT NULL DEFAULT 0,
+      send_time TEXT NOT NULL DEFAULT '22:00',
+      last_daily_summary_date TEXT,
+      last_daily_summary_sent_at TEXT,
+      last_error TEXT,
       credential_path TEXT,
       token_path TEXT,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -224,8 +230,58 @@ export function migrate(db: Database.Database): void {
       menu_item_id INTEGER NOT NULL UNIQUE REFERENCES menu_items(id),
       active INTEGER NOT NULL DEFAULT 1,
       restock_enabled INTEGER NOT NULL DEFAULT 0,
+      current_version_id INTEGER,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS recipe_versions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      recipe_id INTEGER NOT NULL REFERENCES menu_item_recipes(id) ON DELETE CASCADE,
+      version_number INTEGER NOT NULL,
+      change_note TEXT,
+      source TEXT NOT NULL DEFAULT 'manual',
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(recipe_id, version_number)
+    );
+
+    CREATE TABLE IF NOT EXISTS recipe_version_ingredients (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      version_id INTEGER NOT NULL REFERENCES recipe_versions(id) ON DELETE CASCADE,
+      inventory_item_id INTEGER NOT NULL REFERENCES inventory_items(id),
+      quantity_base REAL NOT NULL,
+      reduction_delta REAL,
+      unit_label TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(version_id, inventory_item_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS recipe_version_child_ingredients (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      version_id INTEGER NOT NULL REFERENCES recipe_versions(id) ON DELETE CASCADE,
+      child_recipe_id INTEGER NOT NULL REFERENCES menu_item_recipes(id),
+      child_version_id INTEGER REFERENCES recipe_versions(id),
+      quantity_base REAL NOT NULL,
+      unit_label TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(version_id, child_recipe_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS menu_item_inventory_bindings (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      menu_item_id INTEGER NOT NULL UNIQUE REFERENCES menu_items(id) ON DELETE CASCADE,
+      binding_type TEXT NOT NULL CHECK(binding_type IN ('recipe', 'item')),
+      recipe_id INTEGER REFERENCES menu_item_recipes(id),
+      inventory_item_id INTEGER REFERENCES inventory_items(id),
+      quantity_base REAL NOT NULL DEFAULT 1,
+      unit_label TEXT NOT NULL DEFAULT 'portion',
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      CHECK(
+        (binding_type = 'recipe' AND recipe_id IS NOT NULL AND inventory_item_id IS NULL) OR
+        (binding_type = 'item' AND inventory_item_id IS NOT NULL AND recipe_id IS NULL)
+      )
     );
 
     CREATE TABLE IF NOT EXISTS recipe_ingredients (
@@ -320,6 +376,11 @@ export function migrate(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_inventory_price_item_date ON inventory_price_history(inventory_item_id, effective_at);
     CREATE INDEX IF NOT EXISTS idx_recipe_ingredients_recipe ON recipe_ingredients(recipe_id);
     CREATE INDEX IF NOT EXISTS idx_recipe_child_ingredients_recipe ON recipe_child_ingredients(recipe_id);
+    CREATE INDEX IF NOT EXISTS idx_recipe_versions_recipe ON recipe_versions(recipe_id, version_number);
+    CREATE INDEX IF NOT EXISTS idx_recipe_version_ingredients_version ON recipe_version_ingredients(version_id);
+    CREATE INDEX IF NOT EXISTS idx_recipe_version_child_version ON recipe_version_child_ingredients(version_id);
+    CREATE INDEX IF NOT EXISTS idx_menu_inventory_binding_recipe ON menu_item_inventory_bindings(recipe_id);
+    CREATE INDEX IF NOT EXISTS idx_menu_inventory_binding_item ON menu_item_inventory_bindings(inventory_item_id);
     CREATE INDEX IF NOT EXISTS idx_inventory_adjustments_item_date ON inventory_adjustments(inventory_item_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_inventory_adjustments_order ON inventory_adjustments(order_id);
     CREATE INDEX IF NOT EXISTS idx_cost_records_date ON cost_records(cost_date);
@@ -330,6 +391,7 @@ export function migrate(db: Database.Database): void {
   `);
 
   ensureColumn(db, "order_items", "parcel", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn(db, "orders", "order_date", "TEXT");
   ensureColumn(db, "orders", "external_order_id", "TEXT");
   ensureColumn(db, "orders", "first_kitchen_sent_at", "TEXT");
   ensureColumn(db, "orders", "kitchen_completed_at", "TEXT");
@@ -342,11 +404,130 @@ export function migrate(db: Database.Database): void {
   ensureColumn(db, "inventory_adjustments", "restock_entry_id", "INTEGER");
   ensureColumn(db, "menu_item_recipes", "restock_enabled", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn(db, "menu_item_recipes", "use_in_recipe_enabled", "INTEGER NOT NULL DEFAULT 1");
+  ensureColumn(db, "menu_item_recipes", "current_version_id", "INTEGER");
   ensureColumn(db, "menu_items", "track_recipe", "INTEGER NOT NULL DEFAULT 1");
+  ensureColumn(db, "inventory_physical_counts", "updated_at", "TEXT");
+  ensureColumn(db, "inventory_physical_counts", "reduction_delta", "REAL");
   ensureColumn(db, "cost_records", "quantity", "REAL NOT NULL DEFAULT 1");
   ensureColumn(db, "cost_categories", "sort_order", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn(db, "order_item_cost_snapshots", "recipe_version_id", "INTEGER");
+  ensureColumn(db, "order_item_cost_snapshots", "binding_type", "TEXT");
+  ensureColumn(db, "order_item_cost_snapshots", "binding_id", "INTEGER");
+  ensureColumn(db, "email_settings", "send_time", "TEXT NOT NULL DEFAULT '22:00'");
+  ensureColumn(db, "email_settings", "last_daily_summary_date", "TEXT");
+  ensureColumn(db, "email_settings", "last_daily_summary_sent_at", "TEXT");
+  ensureColumn(db, "email_settings", "last_error", "TEXT");
+
+  // This index must be created after the legacy orders table has been upgraded
+  // because older databases do not have order_date when the main schema batch runs.
+  db.exec("CREATE INDEX IF NOT EXISTS idx_orders_date_status ON orders(order_date, status)");
+
+  migrateOrderDates(db);
+  migrateInventoryEventTimeline(db);
+  migrateRecipeVersionsAndBindings(db);
 
   seedDefaults(db);
+  db.pragma(`user_version = ${DATABASE_SCHEMA_VERSION}`);
+}
+
+function migrateInventoryEventTimeline(db: Database.Database): void {
+  db.prepare(
+    `UPDATE inventory_restock_entries
+     SET entry_date = entry_date || ' 00:00:00'
+     WHERE length(trim(entry_date)) = 10 AND date(entry_date) IS NOT NULL`
+  ).run();
+  db.prepare(
+    `UPDATE inventory_physical_counts
+     SET count_date = count_date || ' 00:00:00'
+     WHERE length(trim(count_date)) = 10 AND date(count_date) IS NOT NULL`
+  ).run();
+  db.prepare(
+    `UPDATE inventory_adjustments
+     SET created_at = COALESCE(
+       (SELECT COALESCE(o.settled_at, o.updated_at, o.created_at) FROM orders o WHERE o.id = inventory_adjustments.order_id),
+       created_at
+     )
+     WHERE reason = 'Order usage' AND order_id IS NOT NULL`
+  ).run();
+}
+
+function migrateOrderDates(db: Database.Database): void {
+  db.prepare(
+    `UPDATE orders
+     SET order_date = date(created_at, 'localtime')
+     WHERE order_date IS NULL OR trim(order_date) = ''`
+  ).run();
+}
+
+function migrateRecipeVersionsAndBindings(db: Database.Database): void {
+  const tx = db.transaction(() => {
+    const recipes = db.prepare(
+      `SELECT mr.id, mr.menu_item_id, mr.active, mr.current_version_id,
+              mi.archived AS menu_item_archived, mi.available AS menu_item_available,
+              mi.category AS menu_item_category
+       FROM menu_item_recipes mr
+       JOIN menu_items mi ON mi.id = mr.menu_item_id
+       ORDER BY mr.id`
+    ).all() as Array<{
+      id: number;
+      menu_item_id: number;
+      active: number;
+      current_version_id: number | null;
+      menu_item_archived: number;
+      menu_item_available: number;
+      menu_item_category: string;
+    }>;
+
+    for (const recipe of recipes) {
+      let versionId = recipe.current_version_id;
+      if (!versionId) {
+        const latest = db.prepare("SELECT id FROM recipe_versions WHERE recipe_id = ? ORDER BY version_number DESC LIMIT 1").get(recipe.id) as { id: number } | undefined;
+        versionId = latest?.id ?? Number(
+          db.prepare("INSERT INTO recipe_versions (recipe_id, version_number, change_note, source) VALUES (?, 1, 'Migrated current recipe', 'migration')").run(recipe.id).lastInsertRowid
+        );
+        db.prepare("UPDATE menu_item_recipes SET current_version_id = ? WHERE id = ?").run(versionId, recipe.id);
+      }
+    }
+
+    for (const recipe of recipes) {
+      const current = db.prepare("SELECT current_version_id FROM menu_item_recipes WHERE id = ?").get(recipe.id) as { current_version_id: number | null };
+      if (!current.current_version_id) continue;
+      const rawCount = db.prepare("SELECT COUNT(*) AS count FROM recipe_version_ingredients WHERE version_id = ?").get(current.current_version_id) as { count: number };
+      if (rawCount.count === 0) {
+        db.prepare(
+          `INSERT OR IGNORE INTO recipe_version_ingredients (version_id, inventory_item_id, quantity_base, unit_label)
+           SELECT ?, inventory_item_id, quantity_base, unit_label
+           FROM recipe_ingredients WHERE recipe_id = ?`
+        ).run(current.current_version_id, recipe.id);
+      }
+      const childCount = db.prepare("SELECT COUNT(*) AS count FROM recipe_version_child_ingredients WHERE version_id = ?").get(current.current_version_id) as { count: number };
+      if (childCount.count === 0) {
+        db.prepare(
+          `INSERT OR IGNORE INTO recipe_version_child_ingredients
+           (version_id, child_recipe_id, child_version_id, quantity_base, unit_label)
+           SELECT ?, rci.child_recipe_id, child.current_version_id, rci.quantity_base, rci.unit_label
+           FROM recipe_child_ingredients rci
+           JOIN menu_item_recipes child ON child.id = rci.child_recipe_id
+           WHERE rci.recipe_id = ?`
+        ).run(current.current_version_id, recipe.id);
+      }
+      const isStandaloneHolder = recipe.menu_item_archived === 1
+        && recipe.menu_item_available === 0
+        && recipe.menu_item_category.trim().toLowerCase() === "recipe material";
+      if (isStandaloneHolder) {
+        db.prepare("DELETE FROM menu_item_inventory_bindings WHERE menu_item_id = ?").run(recipe.menu_item_id);
+        continue;
+      }
+      if (recipe.active === 1) {
+        db.prepare(
+          `INSERT OR IGNORE INTO menu_item_inventory_bindings
+           (menu_item_id, binding_type, recipe_id, inventory_item_id, quantity_base, unit_label)
+           VALUES (?, 'recipe', ?, NULL, 1, 'portion')`
+        ).run(recipe.menu_item_id, recipe.id);
+      }
+    }
+  });
+  tx();
 }
 
 function ensureColumn(db: Database.Database, table: string, column: string, definition: string): void {

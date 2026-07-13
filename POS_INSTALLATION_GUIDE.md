@@ -67,10 +67,28 @@ In admin settings, configure:
 
 Uploaded logo and QR files must remain in local app data, not Git.
 
-## Gmail Notifications
+## Google Sheets, Reports, and Daily Email
 
-Gmail notifications are disabled by default. Store OAuth credentials and tokens locally only. Do not commit credential files or token files.
-Use the admin Gmail settings to save local credential/token paths, preview the daily sales email, send a test/daily email, and clear local auth.
+1. In Google Cloud, use a Web application OAuth client and add this exact authorized redirect URI:
+
+```text
+http://127.0.0.1:42813/oauth2callback
+```
+
+2. Open **Admin > Integrations**, enter the OAuth client ID and secret, and save them. The secret is written only to this Windows user's local app-data folder and is never returned to the interface.
+3. Choose **Connect Google** and approve the requested Sheets, Drive metadata, Apps Script, Gmail send, and account-email permissions.
+4. Choose an available spreadsheet (or enter its URL), load its tabs, and map Orders, Order Items, and Costs.
+5. Enable automatic sync and choose **Sync now**. The POS writes the three mapped datasets and never imports Sheet edits.
+6. Choose **Install report tool**, reopen the spreadsheet, and use **Yamzo Reports > Download detailed PDF**.
+7. In the same Integrations screen, choose the daily-summary recipient and local send time, then send a test email before enabling the schedule.
+
+Google Cloud API enablement and the Google account's Apps Script access setting are separate. If the installer reports that account access is disabled, open `https://script.google.com/home/usersettings`, enable Apps Script API access, wait a few minutes, and retry.
+
+The Google OAuth client secret and refresh token are stored in local app data and must never be committed. Sheets and scheduled Gmail summaries reuse one connection. If the OAuth client changes, save the new client and reconnect from the POS; do not hand-edit local auth files.
+
+## Upgrade Backups
+
+When an existing database needs a newer schema, Yamzo POS creates a consistent pre-migration backup before changing any tables. Backups are stored beside the database under `backups`; the newest five automatic migration backups are retained.
 
 ## Local Data Location
 
@@ -82,9 +100,8 @@ $env:YAMZO_APP_DATA_DIR="E:\Yamzo\POS\local-data"
 
 ## Files Not To Commit
 
-- `yamzo_google_creds.txt`
 - `*.sqlite`, `*.sqlite3`, `*.db`
-- Gmail credential/token files
+- Google OAuth client-secret and token files
 - printer config files
 - uploaded logos and QR images
 - local app-data folders
