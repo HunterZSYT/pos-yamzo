@@ -31,6 +31,14 @@ import {
 } from "./domain/orders.js";
 import { getSalesSummary } from "./domain/reports.js";
 import {
+  acceptWebsiteOrder,
+  getWebsiteOrderDetail,
+  hardDeleteTestWebsiteOrder,
+  listWebsiteOrders,
+  rejectWebsiteOrder,
+  transitionWebsiteOrder
+} from "./domain/websiteOrders.js";
+import {
   addCostRecord,
   addPriceRecord,
   addPhysicalCount,
@@ -229,6 +237,12 @@ export function registerIpc(db: Database.Database): void {
   ipcMain.handle("orders:reprintReceipt", (_event, orderId: number) => reprintReceipt(db, orderId));
   ipcMain.handle("orders:printBill", (_event, orderId: number, paymentInfo) => printBillCopy(db, orderId, paymentInfo));
   ipcMain.handle("orders:printAudit", (_event, orderId: number) => printAuditCopy(db, orderId));
+  ipcMain.handle("websiteOrders:list", (_event, statuses) => listWebsiteOrders(db, statuses));
+  ipcMain.handle("websiteOrders:detail", (_event, remoteId: string) => getWebsiteOrderDetail(db, remoteId));
+  ipcMain.handle("websiteOrders:accept", (_event, remoteId: string) => withSheetSync(() => acceptWebsiteOrder(db, remoteId)));
+  ipcMain.handle("websiteOrders:reject", (_event, remoteId: string, reason: string) => withSheetSync(() => rejectWebsiteOrder(db, remoteId, reason)));
+  ipcMain.handle("websiteOrders:transition", (_event, remoteId: string, status) => withSheetSync(() => transitionWebsiteOrder(db, remoteId, status)));
+  ipcMain.handle("websiteOrders:deleteTest", (_event, remoteId: string) => withSheetSync(() => hardDeleteTestWebsiteOrder(db, remoteId)));
   ipcMain.handle("print:listJobs", (_event, status?: string) => listPrintJobs(db, status));
   ipcMain.handle("print:listPrinters", () => listWindowsPrinters());
   ipcMain.handle("print:printJob", (_event, id: number) => printJob(db, id));

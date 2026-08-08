@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron";
-import type { BrandingSettings, EmailSettingsInput, GoogleOAuthClientInput, GoogleSheetsSettingsInput, HistoricalScope, MenuDataSetting, MenuItemInput, MenuTypeSetting, OrderItemInput, OrderSource, PaymentMethod, PhysicalCountInput, PhysicalCountUpdateInput, ReceiptPaymentInfo, RecipeSaveInput, RestockEntryInput, RestockEntryUpdateInput, SalesSummary } from "../shared/types.js";
+import type { BrandingSettings, EmailSettingsInput, GoogleOAuthClientInput, GoogleSheetsSettingsInput, HistoricalScope, MenuDataSetting, MenuItemInput, MenuTypeSetting, OrderItemInput, OrderSource, PaymentMethod, PhysicalCountInput, PhysicalCountUpdateInput, ReceiptPaymentInfo, RecipeSaveInput, RestockEntryInput, RestockEntryUpdateInput, SalesSummary, WebsiteOrderAcceptance, WebsiteOrderDetail, WebsiteOrderStatus, WebsiteOrderSummary } from "../shared/types.js";
 
 const api = {
   auth: {
@@ -92,6 +92,15 @@ const api = {
     reprintReceipt: (orderId: number) => ipcRenderer.invoke("orders:reprintReceipt", orderId),
     printBill: (orderId: number, paymentInfo?: ReceiptPaymentInfo) => ipcRenderer.invoke("orders:printBill", orderId, paymentInfo),
     printAudit: (orderId: number) => ipcRenderer.invoke("orders:printAudit", orderId)
+  },
+  websiteOrders: {
+    list: (statuses?: WebsiteOrderStatus[]): Promise<WebsiteOrderSummary[]> => ipcRenderer.invoke("websiteOrders:list", statuses),
+    detail: (remoteId: string): Promise<WebsiteOrderDetail> => ipcRenderer.invoke("websiteOrders:detail", remoteId),
+    accept: (remoteId: string): Promise<WebsiteOrderAcceptance> => ipcRenderer.invoke("websiteOrders:accept", remoteId),
+    reject: (remoteId: string, reason: string): Promise<WebsiteOrderDetail> => ipcRenderer.invoke("websiteOrders:reject", remoteId, reason),
+    transition: (remoteId: string, status: Exclude<WebsiteOrderStatus, "pending" | "accepted" | "rejected">): Promise<WebsiteOrderDetail> =>
+      ipcRenderer.invoke("websiteOrders:transition", remoteId, status),
+    deleteTest: (remoteId: string): Promise<boolean> => ipcRenderer.invoke("websiteOrders:deleteTest", remoteId)
   },
   print: {
     listJobs: (status?: string) => ipcRenderer.invoke("print:listJobs", status),

@@ -65,6 +65,7 @@ export function buildAuditCopy(db: Database.Database, orderId: number): string {
     order.note ? `Internal note: ${String(order.note)}` : "Internal note: None",
     "--------------------------------",
     `Subtotal      ${totals.subtotal} TK`,
+    totals.deliveryFee > 0 ? `Delivery fee  ${totals.deliveryFee} TK` : "",
     totals.discount > 0 ? `Discount     -${totals.discount} TK` : "",
     `TOTAL         ${totals.total} TK`,
     ""
@@ -117,6 +118,7 @@ export function buildReceipt(
     receiptSeparator(),
     "",
     leftRightReceiptLine("SUBTOTAL:", formatTk(totals.subtotal)),
+    totals.deliveryFee > 0 ? leftRightReceiptLine("DELIVERY FEE:", formatTk(totals.deliveryFee)) : "",
     totals.discount > 0 ? leftRightReceiptLine("DISCOUNT:", `-${formatTk(totals.discount)}`) : "",
     ...paymentLines,
     "",

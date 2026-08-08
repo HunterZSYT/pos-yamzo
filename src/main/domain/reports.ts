@@ -40,11 +40,11 @@ export function getSalesSummary(
   const orders = db
     .prepare(
       `SELECT o.id, o.source, o.discount,
-              COALESCE(SUM(CASE WHEN oi.status = 'active' THEN oi.quantity * oi.unit_price ELSE 0 END), 0) AS gross_sales
+              COALESCE(SUM(CASE WHEN oi.status = 'active' THEN oi.quantity * oi.unit_price ELSE 0 END), 0) + o.delivery_fee AS gross_sales
        FROM orders o
        LEFT JOIN order_items oi ON oi.order_id = o.id
        ${where}
-       GROUP BY o.id, o.source, o.discount`
+       GROUP BY o.id, o.source, o.discount, o.delivery_fee`
     )
     .all(...params) as SettledOrderRow[];
   const payments = db
@@ -157,7 +157,7 @@ function resolveDateRange(startOrRange?: string | SalesRange, end?: string): Sal
 }
 
 function buildSettledOrderFilter(range: SalesRange): { where: string; params: string[] } {
-  const clauses = ["o.status = 'settled'"];
+  const clauses = ["o.status = 'settled'", "o.is_test = 0"];
   const params: string[] = [];
   if (range.startDate) {
     clauses.push("o.order_date >= ?");
@@ -198,7 +198,7 @@ function getVoidTotal(db: Database.Database, where: string, params: string[]): n
 }
 
 function getOpenOrderCount(db: Database.Database, range: SalesRange): number {
-  const clauses = ["status IN ('open', 'kitchen_sent')"];
+  const clauses = ["status IN ('open', 'kitchen_sent')", "is_test = 0"];
   const params: string[] = [];
   if (range.startDate) {
     clauses.push("order_date >= ?");

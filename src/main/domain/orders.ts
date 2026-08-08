@@ -8,15 +8,17 @@ import { createOrderCostSnapshot, reverseOrderCostSnapshot } from "./inventory.j
 
 export function createOrder(
   db: Database.Database,
-  input: { source: OrderSource; tableNumber?: string; note?: string; externalOrderId?: string | null; orderDate?: string }
+  input: { source: OrderSource; tableNumber?: string; note?: string; externalOrderId?: string | null; orderDate?: string; deliveryFee?: number; isTest?: boolean }
 ): OrderSummary {
   const orderDate = normalizeBusinessDate(input.orderDate ?? localBusinessDate());
+  const deliveryFee = Math.round(Number(input.deliveryFee ?? 0));
+  if (!Number.isSafeInteger(deliveryFee) || deliveryFee < 0) throw new Error("Delivery fee cannot be negative.");
   const create = db.transaction(() => {
     const orderNumber = nextOrderNumber(db, orderDate);
     return Number(
       db
-        .prepare("INSERT INTO orders (order_number, source, table_number, note, external_order_id, order_date) VALUES (?, ?, ?, ?, ?, ?)")
-        .run(orderNumber, input.source, input.tableNumber ?? null, input.note ?? null, cleanExternalOrderId(input.externalOrderId), orderDate).lastInsertRowid
+        .prepare("INSERT INTO orders (order_number, source, table_number, note, external_order_id, order_date, delivery_fee, is_test) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(orderNumber, input.source, input.tableNumber ?? null, input.note ?? null, cleanExternalOrderId(input.externalOrderId), orderDate, deliveryFee, input.isTest ? 1 : 0).lastInsertRowid
     );
   });
   return getOrderSummary(db, create());
@@ -345,6 +347,8 @@ export function getOrderSummary(db: Database.Database, orderId: number): OrderSu
     updated_at: string;
     first_kitchen_sent_at: string | null;
     kitchen_completed_at: string | null;
+    delivery_fee: number;
+    is_test: number;
   };
   const totals = calculateOrderTotals(db, orderId);
   const itemCount = db
@@ -363,6 +367,7 @@ export function getOrderSummary(db: Database.Database, orderId: number): OrderSu
     status: order.status,
     orderDate: order.order_date,
     subtotal: totals.subtotal,
+    deliveryFee: totals.deliveryFee,
     discount: totals.discount,
     total: totals.total,
     createdAt: order.created_at,
@@ -371,7 +376,8 @@ export function getOrderSummary(db: Database.Database, orderId: number): OrderSu
     kitchenCompletedAt: order.kitchen_completed_at,
     itemCount: itemCount.count,
     itemPreview,
-    batches: listOrderBatches(db, orderId)
+    batches: listOrderBatches(db, orderId),
+    isTest: order.is_test === 1
   };
 }
 

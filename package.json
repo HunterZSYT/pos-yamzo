@@ -18,7 +18,7 @@
     "smoke:packaged": "node scripts/smoke-packaged.mjs",
     "inventory:import-sample": "npm run build:electron && node scripts/import-inventory-sample.mjs recipes_item_level_only.csv",
     "inventory:seed-yamzo": "npm run build:electron && node scripts/seed-yamzo-recipes.mjs",
-    "test": "vitest run",
+    "test": "vitest run tests",
     "lint": "tsc --noEmit"
   },
   "dependencies": {

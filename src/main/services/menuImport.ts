@@ -107,7 +107,7 @@ export function importMenuCsv(db: Database.Database, csvPath: string): MenuImpor
 
 export function listMenuItems(db: Database.Database): MenuItem[] {
   const items = db
-    .prepare("SELECT id, name, price, category, track_recipe, available, archived FROM menu_items WHERE archived = 0 ORDER BY name")
+    .prepare("SELECT id, public_id, name, price, category, track_recipe, available, archived FROM menu_items WHERE archived = 0 ORDER BY name")
     .all()
     .map(toMenuItem);
   const prices = db.prepare("SELECT menu_item_id, menu_type_key, price FROM menu_item_prices").all() as Array<{ menu_item_id: number; menu_type_key: string; price: number }>;
@@ -163,7 +163,7 @@ export function deleteMenuItem(db: Database.Database, id: number): void {
 }
 
 function getMenuItem(db: Database.Database, id: number): MenuItem {
-  const row = db.prepare("SELECT id, name, price, category, track_recipe, available, archived FROM menu_items WHERE id = ?").get(id);
+  const row = db.prepare("SELECT id, public_id, name, price, category, track_recipe, available, archived FROM menu_items WHERE id = ?").get(id);
   if (!row) {
     throw new Error("Menu item not found.");
   }
@@ -171,9 +171,10 @@ function getMenuItem(db: Database.Database, id: number): MenuItem {
 }
 
 function toMenuItem(row: unknown): MenuItem {
-  const item = row as { id: number; name: string; price: number; category: string | null; track_recipe: number; available: number; archived: number };
+  const item = row as { id: number; public_id: string; name: string; price: number; category: string | null; track_recipe: number; available: number; archived: number };
   return {
     id: item.id,
+    publicId: item.public_id,
     name: item.name,
     price: item.price,
     category: item.category,

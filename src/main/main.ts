@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, dialog } from "electron";
+import { app, BrowserWindow, Menu, dialog, safeStorage } from "electron";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -6,11 +6,25 @@ import { openDatabase } from "./database/connection.js";
 import { getDatabasePath } from "./paths.js";
 import { registerIpc } from "./ipc.js";
 import { startDailyEmailScheduler } from "./services/email.js";
+import { startWebsiteOrderSyncScheduler } from "./services/websiteOrderHttpTransport.js";
+import {
+  loadWebsiteTerminalIdentity,
+  parseWebsiteTerminalProvisioningCommand,
+  provisionWebsiteTerminalIdentity,
+  type WebsiteTerminalCredentialProtector
+} from "./services/websiteTerminalCredentials.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 let mainWindow: BrowserWindow | null = null;
 let stopDailyEmailScheduler: (() => void) | null = null;
+let stopWebsiteOrderSyncScheduler: (() => void) | null = null;
+
+const websiteTerminalCredentialProtector: WebsiteTerminalCredentialProtector = {
+  isEncryptionAvailable: () => safeStorage.isEncryptionAvailable(),
+  encryptString: (value) => safeStorage.encryptString(value),
+  decryptString: (value) => safeStorage.decryptString(value)
+};
 
 if (process.env.YAMZO_APP_DATA_DIR) {
   app.setPath("userData", process.env.YAMZO_APP_DATA_DIR);
@@ -117,9 +131,38 @@ process.on("unhandledRejection", logStartupError);
 app.whenReady()
   .then(async () => {
     Menu.setApplicationMenu(null);
+    const provisioningCommand = parseWebsiteTerminalProvisioningCommand(process.argv);
+    if (provisioningCommand) {
+      const result = provisionWebsiteTerminalIdentity({
+        terminalCode: provisioningCommand.terminalCode,
+        userDataPath: app.getPath("userData"),
+        protector: websiteTerminalCredentialProtector,
+        rotate: provisioningCommand.rotate
+      });
+      // The command returns public registration material and paths only. The
+      // decrypted private key is never printed, logged, or exposed to preload.
+      console.log(JSON.stringify({
+        ok: true,
+        created: result.created,
+        rotated: provisioningCommand.rotate,
+        registration: result.identity.registration,
+        registrationFilePath: result.registrationFilePath,
+        previousCredentialBackupPath: result.previousCredentialBackupPath
+      }, null, 2));
+      app.quit();
+      return;
+    }
+
     const db = openDatabase(getDatabasePath());
     registerIpc(db);
     stopDailyEmailScheduler = startDailyEmailScheduler(db);
+    stopWebsiteOrderSyncScheduler = startWebsiteOrderSyncScheduler(db, {
+      loadTerminalPrivateKey: (terminalCode) => loadWebsiteTerminalIdentity({
+        terminalCode,
+        userDataPath: app.getPath("userData"),
+        protector: websiteTerminalCredentialProtector
+      }).privateKey
+    });
     await createWindow();
   })
   .catch(logStartupError);
@@ -133,6 +176,8 @@ app.on("window-all-closed", () => {
 app.on("before-quit", () => {
   stopDailyEmailScheduler?.();
   stopDailyEmailScheduler = null;
+  stopWebsiteOrderSyncScheduler?.();
+  stopWebsiteOrderSyncScheduler = null;
 });
 
 app.on("activate", () => {

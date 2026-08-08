@@ -60,8 +60,9 @@ import type {
 } from "../../shared/types";
 import { demoMenu, demoOrders, demoSummary } from "../data/demo";
 import { IntegrationsAdmin } from "../components/IntegrationsAdmin";
+import { WebsiteOrderIncomingAlert, WebsiteOrdersScreen } from "../components/WebsiteOrdersScreen";
 
-type Screen = "newOrder" | "editOrder" | "openOrders" | "completedOrders" | "cancelledOrders" | "reports" | "menu" | "inventory" | "costs" | "admin";
+type Screen = "newOrder" | "editOrder" | "openOrders" | "websiteOrders" | "completedOrders" | "cancelledOrders" | "reports" | "menu" | "inventory" | "costs" | "admin";
 type AdminTab = "receipt" | "printer" | "integrations" | "app" | "security" | "activity";
 type DiscountMode = "tk" | "percent";
 type OrderLane = "newOrder" | "openOrders";
@@ -924,10 +925,12 @@ export function App() {
           {message}
         </div>
       )}
+      <WebsiteOrderIncomingAlert enabled={loggedIn} onReview={() => setScreen("websiteOrders")} onPosDataChanged={refreshData} onMessage={setMessage} />
       <aside className="flex min-h-0 flex-col gap-2 bg-stone-950 p-3 text-stone-50 xl:gap-3 xl:p-5">
         <h1 className="mb-3 text-2xl font-semibold tracking-tight xl:mb-5 xl:text-3xl">Yamzo</h1>
         <SideNav active={screen === "newOrder" || (screen === "editOrder" && orderLane === "newOrder")} onClick={startFreshOrder}>New Order</SideNav>
         <SideNav active={screen === "openOrders" || (screen === "editOrder" && orderLane === "openOrders")} onClick={() => setScreen("openOrders")}>Open Orders</SideNav>
+        <SideNav active={screen === "websiteOrders"} onClick={() => setScreen("websiteOrders")}>Website Orders</SideNav>
         <SideNav active={screen === "completedOrders"} onClick={() => void goProtectedScreen("completedOrders")}>Completed Orders</SideNav>
         <SideNav active={screen === "cancelledOrders"} onClick={() => void goProtectedScreen("cancelledOrders")}>Cancelled Orders</SideNav>
         <SideNav active={screen === "reports"} onClick={() => setScreen("reports")}>Reports</SideNav>
@@ -1149,6 +1152,7 @@ export function App() {
       )}
 
       {screen === "openOrders" && <OrdersScreen title="Open Orders" description="Running orders ready to resume." orders={openOrders} menuTypes={menuTypes} onRefresh={refreshData} onResume={loadOrder} onDone={markKitchenDelivered} onRestart={restartKitchenTimer} onBatchDone={markKitchenBatchDelivered} onBatchRestart={restartKitchenBatchTimer} onDoneAll={markAllRunningDelivered} />}
+      {screen === "websiteOrders" && <WebsiteOrdersScreen onPosDataChanged={refreshData} onMessage={setMessage} />}
       {screen === "completedOrders" && <OrdersScreen title="Completed Orders" description="Settled orders for audit and staff corrections." orders={completedOrders} menuTypes={menuTypes} onRefresh={refreshData} onResume={reopenHistoryOrder} resumeLabel="Edit" onView={viewHistoryOrder} onClearHistory={clearClosedOrderHistory} />}
       {screen === "cancelledOrders" && <OrdersScreen title="Cancelled Orders" description="Cancelled orders kept for audit." orders={cancelledOrders} menuTypes={menuTypes} onRefresh={refreshData} onView={viewHistoryOrder} onDeleteRecord={deleteClosedOrderRecord} onClearHistory={clearClosedOrderHistory} />}
       {screen === "reports" && <ContentShell title="Reports" description="Sales, order timing, payments, and profit reports."><ReportsPanel summary={summary} inventory={inventorySnapshot} menuTypes={menuTypes} /></ContentShell>}
@@ -1685,7 +1689,10 @@ function OrderList({ orders, menuTypes, showResume = false, resumeLabel = "Resum
           <CardHeader className="border-b bg-white/70">
             <div className="flex items-start justify-between gap-3">
               <div>
-                <CardTitle>{orderDisplayName(order, menuTypes)}</CardTitle>
+                <CardTitle className="flex flex-wrap items-center gap-2">
+                  {orderDisplayName(order, menuTypes)}
+                  {order.isTest && <Badge variant="outline" className="border-violet-300 text-violet-800">Test</Badge>}
+                </CardTitle>
                 <CardDescription>Receipt {order.orderNumber}</CardDescription>
                 {order.externalOrderId && <p className="mt-1 text-xs font-medium text-sky-700">External ID: {order.externalOrderId}</p>}
               </div>

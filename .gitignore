@@ -25,6 +25,7 @@ gmail-credentials*.json
 google-oauth-client.json
 google-sheets-token.json
 *.secret.*
+website-terminal-*.protected.json
 
 # Generated local analysis/cache folders.
 .understand-anything/

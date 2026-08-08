@@ -967,6 +967,9 @@ export function deleteCostRecord(db: Database.Database, id: number, reason = "Ma
 }
 
 export function createOrderCostSnapshot(db: Database.Database, orderId: number, actor = "system"): void {
+  const orderFlags = db.prepare("SELECT is_test, delivery_fee FROM orders WHERE id = ?").get(orderId) as { is_test: number; delivery_fee: number } | undefined;
+  if (!orderFlags) throw new Error("Order not found.");
+  if (orderFlags.is_test === 1) return;
   const existing = db.prepare("SELECT id FROM order_cost_snapshots WHERE order_id = ?").get(orderId) as { id: number } | undefined;
   if (existing) return;
   const orderTiming = db.prepare(
@@ -978,7 +981,7 @@ export function createOrderCostSnapshot(db: Database.Database, orderId: number, 
      FROM order_items oi
      WHERE oi.order_id = ? AND oi.status = 'active'`
   ).all(orderId) as Array<{ id: number; menu_item_id: number; quantity: number; unit_price: number; name: string }>;
-  let revenue = 0;
+  let revenue = Math.max(0, orderFlags.delivery_fee ?? 0);
   let rawCost = 0;
   let missingRecipeCount = 0;
   const affectedInventoryItems = new Set<number>();
@@ -1121,8 +1124,9 @@ export function applyInventoryBackfill(
 }
 
 export function recalculateOrderUsage(db: Database.Database, orderId: number, actor = "admin"): void {
-  const order = db.prepare("SELECT id, status FROM orders WHERE id = ?").get(orderId) as { id: number; status: string } | undefined;
+  const order = db.prepare("SELECT id, status, is_test FROM orders WHERE id = ?").get(orderId) as { id: number; status: string; is_test: number } | undefined;
   if (!order) throw new Error("Order not found.");
+  if (order.is_test === 1) throw new Error("Test orders are excluded from inventory usage.");
   if (order.status !== "settled") throw new Error("Only completed orders can be recalculated.");
   reverseOrderCostSnapshot(db, orderId, actor);
   createOrderCostSnapshot(db, orderId, actor);
@@ -1130,7 +1134,7 @@ export function recalculateOrderUsage(db: Database.Database, orderId: number, ac
 }
 
 function listSettledOrdersForBackfill(db: Database.Database, input: { start?: string | null; end?: string | null }): Array<{ id: number }> {
-  const clauses = ["status = 'settled'"];
+  const clauses = ["status = 'settled'", "is_test = 0"];
   const params: string[] = [];
   if (input.start) {
     clauses.push("datetime(COALESCE(settled_at, updated_at, created_at)) >= datetime(?)");
@@ -1406,7 +1410,7 @@ export function listInventoryOrderUsage(db: Database.Database, limit = 120): Inv
      JOIN orders o ON o.id = oics.order_id
      JOIN order_items oi ON oi.id = oics.order_item_id
      LEFT JOIN order_cost_snapshots ocs ON ocs.order_id = o.id
-     WHERE o.status = 'settled'
+     WHERE o.status = 'settled' AND o.is_test = 0
      ORDER BY datetime(o.settled_at) DESC, o.id DESC, oi.id ASC
      LIMIT ?`
   ).all(limit) as Array<{
@@ -1518,7 +1522,7 @@ function parseIngredientSnapshot(value: string | null): Array<{ inventoryItemId:
 }
 
 export function getSalesProfitSummary(db: Database.Database, start?: string, end?: string): SalesProfitSummary {
-  const where = start && end ? "WHERE o.settled_at BETWEEN ? AND ?" : "WHERE o.status = 'settled'";
+  const where = start && end ? "WHERE o.is_test = 0 AND o.settled_at BETWEEN ? AND ?" : "WHERE o.status = 'settled' AND o.is_test = 0";
   const params = start && end ? [start, end] : [];
   const totals = db.prepare(
     `SELECT COALESCE(SUM(ocs.revenue), 0) AS revenue,
@@ -1617,7 +1621,7 @@ function listSettledOrdersForMenuItems(
   input: { start?: string | null; end?: string | null }
 ): Array<{ id: number }> {
   if (menuItemIds.length === 0) return [];
-  const clauses = ["o.status = 'settled'", `oi.menu_item_id IN (${menuItemIds.map(() => "?").join(",")})`, "oi.status = 'active'"];
+  const clauses = ["o.status = 'settled'", "o.is_test = 0", `oi.menu_item_id IN (${menuItemIds.map(() => "?").join(",")})`, "oi.status = 'active'"];
   const params: Array<number | string> = [...menuItemIds];
   if (input.start) {
     clauses.push("date(COALESCE(o.order_date, o.created_at)) >= date(?)");
@@ -1675,6 +1679,9 @@ function recalculateOrderItemsForMenuItems(
   menuItemIds: number[],
   recipeVersionFilterByMenu?: Map<number, number>
 ): boolean {
+  const orderFlags = db.prepare("SELECT is_test FROM orders WHERE id = ?").get(orderId) as { is_test: number } | undefined;
+  if (!orderFlags) throw new Error("Order not found.");
+  if (orderFlags.is_test === 1) return false;
   const orderTiming = db.prepare(
     "SELECT COALESCE(settled_at, updated_at, created_at) AS effective_at FROM orders WHERE id = ?"
   ).get(orderId) as { effective_at: string } | undefined;

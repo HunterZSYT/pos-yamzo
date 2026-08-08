@@ -1,8 +1,9 @@
 import type Database from "better-sqlite3";
 import bcrypt from "bcryptjs";
+import { randomUUID } from "node:crypto";
 
 const BRANDING_DEFAULTS_VERSION = 2;
-export const DATABASE_SCHEMA_VERSION = 3;
+export const DATABASE_SCHEMA_VERSION = 6;
 
 const defaultBranding = {
   restaurantName: "Yamzo",
@@ -406,6 +407,9 @@ export function migrate(db: Database.Database): void {
   ensureColumn(db, "menu_item_recipes", "use_in_recipe_enabled", "INTEGER NOT NULL DEFAULT 1");
   ensureColumn(db, "menu_item_recipes", "current_version_id", "INTEGER");
   ensureColumn(db, "menu_items", "track_recipe", "INTEGER NOT NULL DEFAULT 1");
+  ensureColumn(db, "menu_items", "public_id", "TEXT");
+  ensureColumn(db, "orders", "is_test", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn(db, "orders", "delivery_fee", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn(db, "inventory_physical_counts", "updated_at", "TEXT");
   ensureColumn(db, "inventory_physical_counts", "reduction_delta", "REAL");
   ensureColumn(db, "cost_records", "quantity", "REAL NOT NULL DEFAULT 1");
@@ -417,6 +421,8 @@ export function migrate(db: Database.Database): void {
   ensureColumn(db, "email_settings", "last_daily_summary_date", "TEXT");
   ensureColumn(db, "email_settings", "last_daily_summary_sent_at", "TEXT");
   ensureColumn(db, "email_settings", "last_error", "TEXT");
+
+  migrateWebsiteOrders(db);
 
   // This index must be created after the legacy orders table has been upgraded
   // because older databases do not have order_date when the main schema batch runs.
@@ -457,6 +463,132 @@ function migrateOrderDates(db: Database.Database): void {
      SET order_date = date(created_at, 'localtime')
      WHERE order_date IS NULL OR trim(order_date) = ''`
   ).run();
+}
+
+function migrateWebsiteOrders(db: Database.Database): void {
+  db.prepare(
+    "UPDATE menu_items SET public_id = 'pos-menu-' || id WHERE public_id IS NULL OR trim(public_id) = ''"
+  ).run();
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_menu_items_public_id ON menu_items(public_id);
+
+    CREATE TRIGGER IF NOT EXISTS trg_menu_items_public_id
+    AFTER INSERT ON menu_items
+    WHEN NEW.public_id IS NULL OR trim(NEW.public_id) = ''
+    BEGIN
+      UPDATE menu_items SET public_id = 'pos-menu-' || NEW.id WHERE id = NEW.id;
+    END;
+
+    CREATE TABLE IF NOT EXISTS website_orders (
+      remote_id TEXT PRIMARY KEY,
+      order_code TEXT NOT NULL,
+      remote_version INTEGER NOT NULL DEFAULT 1 CHECK(remote_version >= 1),
+      payload_hash TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending'
+        CHECK(status IN ('pending', 'accepted', 'preparing', 'ready', 'out_for_delivery', 'delivered', 'rejected', 'cancelled')),
+      customer_name TEXT NOT NULL,
+      customer_phone TEXT NOT NULL,
+      sector TEXT NOT NULL,
+      road TEXT NOT NULL,
+      house TEXT NOT NULL,
+      flat TEXT NOT NULL,
+      delivery_note TEXT,
+      subtotal INTEGER NOT NULL CHECK(subtotal >= 0),
+      delivery_fee INTEGER NOT NULL DEFAULT 0 CHECK(delivery_fee >= 0),
+      discount INTEGER NOT NULL DEFAULT 0 CHECK(discount >= 0),
+      total INTEGER NOT NULL CHECK(total >= 0),
+      is_test INTEGER NOT NULL DEFAULT 0 CHECK(is_test IN (0, 1)),
+      pos_order_id INTEGER UNIQUE REFERENCES orders(id) ON DELETE SET NULL,
+      kitchen_print_job_id INTEGER REFERENCES print_jobs(id) ON DELETE SET NULL,
+      delivery_print_job_id INTEGER REFERENCES print_jobs(id) ON DELETE SET NULL,
+      rejection_reason TEXT,
+      remote_created_at TEXT NOT NULL,
+      remote_updated_at TEXT NOT NULL,
+      received_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      accepted_at TEXT,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS website_order_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      website_order_id TEXT NOT NULL REFERENCES website_orders(remote_id) ON DELETE CASCADE,
+      remote_item_id TEXT NOT NULL,
+      menu_item_public_id TEXT NOT NULL,
+      menu_item_id INTEGER REFERENCES menu_items(id) ON DELETE SET NULL,
+      name TEXT NOT NULL,
+      quantity INTEGER NOT NULL CHECK(quantity > 0),
+      unit_price INTEGER NOT NULL CHECK(unit_price >= 0),
+      note TEXT,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(website_order_id, remote_item_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS website_sync_outbox (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      event_key TEXT NOT NULL,
+      remote_order_id TEXT NOT NULL,
+      event_type TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      dedupe_key TEXT NOT NULL UNIQUE,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'sending', 'sent', 'failed')),
+      attempts INTEGER NOT NULL DEFAULT 0,
+      available_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      last_error TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      sent_at TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS website_sync_cursors (
+      stream TEXT PRIMARY KEY,
+      cursor TEXT,
+      last_synced_at TEXT,
+      last_error TEXT,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS website_menu_contract_state (
+      singleton_id INTEGER PRIMARY KEY CHECK(singleton_id = 1),
+      catalog_digest TEXT NOT NULL CHECK(length(catalog_digest) = 64),
+      entry_count INTEGER NOT NULL CHECK(entry_count > 0),
+      applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS website_menu_mappings (
+      website_public_id TEXT NOT NULL,
+      effective_unit_price INTEGER NOT NULL CHECK(effective_unit_price >= 0),
+      menu_item_id INTEGER NOT NULL UNIQUE REFERENCES menu_items(id) ON DELETE RESTRICT,
+      catalog_digest TEXT NOT NULL CHECK(length(catalog_digest) = 64),
+      expected_pos_name TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY(website_public_id, effective_unit_price)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_website_orders_status_received
+      ON website_orders(status, received_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_website_order_items_order
+      ON website_order_items(website_order_id, sort_order, id);
+    CREATE INDEX IF NOT EXISTS idx_website_outbox_delivery
+      ON website_sync_outbox(status, available_at, id);
+    CREATE INDEX IF NOT EXISTS idx_orders_test_status
+      ON orders(is_test, status, order_date);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_website_remote_id
+      ON orders(external_order_id)
+      WHERE source = 'website' AND external_order_id IS NOT NULL;
+  `);
+
+  ensureColumn(db, "website_sync_outbox", "event_key", "TEXT");
+  const rowsWithoutEventKeys = db.prepare(
+    "SELECT id FROM website_sync_outbox WHERE event_key IS NULL OR trim(event_key) = '' ORDER BY id"
+  ).all() as Array<{ id: number }>;
+  const assignEventKey = db.prepare(
+    "UPDATE website_sync_outbox SET event_key = ? WHERE id = ? AND (event_key IS NULL OR trim(event_key) = '')"
+  );
+  for (const row of rowsWithoutEventKeys) {
+    assignEventKey.run(randomUUID(), row.id);
+  }
+  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_website_outbox_event_key ON website_sync_outbox(event_key)");
 }
 
 function migrateRecipeVersionsAndBindings(db: Database.Database): void {

@@ -578,10 +578,10 @@ export function buildGoogleSheetsSnapshot(db: Database.Database): GoogleSheetsSn
   const orderDateExpression = databaseHasColumn(db, "orders", "order_date") ? "o.order_date" : "substr(o.created_at, 1, 10)";
   const orderRows = db.prepare(
     `SELECT o.id, o.order_number, ${orderDateExpression} AS order_date, o.created_at, o.updated_at,
-            o.status, o.source, o.external_order_id, o.table_number, o.note, o.discount,
+            o.status, o.source, o.external_order_id, o.table_number, o.note, o.discount, o.delivery_fee,
             o.first_kitchen_sent_at, o.kitchen_completed_at, o.settled_at,
             COALESCE(items.subtotal, 0) AS subtotal,
-            MAX(COALESCE(items.subtotal, 0) - o.discount, 0) AS total,
+            MAX(COALESCE(items.subtotal, 0) + o.delivery_fee - o.discount, 0) AS total,
             COALESCE(items.item_count, 0) AS item_count,
             COALESCE(payments.paid_amount, 0) AS paid_amount,
             COALESCE(payments.payment_methods, '') AS payment_methods
@@ -600,6 +600,7 @@ export function buildGoogleSheetsSnapshot(db: Database.Database): GoogleSheetsSn
        FROM payments
        GROUP BY order_id
      ) payments ON payments.order_id = o.id
+     WHERE o.is_test = 0
      ORDER BY date(${orderDateExpression}), o.id`
   ).all() as Array<Record<string, unknown>>;
 
@@ -609,7 +610,7 @@ export function buildGoogleSheetsSnapshot(db: Database.Database): GoogleSheetsSn
             oi.quantity * oi.unit_price AS line_total, oi.parcel, oi.kitchen_sent_at,
             oi.note, oi.void_reason, oi.created_at
      FROM order_items oi
-     JOIN orders o ON o.id = oi.order_id
+     JOIN orders o ON o.id = oi.order_id AND o.is_test = 0
      ORDER BY date(${orderDateExpression}), oi.order_id, oi.id`
   ).all() as Array<Record<string, unknown>>;
 
