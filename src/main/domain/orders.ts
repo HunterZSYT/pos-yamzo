@@ -203,10 +203,17 @@ export function removeOrderItem(db: Database.Database, orderItemId: number, reas
   return getOrderDetail(db, item.order_id);
 }
 
-export function deleteOrder(db: Database.Database, orderId: number, reason = ""): OrderSummary {
+export function cancelOrder(db: Database.Database, orderId: number, reason = ""): OrderSummary {
   const order = db.prepare("SELECT status FROM orders WHERE id = ?").get(orderId) as { status: string } | undefined;
   if (!order) {
     throw new Error("Order not found.");
+  }
+  if (order.status === "cancelled") {
+    return getOrderSummary(db, orderId);
+  }
+  const cancellationReason = reason.trim();
+  if (cancellationReason.length < 2) {
+    throw new Error("A short cancellation reason is required.");
   }
   const tx = db.transaction(() => {
     if (order.status === "settled") {
@@ -214,8 +221,8 @@ export function deleteOrder(db: Database.Database, orderId: number, reason = "")
       reverseOrderCostSnapshot(db, orderId);
     }
     db.prepare(
-      "INSERT INTO audit_logs (action, entity_type, entity_id, details) VALUES ('delete_order', 'order', ?, ?)"
-    ).run(String(orderId), JSON.stringify({ reason: reason.trim() || null, fromStatus: order.status }));
+      "INSERT INTO audit_logs (action, entity_type, entity_id, details) VALUES ('cancel_order', 'order', ?, ?)"
+    ).run(String(orderId), JSON.stringify({ reason: cancellationReason || null, fromStatus: order.status }));
     db.prepare("UPDATE orders SET status = 'cancelled', settled_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(orderId);
   });
   tx();
@@ -401,51 +408,6 @@ export function listOpenOrders(db: Database.Database): OrderSummary[] {
 export function listOrderHistory(db: Database.Database): OrderSummary[] {
   const rows = db.prepare("SELECT id FROM orders WHERE status IN ('settled', 'cancelled') ORDER BY updated_at DESC LIMIT 200").all() as Array<{ id: number }>;
   return rows.map((row) => getOrderSummary(db, row.id));
-}
-
-export function clearOrderHistory(db: Database.Database): number {
-  const tx = db.transaction(() => {
-    const closedOrders = db.prepare("SELECT id FROM orders WHERE status IN ('settled', 'cancelled')").all() as Array<{ id: number }>;
-    const orderIds = closedOrders.map((order) => order.id);
-    if (orderIds.length === 0) {
-      return 0;
-    }
-    const placeholders = orderIds.map(() => "?").join(",");
-    db.prepare(`DELETE FROM payments WHERE order_id IN (${placeholders})`).run(...orderIds);
-    db.prepare(`DELETE FROM kitchen_ticket_items WHERE ticket_id IN (SELECT id FROM kitchen_tickets WHERE order_id IN (${placeholders}))`).run(...orderIds);
-    db.prepare(`DELETE FROM kitchen_tickets WHERE order_id IN (${placeholders})`).run(...orderIds);
-    db.prepare(`DELETE FROM order_items WHERE order_id IN (${placeholders})`).run(...orderIds);
-    db.prepare(`DELETE FROM orders WHERE id IN (${placeholders})`).run(...orderIds);
-    db.prepare(
-      "INSERT INTO audit_logs (action, entity_type, entity_id, details) VALUES ('clear_order_history', 'orders', 'closed', ?)"
-    ).run(JSON.stringify({ deletedOrders: orderIds.length }));
-    return orderIds.length;
-  });
-  return tx();
-}
-
-export function deleteClosedOrderRecord(db: Database.Database, orderId: number): number {
-  const row = db.prepare("SELECT status FROM orders WHERE id = ?").get(orderId) as { status: string } | undefined;
-  if (!row) {
-    return 0;
-  }
-  if (row.status !== "settled" && row.status !== "cancelled") {
-    throw new Error("Only completed or cancelled order history can be deleted.");
-  }
-  const tx = db.transaction(() => {
-    db.prepare("DELETE FROM payments WHERE order_id = ?").run(orderId);
-    db.prepare("DELETE FROM kitchen_ticket_items WHERE ticket_id IN (SELECT id FROM kitchen_tickets WHERE order_id = ?)").run(orderId);
-    db.prepare("DELETE FROM kitchen_tickets WHERE order_id = ?").run(orderId);
-    db.prepare("DELETE FROM order_item_cost_snapshots WHERE order_id = ?").run(orderId);
-    db.prepare("DELETE FROM order_cost_snapshots WHERE order_id = ?").run(orderId);
-    db.prepare("DELETE FROM order_items WHERE order_id = ?").run(orderId);
-    const result = db.prepare("DELETE FROM orders WHERE id = ?").run(orderId);
-    db.prepare(
-      "INSERT INTO audit_logs (action, entity_type, entity_id, details) VALUES ('delete_order_history_record', 'order', ?, ?)"
-    ).run(String(orderId), JSON.stringify({ fromStatus: row.status }));
-    return result.changes;
-  });
-  return tx();
 }
 
 export function reprintReceipt(db: Database.Database, orderId: number): number {

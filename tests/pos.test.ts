@@ -5,10 +5,9 @@ import { login, changePassword } from "../src/main/domain/auth";
 import {
   addOrderItem,
   applyDiscount,
+  cancelOrder,
   createOrder,
-  deleteOrder,
   getOrderDetail,
-  clearOrderHistory,
   listOpenOrders,
   markKitchenDelivered,
   orderHasKitchenPrintedItems,
@@ -198,7 +197,7 @@ describe("Yamzo POS core", () => {
     }
   });
 
-  it("edits running orders, prints bill copy, and deletes with an audit reason", () => {
+  it("edits running orders, prints bill copy, and permanently retains cancelled orders", () => {
     const database = freshDb();
     setPrinterName(database, "Xprinter COM8 Receipt (Generic)");
     database.prepare("INSERT INTO menu_items (name, price) VALUES ('Chicken Momo', 190), ('Pasta', 450)").run();
@@ -218,10 +217,13 @@ describe("Yamzo POS core", () => {
     expect(getPrintJob(database, billId).printer).toBe("Xprinter COM8 Receipt (Generic)");
     expect(sendNewItemsToKitchen(database, order.id)).toBeTypeOf("number");
     expect(orderHasKitchenPrintedItems(database, order.id)).toBe(true);
-    deleteOrder(database, order.id, "Wrong table");
+    expect(() => cancelOrder(database, order.id)).toThrow("cancellation reason");
+    cancelOrder(database, order.id, "Wrong table");
     expect(getOrderDetail(database, order.id).status).toBe("cancelled");
-    expect(clearOrderHistory(database)).toBe(1);
-    expect(database.prepare("SELECT COUNT(*) AS count FROM orders").get()).toMatchObject({ count: 0 });
+    expect(database.prepare("SELECT COUNT(*) AS count FROM orders WHERE id = ?").get(order.id)).toMatchObject({ count: 1 });
+    expect(database.prepare("SELECT action FROM audit_logs WHERE entity_id = ? ORDER BY id DESC LIMIT 1").get(String(order.id))).toMatchObject({ action: "cancel_order" });
+    expect(() => database.prepare("DELETE FROM orders WHERE id = ?").run(order.id)).toThrow("Orders cannot be deleted");
+    expect(getOrderDetail(database, order.id).status).toBe("cancelled");
   });
 
   it("stores external order IDs only as order metadata", () => {
@@ -445,7 +447,7 @@ describe("Yamzo POS core", () => {
     const menuItem = listMenuItems(database).find((item) => item.name === "Chicken Momo")!;
     const cancelled = createOrder(database, { source: "in_house", tableNumber: "Table 2" });
     addOrderItem(database, cancelled.id, { menuItemId: menuItem.id, quantity: 1 });
-    deleteOrder(database, cancelled.id, "Customer cancelled");
+    cancelOrder(database, cancelled.id, "Customer cancelled");
     expect(getSalesSummary(database).totalSales).toBe(0);
     expect(getSalesSummary(database).topItems).toEqual([]);
 

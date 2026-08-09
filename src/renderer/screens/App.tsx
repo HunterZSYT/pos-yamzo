@@ -94,7 +94,7 @@ const defaultMenuData: MenuDataSetting[] = [
   { key: "foodie", label: "Foodie Menu", active: true, externalOrderIdEnabled: true }
 ];
 
-const deleteReasons = [
+const cancellationReasons = [
   "Customer cancelled",
   "Wrong table",
   "Wrong item entered",
@@ -197,9 +197,8 @@ export function App() {
   const [externalKitchenEnabled, setExternalKitchenEnabled] = useState(false);
   const [menuForm, setMenuForm] = useState<MenuFormState>({ id: 0, name: "", price: "", category: "", available: true, trackRecipe: true, menuPrices: {} });
   const [message, setMessage] = useState("");
-  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
-  const [deleteReason, setDeleteReason] = useState("");
-  const [deleteNeedsReason, setDeleteNeedsReason] = useState(false);
+  const [cancelConfirmOpen, setCancelConfirmOpen] = useState(false);
+  const [cancellationReason, setCancellationReason] = useState("");
   const [printConfirm, setPrintConfirm] = useState<PrintConfirm>(null);
   const [sessionPrinted, setSessionPrinted] = useState<Record<string, boolean>>({});
   const [noteEdit, setNoteEdit] = useState<NoteEdit>(null);
@@ -406,9 +405,8 @@ export function App() {
     setMarkAsPaid(false);
     setPaymentReference("");
     setExternalKitchenEnabled(false);
-    setDeleteConfirmOpen(false);
-    setDeleteReason("");
-    setDeleteNeedsReason(false);
+    setCancelConfirmOpen(false);
+    setCancellationReason("");
     setReprintMode(false);
     setMessage("");
   }
@@ -758,42 +756,24 @@ export function App() {
     await refreshData();
   }
 
-  async function requestDeleteOrder() {
+  async function requestCancelOrder() {
     if (!activeOrder || !window.yamzo) return;
-    const needsReason = await window.yamzo.orders.hasKitchenPrintedItems(activeOrder.id);
-    setDeleteNeedsReason(needsReason);
-    setDeleteReason("");
-    setDeleteConfirmOpen(true);
+    setCancellationReason("");
+    setCancelConfirmOpen(true);
   }
 
-  async function confirmDeleteOrder() {
+  async function confirmCancelOrder() {
     if (!activeOrder || !window.yamzo) return;
-    if (deleteNeedsReason && !deleteReason.trim()) {
-      setMessage("A reason is required for orders that already have a Kitchen Copy.");
+    if (cancellationReason.trim().length < 2) {
+      setMessage("Choose a cancellation reason before continuing.");
       return;
     }
     const orderNumber = activeOrder.orderNumber;
-    await window.yamzo.orders.delete(activeOrder.id, deleteReason);
+    await window.yamzo.orders.cancel(activeOrder.id, cancellationReason);
     const nextScreen = orderLane === "openOrders" ? "openOrders" : "newOrder";
     resetOrderScreen();
     setScreen(nextScreen);
-    setMessage(`Order ${orderNumber} deleted.`);
-    await refreshData();
-  }
-
-  async function clearClosedOrderHistory() {
-    if (!window.yamzo) return;
-    if (!window.confirm("Delete completed and deleted order history? Open orders will stay.")) return;
-    const count = await window.yamzo.orders.clearHistory();
-    setMessage(`${count} closed order${count === 1 ? "" : "s"} deleted from history.`);
-    await refreshData();
-  }
-
-  async function deleteClosedOrderRecord(orderId: number) {
-    if (!window.yamzo) return;
-    if (!window.confirm("Delete this order history record?")) return;
-    const count = await window.yamzo.orders.deleteClosedRecord(orderId);
-    setMessage(count ? "Order history record deleted." : "Order history record was already removed.");
+    setMessage(`Order ${orderNumber} cancelled and kept in history.`);
     await refreshData();
   }
 
@@ -1138,11 +1118,10 @@ export function App() {
               <div className="grid gap-3 rounded-xl border bg-white p-3">
                 <p className="text-xs font-medium text-muted-foreground">Close order</p>
                 <Button size="lg" className="w-full" disabled={!activeOrder || activeItems.length === 0} onClick={completeOrder}>Complete Order</Button>
-                <Button size="lg" variant="secondary" className="w-full" disabled={!activeOrder} onClick={requestDeleteOrder}>Cancel Order</Button>
+                <Button size="lg" variant="secondary" className="w-full" disabled={!activeOrder} onClick={requestCancelOrder}>Cancel Order</Button>
               </div>
               {!canPrintKitchen && <p className="text-sm text-muted-foreground">Kitchen Copy is off for this external order.</p>}
               <div className="mt-auto grid gap-2 border-t pt-3">
-                <Button size="lg" variant="destructive" className="w-full" disabled={!activeOrder} onClick={requestDeleteOrder}>Delete Order</Button>
                 <p className="text-xs font-medium text-muted-foreground">Printer quick actions</p>
                 <div className="grid grid-cols-2 gap-2">
                   <Button size="lg" variant="secondary" onClick={quickTestPrint}>Test Print</Button>
@@ -1156,8 +1135,8 @@ export function App() {
 
       {screen === "openOrders" && <OrdersScreen title="Open Orders" description="Running orders ready to resume." orders={openOrders} menuTypes={menuTypes} onRefresh={refreshData} onResume={loadOrder} onDone={markKitchenDelivered} onRestart={restartKitchenTimer} onBatchDone={markKitchenBatchDelivered} onBatchRestart={restartKitchenBatchTimer} onDoneAll={markAllRunningDelivered} />}
       {screen === "websiteOrders" && <WebsiteOrdersScreen onMessage={setMessage} />}
-      {screen === "completedOrders" && <OrdersScreen title="Completed Orders" description="Settled POS orders and delivered website snapshots." orders={completedOrders} menuTypes={menuTypes} onRefresh={refreshData} onResume={reopenHistoryOrder} resumeLabel="Edit" onView={viewHistoryOrder} onClearHistory={clearClosedOrderHistory} afterList={<WebsiteCompletedOrdersPanel orders={completedWebsiteOrders} onRefresh={refreshData} onMessage={setMessage} />} />}
-      {screen === "cancelledOrders" && <OrdersScreen title="Cancelled Orders" description="Cancelled orders kept for audit." orders={cancelledOrders} menuTypes={menuTypes} onRefresh={refreshData} onView={viewHistoryOrder} onDeleteRecord={deleteClosedOrderRecord} onClearHistory={clearClosedOrderHistory} />}
+      {screen === "completedOrders" && <OrdersScreen title="Completed Orders" description="Settled POS orders and delivered website snapshots retained for audit." orders={completedOrders} menuTypes={menuTypes} onRefresh={refreshData} onResume={reopenHistoryOrder} resumeLabel="Edit" onView={viewHistoryOrder} afterList={<WebsiteCompletedOrdersPanel orders={completedWebsiteOrders} onRefresh={refreshData} onMessage={setMessage} />} />}
+      {screen === "cancelledOrders" && <OrdersScreen title="Cancelled Orders" description="Cancelled orders are retained permanently for audit." orders={cancelledOrders} menuTypes={menuTypes} onRefresh={refreshData} onView={viewHistoryOrder} />}
       {screen === "reports" && <ContentShell title="Reports" description="Sales, order timing, payments, and profit reports."><ReportsPanel summary={summary} inventory={inventorySnapshot} menuTypes={menuTypes} /></ContentShell>}
       {screen === "menu" && (
         <ContentShell title="Menu" description="Manage food, sauce, drink items, and menu categories." action={<Button variant="secondary" onClick={refreshData}>Refresh</Button>}>
@@ -1219,28 +1198,26 @@ export function App() {
         </AlertDialogContent>
       </AlertDialog>
 
-      <AlertDialog open={deleteConfirmOpen} onOpenChange={setDeleteConfirmOpen}>
+      <AlertDialog open={cancelConfirmOpen} onOpenChange={setCancelConfirmOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete this order?</AlertDialogTitle>
+            <AlertDialogTitle>Cancel this order?</AlertDialogTitle>
             <AlertDialogDescription>
-              This removes the running order from Open Orders. It remains recorded as deleted in Order History.
+              This closes the running order and keeps its full record in Cancelled Orders for audit.
             </AlertDialogDescription>
           </AlertDialogHeader>
-          {deleteNeedsReason && (
-            <Field label="Reason">
-              <Select value={deleteReason || "none"} onValueChange={(value) => setDeleteReason(value === "none" ? "" : value)}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="none">Choose a reason</SelectItem>
-                  {deleteReasons.map((reason) => <SelectItem key={reason} value={reason}>{reason}</SelectItem>)}
-                </SelectContent>
-              </Select>
-            </Field>
-          )}
+          <Field label="Cancellation reason *">
+            <Select value={cancellationReason || "none"} onValueChange={(value) => setCancellationReason(value === "none" ? "" : value)}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="none">Choose a reason</SelectItem>
+                {cancellationReasons.map((reason) => <SelectItem key={reason} value={reason}>{reason}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </Field>
           <AlertDialogFooter>
             <AlertDialogCancel>Keep Order</AlertDialogCancel>
-            <AlertDialogAction onClick={confirmDeleteOrder}>Confirm Delete</AlertDialogAction>
+            <AlertDialogAction disabled={cancellationReason.trim().length < 2} onClick={confirmCancelOrder}>Confirm Cancellation</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
@@ -1671,20 +1648,20 @@ function ContentShell({ title, description, action, children }: { title: string;
   );
 }
 
-function OrdersScreen({ title, description, orders, menuTypes, onRefresh, onResume, resumeLabel = "Resume", onView, onDone, onRestart, onBatchDone, onBatchRestart, onDoneAll, onClearHistory, onDeleteRecord, afterList }: { title: string; description: string; orders: OrderSummary[]; menuTypes: MenuTypeSetting[]; onRefresh: () => void; onResume?: (orderId: number) => void; resumeLabel?: string; onView?: (orderId: number) => void; onDone?: (orderId: number) => void; onRestart?: (orderId: number) => void; onBatchDone?: (ticketId: number) => void; onBatchRestart?: (ticketId: number) => void; onDoneAll?: () => void; onClearHistory?: () => void; onDeleteRecord?: (orderId: number) => void; afterList?: React.ReactNode }) {
+function OrdersScreen({ title, description, orders, menuTypes, onRefresh, onResume, resumeLabel = "Resume", onView, onDone, onRestart, onBatchDone, onBatchRestart, onDoneAll, afterList }: { title: string; description: string; orders: OrderSummary[]; menuTypes: MenuTypeSetting[]; onRefresh: () => void; onResume?: (orderId: number) => void; resumeLabel?: string; onView?: (orderId: number) => void; onDone?: (orderId: number) => void; onRestart?: (orderId: number) => void; onBatchDone?: (ticketId: number) => void; onBatchRestart?: (ticketId: number) => void; onDoneAll?: () => void; afterList?: React.ReactNode }) {
   return (
     <ContentShell
       title={title}
       description={description}
-      action={<div className="flex gap-2"><Button variant="secondary" onClick={onRefresh}>Refresh</Button>{onDoneAll && <Button onClick={onDoneAll}>Done All</Button>}{onClearHistory && <Button variant="destructive" onClick={onClearHistory}>Delete History</Button>}</div>}
+      action={<div className="flex gap-2"><Button variant="secondary" onClick={onRefresh}>Refresh</Button>{onDoneAll && <Button onClick={onDoneAll}>Done All</Button>}</div>}
     >
-      <OrderList orders={orders} menuTypes={menuTypes} showResume={Boolean(onResume)} resumeLabel={resumeLabel} onResume={onResume} onView={onView} onDone={onDone} onRestart={onRestart} onBatchDone={onBatchDone} onBatchRestart={onBatchRestart} onDeleteRecord={onDeleteRecord} />
+      <OrderList orders={orders} menuTypes={menuTypes} showResume={Boolean(onResume)} resumeLabel={resumeLabel} onResume={onResume} onView={onView} onDone={onDone} onRestart={onRestart} onBatchDone={onBatchDone} onBatchRestart={onBatchRestart} />
       {afterList}
     </ContentShell>
   );
 }
 
-function OrderList({ orders, menuTypes, showResume = false, resumeLabel = "Resume", onResume, onView, onDone, onRestart, onBatchDone, onBatchRestart, onDeleteRecord }: { orders: OrderSummary[]; menuTypes: MenuTypeSetting[]; showResume?: boolean; resumeLabel?: string; onResume?: (orderId: number) => void; onView?: (orderId: number) => void; onDone?: (orderId: number) => void; onRestart?: (orderId: number) => void; onBatchDone?: (ticketId: number) => void; onBatchRestart?: (ticketId: number) => void; onDeleteRecord?: (orderId: number) => void }) {
+function OrderList({ orders, menuTypes, showResume = false, resumeLabel = "Resume", onResume, onView, onDone, onRestart, onBatchDone, onBatchRestart }: { orders: OrderSummary[]; menuTypes: MenuTypeSetting[]; showResume?: boolean; resumeLabel?: string; onResume?: (orderId: number) => void; onView?: (orderId: number) => void; onDone?: (orderId: number) => void; onRestart?: (orderId: number) => void; onBatchDone?: (ticketId: number) => void; onBatchRestart?: (ticketId: number) => void }) {
   if (orders.length === 0) return <p className="rounded-lg border border-dashed p-6 text-sm text-muted-foreground">No orders found.</p>;
   return (
     <div className="grid grid-cols-[repeat(auto-fill,minmax(300px,1fr))] gap-4">
@@ -1700,7 +1677,7 @@ function OrderList({ orders, menuTypes, showResume = false, resumeLabel = "Resum
                 <CardDescription>Receipt {order.orderNumber}</CardDescription>
                 {order.externalOrderId && <p className="mt-1 text-xs font-medium text-sky-700">External ID: {order.externalOrderId}</p>}
               </div>
-              <Badge className="shrink-0" variant={order.status === "cancelled" ? "secondary" : "default"}>{order.status === "cancelled" ? "Deleted" : labelize(order.status)}</Badge>
+              <Badge className="shrink-0" variant={order.status === "cancelled" ? "secondary" : "default"}>{order.status === "cancelled" ? "Cancelled" : labelize(order.status)}</Badge>
             </div>
           </CardHeader>
           <CardContent className="grid gap-3 p-4 text-sm">
@@ -1736,7 +1713,6 @@ function OrderList({ orders, menuTypes, showResume = false, resumeLabel = "Resum
               {onView && <Button variant="secondary" onClick={() => onView(order.id)}>View</Button>}
               {order.kitchenStartedAt && !order.kitchenCompletedAt && onDone && <Button variant="secondary" onClick={() => onDone(order.id)}>Done</Button>}
               {order.kitchenStartedAt && order.kitchenCompletedAt && onRestart && <Button variant="secondary" onClick={() => onRestart(order.id)}>Restart</Button>}
-              {onDeleteRecord && <Button variant="destructive" onClick={() => onDeleteRecord(order.id)}>Delete</Button>}
             </div>
           </CardContent>
         </Card>

@@ -4,8 +4,8 @@ import { openMemoryDatabase } from "../src/main/database/connection";
 import {
   addOrderItem,
   applyDiscount,
+  cancelOrder,
   createOrder,
-  deleteOrder,
   markKitchenBatchDelivered,
   sendNewItemsToKitchen,
   settleOrder,
@@ -50,7 +50,7 @@ describe("orders and reports release behavior", () => {
       "yamzo-2026-jun-01-112",
       "yamzo-2026-jun-01-113"
     ]);
-    database.prepare("DELETE FROM orders WHERE id = ?").run(removedGap.id);
+    database.prepare("UPDATE orders SET order_number = ? WHERE id = ?").run("yamzo-test-removed-gap", removedGap.id);
 
     const openOrder = createOrder(database, { source: "parcel", orderDate: "2026-06-02" });
     expect(updateOrderDate(database, openOrder.id, "2026-06-01")).toMatchObject({
@@ -76,7 +76,8 @@ describe("orders and reports release behavior", () => {
     });
 
     const cancelledOrder = createOrder(database, { source: "parcel", orderDate: "2026-06-04" });
-    deleteOrder(database, cancelledOrder.id);
+    expect(() => cancelOrder(database, cancelledOrder.id)).toThrow("cancellation reason");
+    cancelOrder(database, cancelledOrder.id, "Date correction");
     expect(updateOrderDate(database, cancelledOrder.id, "2026-06-01")).toMatchObject({
       status: "cancelled",
       orderDate: "2026-06-01",
