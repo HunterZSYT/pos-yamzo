@@ -4,16 +4,13 @@ import { login, changePassword } from "./domain/auth.js";
 import {
   addOrderItem,
   applyDiscount,
+  cancelOrder,
   createOrder,
-  clearOrderHistory,
-  deleteClosedOrderRecord,
-  deleteOrder,
   getOrderDetail,
   listOpenOrders,
   listOrderHistory,
   markKitchenBatchDelivered,
   markKitchenDelivered,
-  orderHasKitchenPrintedItems,
   printAuditCopy,
   printBillCopy,
   reprintKitchenCopy,
@@ -218,18 +215,15 @@ export function registerIpc(db: Database.Database): void {
   ipcMain.handle("orders:updateItem", (_event, orderItemId: number, input) => withSheetSync(() => updateOrderItem(db, orderItemId, input)));
   ipcMain.handle("orders:removeItem", (_event, orderItemId: number, reason?: string) => withSheetSync(() => removeOrderItem(db, orderItemId, reason)));
   ipcMain.handle("orders:settle", (_event, orderId: number, method, amount?: number, reference?: string, host?: string) => withSheetSync(() => settleOrder(db, orderId, method, amount, reference, host)));
-  ipcMain.handle("orders:delete", (_event, orderId: number, reason?: string) => withSheetSync(() => deleteOrder(db, orderId, reason)));
+  ipcMain.handle("orders:cancel", (_event, orderId: number, reason?: string) => withSheetSync(() => cancelOrder(db, orderId, reason)));
   ipcMain.handle("orders:reopen", (_event, orderId: number) => withSheetSync(() => reopenOrder(db, orderId)));
   ipcMain.handle("orders:markKitchenDelivered", (_event, orderId: number) => withSheetSync(() => markKitchenDelivered(db, orderId)));
   ipcMain.handle("orders:restartKitchenTimer", (_event, orderId: number) => withSheetSync(() => restartKitchenTimer(db, orderId)));
   ipcMain.handle("orders:markKitchenBatchDelivered", (_event, ticketId: number) => withSheetSync(() => markKitchenBatchDelivered(db, ticketId)));
   ipcMain.handle("orders:restartKitchenBatchTimer", (_event, ticketId: number) => withSheetSync(() => restartKitchenBatchTimer(db, ticketId)));
-  ipcMain.handle("orders:hasKitchenPrintedItems", (_event, orderId: number) => orderHasKitchenPrintedItems(db, orderId));
   ipcMain.handle("orders:detail", (_event, orderId: number) => getOrderDetail(db, orderId));
   ipcMain.handle("orders:open", () => listOpenOrders(db));
   ipcMain.handle("orders:history", () => listOrderHistory(db));
-  ipcMain.handle("orders:clearHistory", () => withSheetSync(() => clearOrderHistory(db)));
-  ipcMain.handle("orders:deleteClosedRecord", (_event, orderId: number) => withSheetSync(() => deleteClosedOrderRecord(db, orderId)));
   ipcMain.handle("orders:reprintKitchen", (_event, orderId: number) => reprintKitchenCopy(db, orderId));
   ipcMain.handle("orders:reprintReceipt", (_event, orderId: number) => reprintReceipt(db, orderId));
   ipcMain.handle("orders:printBill", (_event, orderId: number, paymentInfo) => printBillCopy(db, orderId, paymentInfo));

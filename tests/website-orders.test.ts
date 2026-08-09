@@ -105,6 +105,16 @@ describe("website order mirror", () => {
     expect(db.prepare("SELECT COUNT(*) AS count FROM orders").get()).toEqual({ count: 0 });
   });
 
+  it("retains synced website order records and refuses direct deletion", () => {
+    const order = snapshot();
+    importWebsiteOrderSnapshots(db, [order]);
+
+    expect(() => db.prepare("DELETE FROM website_orders WHERE remote_id = ?").run(order.remoteId)).toThrow(
+      "Orders cannot be deleted",
+    );
+    expect(db.prepare("SELECT COUNT(*) AS count FROM website_orders WHERE remote_id = ?").get(order.remoteId)).toEqual({ count: 1 });
+  });
+
   it("creates local KOT and delivery-copy jobs from an approved snapshot without creating or mutating a POS order", () => {
     const order = snapshot({ status: "accepted", isTest: false });
     importWebsiteOrderSnapshots(db, [order]);

@@ -76,15 +76,11 @@ function describeActivity(action: string, details: AuditDetails): Pick<ActivityL
       status: success ? "success" : "failed"
     };
   }
-  if (action === "delete_order") {
-    return { title: "Order cancelled or deleted", description: reasonText(details), status: "info" };
+  if (action === "cancel_order" || action === "delete_order") {
+    return { title: "Order cancelled", description: reasonText(details), status: "info" };
   }
   if (action === "reopen_order") {
     return { title: "Order reopened", description: "A closed order was reopened for correction.", status: "info" };
-  }
-  if (action === "clear_order_history") {
-    const count = typeof details.deletedOrders === "number" ? details.deletedOrders : 0;
-    return { title: "Order history cleared", description: `${count} closed order${count === 1 ? "" : "s"} removed from local history.`, status: "info" };
   }
   if (action === "admin_password_changed" || action === "admin_password_change_failed") {
     const success = action === "admin_password_changed";

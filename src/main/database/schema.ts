@@ -3,7 +3,7 @@ import bcrypt from "bcryptjs";
 import { randomUUID } from "node:crypto";
 
 const BRANDING_DEFAULTS_VERSION = 2;
-export const DATABASE_SCHEMA_VERSION = 7;
+export const DATABASE_SCHEMA_VERSION = 8;
 
 const defaultBranding = {
   restaurantName: "Yamzo",
@@ -431,6 +431,7 @@ export function migrate(db: Database.Database): void {
   migrateOrderDates(db);
   migrateInventoryEventTimeline(db);
   migrateRecipeVersionsAndBindings(db);
+  migrateOrderDeletionProtection(db);
 
   seedDefaults(db);
   db.pragma(`user_version = ${DATABASE_SCHEMA_VERSION}`);
@@ -463,6 +464,22 @@ function migrateOrderDates(db: Database.Database): void {
      SET order_date = date(created_at, 'localtime')
      WHERE order_date IS NULL OR trim(order_date) = ''`
   ).run();
+}
+
+function migrateOrderDeletionProtection(db: Database.Database): void {
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS trg_orders_prevent_delete
+    BEFORE DELETE ON orders
+    BEGIN
+      SELECT RAISE(ABORT, 'Orders cannot be deleted. Cancel the order instead.');
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_website_orders_prevent_delete
+    BEFORE DELETE ON website_orders
+    BEGIN
+      SELECT RAISE(ABORT, 'Orders cannot be deleted. Cancel the order instead.');
+    END;
+  `);
 }
 
 function migrateWebsiteOrders(db: Database.Database): void {
