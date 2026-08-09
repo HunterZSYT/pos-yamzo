@@ -38,15 +38,15 @@ describe("website order HTTP transport", () => {
 
     expect(await transport.pullOrders(null, 100)).toEqual({ orders: [], nextCursor: null });
     expect(calls).toHaveLength(1);
-    expect(calls[0].url.pathname).toBe("/api/pos/orders/claim");
-    expect(calls[0].init.body).toBe(JSON.stringify({ cursor: null, limit: 10, includeTest: true }));
+    expect(calls[0].url.pathname).toBe("/api/pos/orders/sync");
+    expect(calls[0].init.body).toBe(JSON.stringify({ cursor: null, limit: 50, includeTest: true }));
 
     const headers = calls[0].init.headers as Record<string, string>;
     expect(JSON.stringify({ headers, body: calls[0].init.body })).not.toContain(terminalPrivateKey);
     const canonical = [
       "v1",
       "POST",
-      "/api/pos/orders/claim",
+      "/api/pos/orders/sync",
       config.terminalCode,
       headers["x-yamzo-timestamp"],
       headers["x-yamzo-nonce"],
@@ -62,7 +62,56 @@ describe("website order HTTP transport", () => {
     ).toBe(true);
   });
 
-  it("pushes order transitions and print acknowledgements in local event order", async () => {
+  it("converts the website's snake_case sync payload before the local importer sees it", async () => {
+    const transport = new WebsiteOrderHttpTransport(config, {
+      fetchImpl: (async () => new Response(JSON.stringify({
+        orders: [rawSyncedOrder()],
+        nextCursor: "eyJ1cGRhdGVkQXQiOiIyMDI2LTA4LTA5VDA0OjAxOjAwLjAwMFoiLCJvcmRlcklkIjoiNWMyMmEwMzQtNWNhNy00ZjJjLTkxMjctNGIxZGRkZTRmM2M5In0"
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      })) as typeof fetch
+    });
+
+    await expect(transport.pullOrders(null, 50)).resolves.toMatchObject({
+      nextCursor: expect.any(String),
+      orders: [{
+        remoteId: "5c22a034-5ca7-4f2c-9127-4b1ddde4f3c9",
+        orderCode: "YZ-20260809-00000001",
+        status: "pending",
+        subtotal: 250,
+        deliveryFee: 25,
+        total: 275,
+        isTest: true,
+        address: { sector: "11", road: "20", house: "80", flat: "4B" },
+        items: [{
+          remoteItemId: "268b3bd9-9ac0-4980-ae9b-9b493319fc66",
+          menuItemPublicId: "menu_item_website_momo",
+          unitPrice: 250,
+          note: "No chilli | Options: Sauce: Tartar"
+        }]
+      }]
+    });
+  });
+
+  it("fails closed when a synchronized website amount cannot be represented in local taka", async () => {
+    const raw = rawSyncedOrder();
+    raw.items[0].unit_price_minor = 25_050;
+    raw.items[0].effective_unit_price_minor = 25_050;
+    raw.items[0].line_total_minor = 25_050;
+    raw.subtotal_minor = 25_050;
+    raw.grand_total_minor = 27_550;
+    const transport = new WebsiteOrderHttpTransport(config, {
+      fetchImpl: (async () => new Response(JSON.stringify({ orders: [raw], nextCursor: null }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      })) as typeof fetch
+    });
+
+    await expect(transport.pullOrders(null, 50)).rejects.toThrow(/cannot be represented/i);
+  });
+
+  it("pushes print acknowledgements but retires legacy local status events without a remote mutation", async () => {
     const paths: string[] = [];
     const bodies: Array<Record<string, unknown>> = [];
     const fetchImpl = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
@@ -100,14 +149,8 @@ describe("website order HTTP transport", () => {
     ];
 
     expect(await transport.pushEvents(events)).toEqual({ acceptedEventIds: [1, 2] });
-    expect(paths).toEqual(["/api/pos/orders/transition", "/api/pos/print/ack"]);
+    expect(paths).toEqual(["/api/pos/print/ack"]);
     expect(bodies[0]).toMatchObject({
-      eventKey: events[0].eventKey,
-      orderId: events[0].remoteOrderId,
-      toStatus: "accepted",
-      expectedVersion: 1
-    });
-    expect(bodies[1]).toMatchObject({
       eventKey: events[1].eventKey,
       orderId: events[1].remoteOrderId,
       kind: "kitchen_copy",
@@ -155,3 +198,56 @@ describe("website order HTTP transport", () => {
     await expect(transport.pullOrders(null, 20)).rejects.toThrow(/oversized response/i);
   });
 });
+
+function rawSyncedOrder() {
+  return {
+    order_id: "5c22a034-5ca7-4f2c-9127-4b1ddde4f3c9",
+    order_reference: "YZ-20260809-00000001",
+    mode: "test",
+    status: "pending_acceptance",
+    version: 2,
+    locale: "en",
+    subtotal_minor: 25_000,
+    discount_minor: 0,
+    delivery_fee_minor: 2_500,
+    grand_total_minor: 27_500,
+    currency_code: "BDT",
+    customer_note: "Gate is on the left",
+    placed_at: "2026-08-09T04:00:00.000Z",
+    accepted_at: null,
+    completed_at: null,
+    cancelled_at: null,
+    archived_at: null,
+    updated_at: "2026-08-09T04:00:00.000Z",
+    contact: {
+      full_name: "Test Customer",
+      phone_e164: "+8801712345678",
+      sector_number: 11,
+      road_number: "20",
+      house_number: "80",
+      flat_number: "4B"
+    },
+    items: [{
+      id: "268b3bd9-9ac0-4980-ae9b-9b493319fc66",
+      source_item_id: "6b27a59c-d64a-4f50-a37e-346ad947099f",
+      source_item_public_key: "menu_item_website_momo",
+      source_item_slug: "website-momo",
+      name_en: "Website Momo",
+      name_bn: "Website Momo",
+      quantity: 1,
+      unit_price_minor: 25_000,
+      modifier_unit_total_minor: 0,
+      effective_unit_price_minor: 25_000,
+      line_total_minor: 25_000,
+      customer_note: "No chilli",
+      modifiers: [{
+        source_option_id: null,
+        group_name_en: "Sauce",
+        group_name_bn: "Sauce",
+        option_name_en: "Tartar",
+        option_name_bn: "Tartar",
+        price_delta_minor: 0
+      }]
+    }]
+  };
+}

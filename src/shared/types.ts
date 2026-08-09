@@ -198,7 +198,11 @@ export interface WebsiteOrderSnapshot {
   remoteId: string;
   orderCode: string;
   remoteVersion: number;
-  status: "pending" | "cancelled";
+  /**
+   * The Website Admin is authoritative for this status. The terminal may
+   * display and print the projection, but it must never advance this value.
+   */
+  status: WebsiteOrderStatus;
   customerName: string;
   customerPhone: string;
   address: WebsiteOrderAddress;
@@ -246,12 +250,16 @@ export interface WebsiteOrderDetail extends WebsiteOrderSummary {
   items: WebsiteOrderItem[];
 }
 
-export interface WebsiteOrderAcceptance {
+export type WebsiteOrderPrintKind = "kitchen_copy" | "customer_receipt";
+
+export interface WebsiteOrderPrintJob {
+  id: number;
+  kind: WebsiteOrderPrintKind;
+}
+
+export interface WebsiteOrderPrintBatch {
   websiteOrder: WebsiteOrderDetail;
-  posOrder: OrderSummary;
-  kitchenPrintJobId: number;
-  deliveryPrintJobId: number;
-  alreadyAccepted: boolean;
+  jobs: WebsiteOrderPrintJob[];
 }
 
 export interface WebsiteOutboxEvent {

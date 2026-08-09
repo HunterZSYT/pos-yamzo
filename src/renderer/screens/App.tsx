@@ -56,11 +56,12 @@ import type {
   PaymentMethod,
   PrintJob,
   RestockEntry,
-  SalesSummary
+  SalesSummary,
+  WebsiteOrderSummary
 } from "../../shared/types";
 import { demoMenu, demoOrders, demoSummary } from "../data/demo";
 import { IntegrationsAdmin } from "../components/IntegrationsAdmin";
-import { WebsiteOrderIncomingAlert, WebsiteOrdersScreen } from "../components/WebsiteOrdersScreen";
+import { WebsiteCompletedOrdersPanel, WebsiteOrdersScreen } from "../components/WebsiteOrdersScreen";
 
 type Screen = "newOrder" | "editOrder" | "openOrders" | "websiteOrders" | "completedOrders" | "cancelledOrders" | "reports" | "menu" | "inventory" | "costs" | "admin";
 type AdminTab = "receipt" | "printer" | "integrations" | "app" | "security" | "activity";
@@ -164,6 +165,7 @@ export function App() {
   const [menu, setMenu] = useState<MenuItem[]>(demoMenu);
   const [openOrders, setOpenOrders] = useState<OrderSummary[]>(demoOrders);
   const [history, setHistory] = useState<OrderSummary[]>([]);
+  const [completedWebsiteOrders, setCompletedWebsiteOrders] = useState<WebsiteOrderSummary[]>([]);
   const [summary, setSummary] = useState<SalesSummary>(demoSummary);
   const [printJobs, setPrintJobs] = useState<PrintJob[]>([]);
   const [activityLogs, setActivityLogs] = useState<ActivityLog[]>([]);
@@ -295,10 +297,11 @@ export function App() {
   async function refreshData() {
     if (!window.yamzo) return;
     const today = dateInputValue(new Date());
-    const [menuRows, openRows, historyRows, sales, jobs, receipt, inventory, inventoryData, printerName, tableCount, hosts, categories, dataSets, types, activity] = await Promise.all([
+    const [menuRows, openRows, historyRows, websiteHistoryRows, sales, jobs, receipt, inventory, inventoryData, printerName, tableCount, hosts, categories, dataSets, types, activity] = await Promise.all([
       window.yamzo.menu.list(),
       window.yamzo.orders.open(),
       window.yamzo.orders.history(),
+      window.yamzo.websiteOrders.list(["delivered"]),
       window.yamzo.reports.sales({ startDate: today, endDate: today }),
       window.yamzo.print.listJobs(),
       window.yamzo.settings.getBranding(),
@@ -315,6 +318,7 @@ export function App() {
     setMenu(menuRows);
     setOpenOrders(openRows);
     setHistory(historyRows);
+    setCompletedWebsiteOrders(websiteHistoryRows);
     setSummary(sales);
     setPrintJobs(jobs);
     setActivityLogs(activity);
@@ -925,7 +929,6 @@ export function App() {
           {message}
         </div>
       )}
-      <WebsiteOrderIncomingAlert enabled={loggedIn} onReview={() => setScreen("websiteOrders")} onPosDataChanged={refreshData} onMessage={setMessage} />
       <aside className="flex min-h-0 flex-col gap-2 bg-stone-950 p-3 text-stone-50 xl:gap-3 xl:p-5">
         <h1 className="mb-3 text-2xl font-semibold tracking-tight xl:mb-5 xl:text-3xl">Yamzo</h1>
         <SideNav active={screen === "newOrder" || (screen === "editOrder" && orderLane === "newOrder")} onClick={startFreshOrder}>New Order</SideNav>
@@ -1152,8 +1155,8 @@ export function App() {
       )}
 
       {screen === "openOrders" && <OrdersScreen title="Open Orders" description="Running orders ready to resume." orders={openOrders} menuTypes={menuTypes} onRefresh={refreshData} onResume={loadOrder} onDone={markKitchenDelivered} onRestart={restartKitchenTimer} onBatchDone={markKitchenBatchDelivered} onBatchRestart={restartKitchenBatchTimer} onDoneAll={markAllRunningDelivered} />}
-      {screen === "websiteOrders" && <WebsiteOrdersScreen onPosDataChanged={refreshData} onMessage={setMessage} />}
-      {screen === "completedOrders" && <OrdersScreen title="Completed Orders" description="Settled orders for audit and staff corrections." orders={completedOrders} menuTypes={menuTypes} onRefresh={refreshData} onResume={reopenHistoryOrder} resumeLabel="Edit" onView={viewHistoryOrder} onClearHistory={clearClosedOrderHistory} />}
+      {screen === "websiteOrders" && <WebsiteOrdersScreen onMessage={setMessage} />}
+      {screen === "completedOrders" && <OrdersScreen title="Completed Orders" description="Settled POS orders and delivered website snapshots." orders={completedOrders} menuTypes={menuTypes} onRefresh={refreshData} onResume={reopenHistoryOrder} resumeLabel="Edit" onView={viewHistoryOrder} onClearHistory={clearClosedOrderHistory} afterList={<WebsiteCompletedOrdersPanel orders={completedWebsiteOrders} onRefresh={refreshData} onMessage={setMessage} />} />}
       {screen === "cancelledOrders" && <OrdersScreen title="Cancelled Orders" description="Cancelled orders kept for audit." orders={cancelledOrders} menuTypes={menuTypes} onRefresh={refreshData} onView={viewHistoryOrder} onDeleteRecord={deleteClosedOrderRecord} onClearHistory={clearClosedOrderHistory} />}
       {screen === "reports" && <ContentShell title="Reports" description="Sales, order timing, payments, and profit reports."><ReportsPanel summary={summary} inventory={inventorySnapshot} menuTypes={menuTypes} /></ContentShell>}
       {screen === "menu" && (
@@ -1668,7 +1671,7 @@ function ContentShell({ title, description, action, children }: { title: string;
   );
 }
 
-function OrdersScreen({ title, description, orders, menuTypes, onRefresh, onResume, resumeLabel = "Resume", onView, onDone, onRestart, onBatchDone, onBatchRestart, onDoneAll, onClearHistory, onDeleteRecord }: { title: string; description: string; orders: OrderSummary[]; menuTypes: MenuTypeSetting[]; onRefresh: () => void; onResume?: (orderId: number) => void; resumeLabel?: string; onView?: (orderId: number) => void; onDone?: (orderId: number) => void; onRestart?: (orderId: number) => void; onBatchDone?: (ticketId: number) => void; onBatchRestart?: (ticketId: number) => void; onDoneAll?: () => void; onClearHistory?: () => void; onDeleteRecord?: (orderId: number) => void }) {
+function OrdersScreen({ title, description, orders, menuTypes, onRefresh, onResume, resumeLabel = "Resume", onView, onDone, onRestart, onBatchDone, onBatchRestart, onDoneAll, onClearHistory, onDeleteRecord, afterList }: { title: string; description: string; orders: OrderSummary[]; menuTypes: MenuTypeSetting[]; onRefresh: () => void; onResume?: (orderId: number) => void; resumeLabel?: string; onView?: (orderId: number) => void; onDone?: (orderId: number) => void; onRestart?: (orderId: number) => void; onBatchDone?: (ticketId: number) => void; onBatchRestart?: (ticketId: number) => void; onDoneAll?: () => void; onClearHistory?: () => void; onDeleteRecord?: (orderId: number) => void; afterList?: React.ReactNode }) {
   return (
     <ContentShell
       title={title}
@@ -1676,6 +1679,7 @@ function OrdersScreen({ title, description, orders, menuTypes, onRefresh, onResu
       action={<div className="flex gap-2"><Button variant="secondary" onClick={onRefresh}>Refresh</Button>{onDoneAll && <Button onClick={onDoneAll}>Done All</Button>}{onClearHistory && <Button variant="destructive" onClick={onClearHistory}>Delete History</Button>}</div>}
     >
       <OrderList orders={orders} menuTypes={menuTypes} showResume={Boolean(onResume)} resumeLabel={resumeLabel} onResume={onResume} onView={onView} onDone={onDone} onRestart={onRestart} onBatchDone={onBatchDone} onBatchRestart={onBatchRestart} onDeleteRecord={onDeleteRecord} />
+      {afterList}
     </ContentShell>
   );
 }

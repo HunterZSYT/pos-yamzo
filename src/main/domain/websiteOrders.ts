@@ -1,27 +1,18 @@
 import { createHash, randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import type {
-  WebsiteOrderAcceptance,
   WebsiteOrderDetail,
   WebsiteOrderItem,
+  WebsiteOrderPrintBatch,
+  WebsiteOrderPrintJob,
+  WebsiteOrderPrintKind,
   WebsiteOrderSnapshot,
   WebsiteOrderStatus,
   WebsiteOrderSummary,
   WebsiteOutboxEvent
 } from "../../shared/types.js";
-import {
-  addOrderItem,
-  applyDiscount,
-  createOrder,
-  deleteOrder,
-  getOrderSummary,
-  markKitchenDelivered,
-  settleOrder,
-  sendNewItemsToKitchen
-} from "./orders.js";
 import { enqueuePrintJob } from "../services/printQueue.js";
-import { buildReceipt } from "../services/receipts.js";
-import { getBrandingSettings, getPrinterName } from "../services/settings.js";
+import { getPrinterName } from "../services/settings.js";
 import {
   getActiveWebsiteMenuMappings,
   resolveWebsiteMenuItemId
@@ -31,16 +22,16 @@ const MAX_BATCH_SIZE = 100;
 const REMOTE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const PHONE_PATTERN = /^\+?\d{10,15}$/;
 
-const ALLOWED_TRANSITIONS: Record<WebsiteOrderStatus, readonly WebsiteOrderStatus[]> = {
-  pending: ["rejected", "cancelled"],
-  accepted: ["preparing", "cancelled"],
-  preparing: ["ready", "cancelled"],
-  ready: ["out_for_delivery", "delivered", "cancelled"],
-  out_for_delivery: ["delivered", "cancelled"],
-  delivered: [],
-  rejected: [],
-  cancelled: []
-};
+const WEBSITE_ORDER_STATUSES: readonly WebsiteOrderStatus[] = [
+  "pending",
+  "accepted",
+  "preparing",
+  "ready",
+  "out_for_delivery",
+  "delivered",
+  "rejected",
+  "cancelled"
+];
 
 interface WebsiteOrderRow {
   remote_id: string;
@@ -111,11 +102,6 @@ export function importWebsiteOrderSnapshots(
         result.unchanged += 1;
         continue;
       }
-      if (existing && (existing.pos_order_id || existing.status !== "pending")) {
-        result.ignoredStale += 1;
-        continue;
-      }
-
       if (existing) {
         updateWebsiteOrderSnapshot(db, snapshot, payloadHash);
         db.prepare("DELETE FROM website_order_items WHERE website_order_id = ?").run(snapshot.remoteId);
@@ -191,202 +177,58 @@ export function getWebsiteOrderDetail(db: Database.Database, remoteId: string): 
   };
 }
 
-export function acceptWebsiteOrder(db: Database.Database, remoteId: string): WebsiteOrderAcceptance {
-  const cleanId = cleanRemoteId(remoteId);
-  const tx = db.transaction((): WebsiteOrderAcceptance => {
-    reconcileWebsiteOrderItemMappings(db, cleanId);
-    const existing = getWebsiteOrderDetail(db, cleanId);
-    if (existing.posOrderId) {
-      const row = db.prepare(
-        "SELECT kitchen_print_job_id, delivery_print_job_id FROM website_orders WHERE remote_id = ?"
-      ).get(cleanId) as { kitchen_print_job_id: number | null; delivery_print_job_id: number | null };
-      if (!row.kitchen_print_job_id || !row.delivery_print_job_id) {
-        throw new Error("Accepted website order is missing its durable print jobs. Review the order before retrying.");
-      }
-      return {
-        websiteOrder: existing,
-        posOrder: getOrderSummary(db, existing.posOrderId),
-        kitchenPrintJobId: row.kitchen_print_job_id,
-        deliveryPrintJobId: row.delivery_print_job_id,
-        alreadyAccepted: true
-      };
-    }
-    if (existing.status !== "pending") throw new Error("Only pending website orders can be accepted.");
-    if (existing.items.some((item) => !item.mapped || !item.menuItemId)) {
-      throw new Error("Map every website item to an active POS menu item before accepting this order.");
-    }
-    const availableItems = db.prepare(
-      `SELECT id FROM menu_items
-       WHERE id IN (${existing.items.map(() => "?").join(",")}) AND available = 1 AND archived = 0`
-    ).all(...existing.items.map((item) => item.menuItemId)) as Array<{ id: number }>;
-    const availableItemIds = new Set(availableItems.map((item) => item.id));
-    if (existing.items.some((item) => !item.menuItemId || !availableItemIds.has(item.menuItemId))) {
-      throw new Error("One or more website items are unavailable in the POS menu.");
-    }
-
-    const order = createOrder(db, {
-      source: "website",
-      externalOrderId: existing.remoteId,
-      note: websiteOrderNote(existing),
-      deliveryFee: existing.deliveryFee,
-      isTest: existing.isTest
-    });
-    for (const item of existing.items) {
-      const orderItemId = addOrderItem(db, order.id, {
-        menuItemId: item.menuItemId!,
-        quantity: item.quantity,
-        note: item.note ?? undefined,
-        parcel: true
-      });
-      db.prepare("UPDATE order_items SET unit_price = ? WHERE id = ?").run(item.unitPrice, orderItemId);
-    }
-    applyDiscount(db, order.id, existing.discount);
-    const kitchenPrintJobId = sendNewItemsToKitchen(db, order.id, true);
-    if (!kitchenPrintJobId) throw new Error("Website order did not create a kitchen print job.");
-    const slip = buildWebsiteDeliverySlip(db, order.id, existing);
-    const deliveryPrintJobId = enqueuePrintJob(db, "parcel_slip", slip, getPrinterName(db) || null);
-
-    const updated = db.prepare(
-      `UPDATE website_orders
-       SET status = 'accepted', pos_order_id = ?, kitchen_print_job_id = ?, delivery_print_job_id = ?,
-           remote_version = remote_version + 1, accepted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-       WHERE remote_id = ? AND status = 'pending' AND pos_order_id IS NULL AND remote_version = ?`
-    ).run(order.id, kitchenPrintJobId, deliveryPrintJobId, cleanId, existing.remoteVersion);
-    if (updated.changes !== 1) throw new Error("Website order changed while it was being accepted. Refresh and try again.");
-    enqueueOutbox(db, cleanId, "order.accepted", {
-      fromStatus: "pending_acceptance",
-      status: "accepted",
-      expectedVersion: existing.remoteVersion,
-      posOrderNumber: order.orderNumber,
-      isTest: existing.isTest
-    });
-    db.prepare(
-      "INSERT INTO audit_logs (action, entity_type, entity_id, details) VALUES ('website_order_accepted', 'website_order', ?, ?)"
-    ).run(cleanId, JSON.stringify({ orderCode: existing.orderCode, posOrderId: order.id, isTest: existing.isTest }));
-
-    return {
-      websiteOrder: getWebsiteOrderDetail(db, cleanId),
-      posOrder: getOrderSummary(db, order.id),
-      kitchenPrintJobId,
-      deliveryPrintJobId,
-      alreadyAccepted: false
-    };
-  });
-  return tx();
-}
-
-export function rejectWebsiteOrder(db: Database.Database, remoteId: string, reason: string): WebsiteOrderDetail {
-  const cleanId = cleanRemoteId(remoteId);
-  const cleanReason = cleanRequired("Rejection reason", reason, 300);
-  const order = getWebsiteOrderDetail(db, cleanId);
-  if (order.status === "rejected") return order;
-  if (order.status !== "pending") throw new Error("Only pending website orders can be rejected.");
-  const tx = db.transaction(() => {
-    const updated = db.prepare(
-      `UPDATE website_orders
-       SET status = 'rejected', rejection_reason = ?, remote_version = remote_version + 1, updated_at = CURRENT_TIMESTAMP
-       WHERE remote_id = ? AND status = 'pending' AND remote_version = ?`
-    ).run(cleanReason, cleanId, order.remoteVersion);
-    if (updated.changes !== 1) throw new Error("Website order changed while it was being rejected. Refresh and try again.");
-    enqueueOutbox(db, cleanId, "order.rejected", {
-      fromStatus: "pending_acceptance",
-      status: "rejected",
-      expectedVersion: order.remoteVersion,
-      reason: cleanReason,
-      isTest: order.isTest
-    });
-    db.prepare(
-      "INSERT INTO audit_logs (action, entity_type, entity_id, details) VALUES ('website_order_rejected', 'website_order', ?, ?)"
-    ).run(cleanId, JSON.stringify({ orderCode: order.orderCode, reason: cleanReason, isTest: order.isTest }));
-  });
-  tx();
-  return getWebsiteOrderDetail(db, cleanId);
-}
-
-export function transitionWebsiteOrder(
+/**
+ * Queues local, printable snapshots only. Status and item data remain owned by
+ * Website Admin; no POS order, inventory movement, payment, or remote status
+ * event is created here.
+ */
+export function queueWebsiteOrderPrint(
   db: Database.Database,
   remoteId: string,
-  status: Exclude<WebsiteOrderStatus, "pending" | "accepted" | "rejected">
-): WebsiteOrderDetail {
+  kind: WebsiteOrderPrintKind | "both" = "both"
+): WebsiteOrderPrintBatch {
   const cleanId = cleanRemoteId(remoteId);
-  const order = getWebsiteOrderDetail(db, cleanId);
-  if (order.status === status) return order;
-  if (!ALLOWED_TRANSITIONS[order.status].includes(status)) {
-    throw new Error(`Website order cannot move from ${formatStatus(order.status)} to ${formatStatus(status)}.`);
-  }
-  const tx = db.transaction(() => {
-    applyPosOrderStatus(db, order, status);
-    const updated = db.prepare(
-      `UPDATE website_orders
-       SET status = ?, remote_version = remote_version + 1, updated_at = CURRENT_TIMESTAMP
-       WHERE remote_id = ? AND status = ? AND remote_version = ?`
-    ).run(status, cleanId, order.status, order.remoteVersion);
-    if (updated.changes !== 1) throw new Error("Website order changed while its status was updating. Refresh and try again.");
-    enqueueOutbox(db, cleanId, `order.${status}`, {
-      fromStatus: order.status,
-      status,
-      expectedVersion: order.remoteVersion,
-      isTest: order.isTest
-    });
-    db.prepare(
-      "INSERT INTO audit_logs (action, entity_type, entity_id, details) VALUES ('website_order_status_changed', 'website_order', ?, ?)"
-    ).run(cleanId, JSON.stringify({ orderCode: order.orderCode, from: order.status, to: status, isTest: order.isTest }));
-  });
-  tx();
-  return getWebsiteOrderDetail(db, cleanId);
-}
-
-export function hardDeleteTestWebsiteOrder(db: Database.Database, remoteId: string): boolean {
-  const cleanId = cleanRemoteId(remoteId);
-  const row = db.prepare(
-    `SELECT wo.is_test, wo.pos_order_id, wo.kitchen_print_job_id, wo.delivery_print_job_id, wo.order_code,
-            o.order_number, o.is_test AS pos_is_test
-     FROM website_orders wo LEFT JOIN orders o ON o.id = wo.pos_order_id WHERE wo.remote_id = ?`
-  ).get(cleanId) as {
-    is_test: number;
-    pos_order_id: number | null;
-    kitchen_print_job_id: number | null;
-    delivery_print_job_id: number | null;
-    order_code: string;
-    order_number: string | null;
-    pos_is_test: number | null;
-  } | undefined;
-  if (!row) return false;
-  if (row.is_test !== 1) throw new Error("Only test website orders can be permanently deleted.");
-  if (row.pos_order_id && row.pos_is_test !== 1) {
-    throw new Error("Test order safety check failed because the linked POS order is not marked as test data.");
+  if (kind !== "both" && kind !== "kitchen_copy" && kind !== "customer_receipt") {
+    throw new Error("Website print copy is invalid.");
   }
 
-  const tx = db.transaction(() => {
-    if (row.pos_order_id) {
-      db.prepare("DELETE FROM inventory_adjustments WHERE order_id = ?").run(row.pos_order_id);
-      db.prepare("DELETE FROM order_item_cost_snapshots WHERE order_id = ?").run(row.pos_order_id);
-      db.prepare("DELETE FROM order_cost_snapshots WHERE order_id = ?").run(row.pos_order_id);
-      db.prepare("DELETE FROM payments WHERE order_id = ?").run(row.pos_order_id);
-      db.prepare("DELETE FROM kitchen_ticket_items WHERE ticket_id IN (SELECT id FROM kitchen_tickets WHERE order_id = ?)").run(row.pos_order_id);
-      db.prepare("DELETE FROM kitchen_tickets WHERE order_id = ?").run(row.pos_order_id);
-      db.prepare("DELETE FROM order_items WHERE order_id = ?").run(row.pos_order_id);
+  const tx = db.transaction((): WebsiteOrderPrintBatch => {
+    const order = getWebsiteOrderDetail(db, cleanId);
+    if (!isPrintableWebsiteOrderStatus(order.status)) {
+      throw new Error("This website order is not approved for printing yet.");
     }
-    db.prepare("DELETE FROM website_sync_outbox WHERE remote_order_id = ?").run(cleanId);
-    db.prepare("DELETE FROM website_orders WHERE remote_id = ?").run(cleanId);
-    if (row.pos_order_id) db.prepare("DELETE FROM orders WHERE id = ? AND is_test = 1").run(row.pos_order_id);
-    for (const printJobId of [row.kitchen_print_job_id, row.delivery_print_job_id]) {
-      if (printJobId) db.prepare("DELETE FROM print_jobs WHERE id = ?").run(printJobId);
+
+    const printer = getPrinterName(db) || null;
+    const jobs: WebsiteOrderPrintJob[] = [];
+    const create = (copy: WebsiteOrderPrintKind, type: "kot" | "parcel_slip", content: string): void => {
+      const id = enqueuePrintJob(db, type, content, printer);
+      db.prepare(
+        `INSERT INTO website_order_prints (website_order_id, print_job_id, kind, remote_version)
+         VALUES (?, ?, ?, ?)`
+      ).run(cleanId, id, copy, order.remoteVersion);
+      db.prepare(
+        `UPDATE website_orders
+         SET ${copy === "kitchen_copy" ? "kitchen_print_job_id" : "delivery_print_job_id"} = ?,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE remote_id = ?`
+      ).run(id, cleanId);
+      jobs.push({ id, kind: copy });
+    };
+
+    if (kind === "both" || kind === "kitchen_copy") {
+      create("kitchen_copy", "kot", buildWebsiteKitchenCopy(order));
     }
-    if (row.order_number) {
-      const relatedPrintJobIds = (db.prepare("SELECT id, content FROM print_jobs").all() as Array<{ id: number; content: string }>)
-        .filter((job) => printContentBelongsToOrder(job.content, row.order_number!))
-        .map((job) => job.id);
-      if (relatedPrintJobIds.length > 0) {
-        db.prepare(`DELETE FROM print_jobs WHERE id IN (${relatedPrintJobIds.map(() => "?").join(",")})`).run(...relatedPrintJobIds);
-      }
+    if (kind === "both" || kind === "customer_receipt") {
+      create("customer_receipt", "parcel_slip", buildWebsiteCustomerReceipt(order));
     }
+
     db.prepare(
-      "INSERT INTO audit_logs (action, entity_type, entity_id, details) VALUES ('website_test_order_hard_deleted', 'website_order', ?, ?)"
-    ).run(cleanId, JSON.stringify({ orderCode: row.order_code, posOrderId: row.pos_order_id }));
+      "INSERT INTO audit_logs (action, entity_type, entity_id, details) VALUES ('website_order_print_queued', 'website_order', ?, ?)"
+    ).run(cleanId, JSON.stringify({ orderCode: order.orderCode, copies: jobs.map((job) => job.kind), remoteVersion: order.remoteVersion }));
+
+    return { websiteOrder: order, jobs };
   });
-  tx();
-  return true;
+  return tx();
 }
 
 export function listPendingWebsiteOutbox(db: Database.Database, limit = 50): WebsiteOutboxEvent[] {
@@ -451,33 +293,6 @@ export function setWebsiteSyncCursor(db: Database.Database, cursor: string | nul
   ).run(cleanStream(stream), cursor?.trim() || null, lastError?.slice(0, 500) || null);
 }
 
-function applyPosOrderStatus(
-  db: Database.Database,
-  order: WebsiteOrderDetail,
-  status: Exclude<WebsiteOrderStatus, "pending" | "accepted" | "rejected">
-): void {
-  if (!order.posOrderId) return;
-  const posOrder = getOrderSummary(db, order.posOrderId);
-  if (status === "ready") {
-    if (posOrder.kitchenStartedAt && !posOrder.kitchenCompletedAt) {
-      markKitchenDelivered(db, posOrder.id);
-    }
-    return;
-  }
-  if (status === "delivered") {
-    if (posOrder.status === "cancelled") {
-      throw new Error("A cancelled POS order cannot be marked delivered.");
-    }
-    if (posOrder.status !== "settled") {
-      settleOrder(db, posOrder.id, "cash", posOrder.total);
-    }
-    return;
-  }
-  if (status === "cancelled" && posOrder.status !== "cancelled") {
-    deleteOrder(db, posOrder.id, `Website order ${order.orderCode} cancelled`);
-  }
-}
-
 function insertWebsiteOrderSnapshot(db: Database.Database, order: WebsiteOrderSnapshot, payloadHash: string): void {
   db.prepare(
     `INSERT INTO website_orders
@@ -523,30 +338,6 @@ function insertWebsiteOrderItems(db: Database.Database, order: WebsiteOrderSnaps
   });
 }
 
-function reconcileWebsiteOrderItemMappings(db: Database.Database, remoteId: string): void {
-  const mappings = getActiveWebsiteMenuMappings(db);
-  const rows = db.prepare(
-    `SELECT id, menu_item_public_id, unit_price
-     FROM website_order_items
-     WHERE website_order_id = ?`
-  ).all(remoteId) as Array<{
-    id: number;
-    menu_item_public_id: string;
-    unit_price: number;
-  }>;
-  const update = db.prepare("UPDATE website_order_items SET menu_item_id = ? WHERE id = ?");
-  for (const row of rows) {
-    update.run(
-      resolveWebsiteMenuItemId(
-        mappings,
-        row.menu_item_public_id,
-        row.unit_price
-      ),
-      row.id
-    );
-  }
-}
-
 function toWebsiteOrderSummary(
   db: Database.Database,
   row: WebsiteOrderRow,
@@ -578,7 +369,7 @@ function normalizeSnapshot(value: WebsiteOrderSnapshot): WebsiteOrderSnapshot {
   const remoteId = cleanRemoteId(value.remoteId);
   const orderCode = cleanRequired("Order code", value.orderCode, 80);
   const remoteVersion = cleanPositiveInteger("Remote version", value.remoteVersion, 2_147_483_647);
-  if (value.status !== "pending" && value.status !== "cancelled") throw new Error(`Website order ${orderCode} has an invalid incoming status.`);
+  if (!isWebsiteOrderStatus(value.status)) throw new Error(`Website order ${orderCode} has an invalid incoming status.`);
   const customerName = cleanRequired("Customer name", value.customerName, 120);
   const customerPhone = normalizePhone(value.customerPhone);
   const address = {
@@ -594,7 +385,10 @@ function normalizeSnapshot(value: WebsiteOrderSnapshot): WebsiteOrderSnapshot {
     name: cleanRequired(`Item ${index + 1} name`, item.name, 160),
     quantity: cleanPositiveInteger(`Item ${index + 1} quantity`, item.quantity, 99),
     unitPrice: cleanMoney(`Item ${index + 1} price`, item.unitPrice),
-    note: cleanOptional(item.note, 300)
+    // Website-admin edits can carry a compact modifier summary for printing.
+    // It never changes POS inventory/menu data, and stays bounded before being
+    // written to the local mirror.
+    note: cleanOptional(item.note, 12_000)
   })) ?? [];
   if (items.length === 0 || items.length > 100) throw new Error(`Website order ${orderCode} must contain between 1 and 100 items.`);
   if (new Set(items.map((item) => item.remoteItemId)).size !== items.length) {
@@ -629,35 +423,51 @@ function normalizeSnapshot(value: WebsiteOrderSnapshot): WebsiteOrderSnapshot {
   };
 }
 
-function buildWebsiteDeliverySlip(db: Database.Database, orderId: number, order: WebsiteOrderDetail): string {
-  const receipt = buildReceipt(db, orderId, getBrandingSettings(db), order.isTest ? "TEST WEBSITE ORDER" : "WEBSITE DELIVERY");
+function buildWebsiteKitchenCopy(order: WebsiteOrderDetail): string {
   return [
-    receipt,
-    "",
-    "DELIVERY DETAILS",
+    "YAMZO UTTARA",
+    order.isTest ? "TEST WEBSITE ORDER" : "WEBSITE ORDER",
+    "KITCHEN COPY",
     "----------------------------------------",
+    `ORDER: ${order.orderCode}`,
+    `STATUS: ${formatStatus(order.status).toUpperCase()}`,
+    `PLACED: ${formatPrintTimestamp(order.remoteCreatedAt)}`,
+    "----------------------------------------",
+    ...order.items.flatMap((item) => [
+      `${item.quantity} x ${item.name}`,
+      item.note ? `  Note: ${item.note}` : ""
+    ]),
+    "----------------------------------------",
+    order.isTest ? "*** TEST ORDER - DO NOT COUNT ***" : ""
+  ].filter(Boolean).join("\n");
+}
+
+function buildWebsiteCustomerReceipt(order: WebsiteOrderDetail): string {
+  return [
+    "YAMZO UTTARA",
+    order.isTest ? "TEST WEBSITE DELIVERY" : "WEBSITE DELIVERY",
+    "----------------------------------------",
+    `ORDER: ${order.orderCode}`,
+    `STATUS: ${formatStatus(order.status).toUpperCase()}`,
+    `PLACED: ${formatPrintTimestamp(order.remoteCreatedAt)}`,
+    "----------------------------------------",
+    ...order.items.flatMap((item) => [
+      `${item.quantity} x ${item.name}`,
+      `${formatTaka(item.quantity * item.unitPrice)}${item.note ? `  (${item.note})` : ""}`
+    ]),
+    "----------------------------------------",
+    `SUBTOTAL: ${formatTaka(order.subtotal)}`,
+    order.deliveryFee > 0 ? `DELIVERY: ${formatTaka(order.deliveryFee)}` : "",
+    order.discount > 0 ? `DISCOUNT: -${formatTaka(order.discount)}` : "",
+    `TOTAL: ${formatTaka(order.total)}`,
+    "----------------------------------------",
+    "DELIVERY DETAILS",
     `Customer: ${order.customerName}`,
     `Phone: ${order.customerPhone}`,
     `Address: Flat ${order.address.flat}, House ${order.address.house}, Road ${order.address.road}, Sector ${order.address.sector}`,
     order.deliveryNote ? `Note: ${order.deliveryNote}` : "",
-    order.deliveryFee > 0 ? `Delivery fee: ${order.deliveryFee} TK` : "",
-    order.isTest ? "*** TEST ORDER - EXCLUDED FROM REPORTS ***" : ""
+    order.isTest ? "*** TEST ORDER - DO NOT COUNT ***" : ""
   ].filter(Boolean).join("\n");
-}
-
-function websiteOrderNote(order: WebsiteOrderDetail): string {
-  const address = `Flat ${order.address.flat}, House ${order.address.house}, Road ${order.address.road}, Sector ${order.address.sector}`;
-  return [`Website ${order.orderCode}`, order.customerName, order.customerPhone, address, order.deliveryNote].filter(Boolean).join(" | ");
-}
-
-function printContentBelongsToOrder(content: string, orderNumber: string): boolean {
-  const marker = `ORDER: ${orderNumber}`;
-  return content.split(/\r?\n/).some((line) => {
-    const normalizedLine = line.trimStart();
-    if (!normalizedLine.startsWith(marker)) return false;
-    const boundary = normalizedLine.slice(marker.length, marker.length + 1);
-    return boundary === "" || /\s/.test(boundary);
-  });
 }
 
 export function enqueueWebsitePrintAck(
@@ -666,10 +476,19 @@ export function enqueueWebsitePrintAck(
   succeeded: boolean
 ): void {
   if (!Number.isInteger(printJobId) || printJobId < 1) return;
-  const owner = db.prepare(
+  const projectionOwner = db.prepare(
+    `SELECT website_order_id AS remote_id, kind
+     FROM website_order_prints
+     WHERE print_job_id = ?
+     LIMIT 1`
+  ).get(printJobId) as {
+    remote_id: string;
+    kind: WebsiteOrderPrintKind;
+  } | undefined;
+  const legacyOwner = projectionOwner ? undefined : db.prepare(
     `SELECT remote_id,
-            CASE
-              WHEN kitchen_print_job_id = ? THEN 'kitchen_copy'
+             CASE
+               WHEN kitchen_print_job_id = ? THEN 'kitchen_copy'
               WHEN delivery_print_job_id = ? THEN 'customer_receipt'
               ELSE NULL
             END AS kind
@@ -678,8 +497,9 @@ export function enqueueWebsitePrintAck(
      LIMIT 1`
   ).get(printJobId, printJobId, printJobId, printJobId) as {
     remote_id: string;
-    kind: "kitchen_copy" | "customer_receipt" | null;
+    kind: WebsiteOrderPrintKind | null;
   } | undefined;
+  const owner = projectionOwner ?? legacyOwner;
   if (!owner?.kind) return;
 
   enqueueOutbox(
@@ -776,7 +596,15 @@ function cleanPositiveIds(ids: number[]): number[] {
 }
 
 function isWebsiteOrderStatus(value: string): value is WebsiteOrderStatus {
-  return Object.hasOwn(ALLOWED_TRANSITIONS, value);
+  return WEBSITE_ORDER_STATUSES.includes(value as WebsiteOrderStatus);
+}
+
+function isPrintableWebsiteOrderStatus(status: WebsiteOrderStatus): boolean {
+  return status === "accepted"
+    || status === "preparing"
+    || status === "ready"
+    || status === "out_for_delivery"
+    || status === "delivered";
 }
 
 function parsePayload(value: string): Record<string, unknown> {
@@ -790,4 +618,15 @@ function parsePayload(value: string): Record<string, unknown> {
 
 function formatStatus(value: WebsiteOrderStatus): string {
   return value.replaceAll("_", " ");
+}
+
+function formatTaka(value: number): string {
+  return `${value.toLocaleString("en-BD")} TK`;
+}
+
+function formatPrintTimestamp(value: string): string {
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp)
+    ? new Intl.DateTimeFormat("en-BD", { dateStyle: "medium", timeStyle: "short", timeZone: "Asia/Dhaka" }).format(timestamp)
+    : value;
 }

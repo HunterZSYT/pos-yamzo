@@ -37,7 +37,7 @@ export class WebsiteOrderSyncService {
 
   async syncOnce(): Promise<WebsiteOrderSyncResult> {
     const cursor = getWebsiteSyncCursor(this.db);
-    const pulled = await this.transport.pullOrders(cursor, 100);
+    const pulled = await this.transport.pullOrders(cursor, 50);
     const imported = importWebsiteOrderSnapshots(this.db, pulled.orders);
     setWebsiteSyncCursor(this.db, pulled.nextCursor);
 

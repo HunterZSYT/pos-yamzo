@@ -3,7 +3,7 @@ import bcrypt from "bcryptjs";
 import { randomUUID } from "node:crypto";
 
 const BRANDING_DEFAULTS_VERSION = 2;
-export const DATABASE_SCHEMA_VERSION = 6;
+export const DATABASE_SCHEMA_VERSION = 7;
 
 const defaultBranding = {
   restaurantName: "Yamzo",
@@ -524,6 +524,17 @@ function migrateWebsiteOrders(db: Database.Database): void {
       UNIQUE(website_order_id, remote_item_id)
     );
 
+    -- A terminal-only print ledger. It lets the POS acknowledge every printed
+    -- copy without becoming a source of truth for an order's status or items.
+    CREATE TABLE IF NOT EXISTS website_order_prints (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      website_order_id TEXT NOT NULL REFERENCES website_orders(remote_id) ON DELETE CASCADE,
+      print_job_id INTEGER NOT NULL UNIQUE REFERENCES print_jobs(id) ON DELETE CASCADE,
+      kind TEXT NOT NULL CHECK(kind IN ('kitchen_copy', 'customer_receipt')),
+      remote_version INTEGER NOT NULL CHECK(remote_version >= 1),
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
     CREATE TABLE IF NOT EXISTS website_sync_outbox (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       event_key TEXT NOT NULL,
@@ -569,6 +580,8 @@ function migrateWebsiteOrders(db: Database.Database): void {
       ON website_orders(status, received_at DESC);
     CREATE INDEX IF NOT EXISTS idx_website_order_items_order
       ON website_order_items(website_order_id, sort_order, id);
+    CREATE INDEX IF NOT EXISTS idx_website_order_prints_order
+      ON website_order_prints(website_order_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_website_outbox_delivery
       ON website_sync_outbox(status, available_at, id);
     CREATE INDEX IF NOT EXISTS idx_orders_test_status

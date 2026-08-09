@@ -3,20 +3,16 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type Database from "better-sqlite3";
 import { openMemoryDatabase } from "../src/main/database/connection";
 import {
-  acceptWebsiteOrder,
   enqueueWebsitePrintAck,
   getWebsiteOrderDetail,
-  hardDeleteTestWebsiteOrder,
   importWebsiteOrderSnapshots,
   listPendingWebsiteOutbox,
   listWebsiteOrders,
-  rejectWebsiteOrder,
-  transitionWebsiteOrder
+  queueWebsiteOrderPrint
 } from "../src/main/domain/websiteOrders";
-import { getSalesSummary } from "../src/main/domain/reports";
 import { applyWebsiteMenuContract } from "../src/main/domain/websiteMenuContract";
-import { buildGoogleSheetsSnapshot } from "../src/main/services/googleSheets";
 import { WebsiteOrderSyncService, type WebsiteOrderSyncTransport } from "../src/main/services/websiteOrderSync";
+import { mapSyncedWebsiteOrder } from "../src/main/services/websiteOrderHttpTransport";
 import type { WebsiteOrderSnapshot } from "../src/shared/types";
 
 let db: Database.Database;
@@ -37,208 +33,161 @@ beforeEach(() => {
   }]));
 });
 
-describe("website order inbox", () => {
-  it("imports versioned snapshots idempotently and rejects same-version data conflicts", () => {
-    const order = snapshot();
-    expect(importWebsiteOrderSnapshots(db, [order])).toEqual({ inserted: 1, updated: 0, unchanged: 0, ignoredStale: 0 });
-    expect(importWebsiteOrderSnapshots(db, [order])).toEqual({ inserted: 0, updated: 0, unchanged: 1, ignoredStale: 0 });
-    expect(listWebsiteOrders(db, ["pending"])).toHaveLength(1);
-    expect(getWebsiteOrderDetail(db, order.remoteId).items[0]).toMatchObject({ mapped: true, menuItemPublicId: publicMenuId });
-
-    expect(() => importWebsiteOrderSnapshots(db, [{ ...order, customerName: "Changed without version" }])).toThrow(/reused version/i);
-    expect(importWebsiteOrderSnapshots(db, [{ ...order, remoteVersion: 2, deliveryNote: "Gate is on the left" }])).toEqual({
-      inserted: 0,
-      updated: 1,
-      unchanged: 0,
-      ignoredStale: 0
+describe("website order mirror", () => {
+  it("maps the authoritative website sync payload into a print-only local projection", () => {
+    const mapped = mapSyncedWebsiteOrder(rawSyncedOrder(publicMenuId));
+    expect(mapped).toMatchObject({
+      status: "accepted",
+      isTest: true,
+      subtotal: 250,
+      total: 275,
+      items: [{
+        menuItemPublicId: publicMenuId,
+        unitPrice: 250,
+        note: "No chilli | Options: Sauce: Tartar"
+      }]
     });
+
+    expect(importWebsiteOrderSnapshots(db, [mapped])).toMatchObject({ inserted: 1 });
+    const batch = queueWebsiteOrderPrint(db, mapped.remoteId);
+    expect(db.prepare("SELECT COUNT(*) AS count FROM orders").get()).toEqual({ count: 0 });
+    const kitchen = batch.jobs.find((job) => job.kind === "kitchen_copy");
+    expect(kitchen).toBeTruthy();
+    const content = db.prepare("SELECT content FROM print_jobs WHERE id = ?").get(kitchen!.id) as { content: string };
+    expect(content.content).toContain("Options: Sauce: Tartar");
   });
 
-  it("accepts once, creates exactly one POS order and two durable print jobs, and emits state changes", () => {
-    const order = snapshot({ isTest: false });
+  it("keeps a website-admin manual line printable without creating a POS menu mapping", () => {
+    const raw = rawSyncedOrder(publicMenuId);
+    const manual = {
+      ...raw,
+      items: raw.items.map((item) => ({
+        ...item,
+        source_item_id: null,
+        source_item_public_key: null,
+        source_item_slug: null,
+        name_en: "Manager-added sauce",
+        name_bn: "Manager-added sauce",
+        modifiers: []
+      }))
+    };
+    const mapped = mapSyncedWebsiteOrder(manual);
+
+    expect(mapped.items[0].menuItemPublicId).toMatch(/^manual_/);
+    expect(importWebsiteOrderSnapshots(db, [mapped])).toMatchObject({ inserted: 1 });
+    expect(getWebsiteOrderDetail(db, mapped.remoteId).items[0]).toMatchObject({
+      mapped: false,
+      name: "Manager-added sauce"
+    });
+    expect(() => queueWebsiteOrderPrint(db, mapped.remoteId)).not.toThrow();
+    expect(db.prepare("SELECT COUNT(*) AS count FROM orders").get()).toEqual({ count: 0 });
+  });
+
+  it("imports full, versioned website snapshots idempotently and updates a local projection after acceptance", () => {
+    const pending = snapshot();
+    expect(importWebsiteOrderSnapshots(db, [pending])).toEqual({ inserted: 1, updated: 0, unchanged: 0, ignoredStale: 0 });
+    expect(importWebsiteOrderSnapshots(db, [pending])).toEqual({ inserted: 0, updated: 0, unchanged: 1, ignoredStale: 0 });
+
+    const accepted = {
+      ...pending,
+      remoteVersion: 2,
+      status: "accepted" as const,
+      deliveryNote: "Gate is on the left",
+      remoteUpdatedAt: "2026-08-05T05:05:00.000Z"
+    };
+    expect(importWebsiteOrderSnapshots(db, [accepted])).toEqual({ inserted: 0, updated: 1, unchanged: 0, ignoredStale: 0 });
+    expect(getWebsiteOrderDetail(db, accepted.remoteId)).toMatchObject({
+      status: "accepted",
+      remoteVersion: 2,
+      deliveryNote: "Gate is on the left"
+    });
+    expect(listWebsiteOrders(db, ["accepted"])).toHaveLength(1);
+    expect(db.prepare("SELECT COUNT(*) AS count FROM orders").get()).toEqual({ count: 0 });
+  });
+
+  it("creates local KOT and delivery-copy jobs from an approved snapshot without creating or mutating a POS order", () => {
+    const order = snapshot({ status: "accepted", isTest: false });
     importWebsiteOrderSnapshots(db, [order]);
 
-    const accepted = acceptWebsiteOrder(db, order.remoteId);
-    expect(accepted.alreadyAccepted).toBe(false);
-    expect(accepted.posOrder).toMatchObject({ source: "website", externalOrderId: order.remoteId, total: 275, isTest: false });
+    const batch = queueWebsiteOrderPrint(db, order.remoteId);
+    expect(batch.jobs).toHaveLength(2);
+    expect(batch.jobs.map((job) => job.kind).sort()).toEqual(["customer_receipt", "kitchen_copy"]);
+    expect(db.prepare("SELECT COUNT(*) AS count FROM orders").get()).toEqual({ count: 0 });
     expect(db.prepare("SELECT type, COUNT(*) AS count FROM print_jobs GROUP BY type ORDER BY type").all()).toEqual([
       { type: "kot", count: 1 },
       { type: "parcel_slip", count: 1 }
     ]);
-    expect(db.prepare("SELECT COUNT(*) AS count FROM orders").get()).toEqual({ count: 1 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM website_order_prints").get()).toEqual({ count: 2 });
 
-    const repeated = acceptWebsiteOrder(db, order.remoteId);
-    expect(repeated.alreadyAccepted).toBe(true);
-    expect(repeated.kitchenPrintJobId).toBe(accepted.kitchenPrintJobId);
-    expect(db.prepare("SELECT COUNT(*) AS count FROM print_jobs").get()).toEqual({ count: 2 });
-    expect(db.prepare("SELECT COUNT(*) AS count FROM orders").get()).toEqual({ count: 1 });
+    const kitchen = batch.jobs.find((job) => job.kind === "kitchen_copy");
+    const receipt = batch.jobs.find((job) => job.kind === "customer_receipt");
+    expect(kitchen).toBeTruthy();
+    expect(receipt).toBeTruthy();
+    const kitchenContent = db.prepare("SELECT content FROM print_jobs WHERE id = ?").get(kitchen!.id) as { content: string };
+    const receiptContent = db.prepare("SELECT content FROM print_jobs WHERE id = ?").get(receipt!.id) as { content: string };
+    expect(kitchenContent.content).toContain("KITCHEN COPY");
+    expect(kitchenContent.content).not.toContain(order.customerPhone);
+    expect(receiptContent.content).toContain("DELIVERY DETAILS");
+    expect(receiptContent.content).toContain(order.customerPhone);
 
-    expect(transitionWebsiteOrder(db, order.remoteId, "preparing").status).toBe("preparing");
-    expect(transitionWebsiteOrder(db, order.remoteId, "ready").status).toBe("ready");
-    expect(() => transitionWebsiteOrder(db, order.remoteId, "preparing")).toThrow(/cannot move/i);
-    expect(transitionWebsiteOrder(db, order.remoteId, "out_for_delivery").status).toBe("out_for_delivery");
-    expect(transitionWebsiteOrder(db, order.remoteId, "delivered").status).toBe("delivered");
-    expect(db.prepare("SELECT status FROM orders WHERE id = ?").get(accepted.posOrder.id)).toEqual({ status: "settled" });
-    expect(db.prepare("SELECT method, amount FROM payments WHERE order_id = ?").get(accepted.posOrder.id)).toEqual({ method: "cash", amount: 275 });
-    expect(db.prepare("SELECT type, COUNT(*) AS count FROM print_jobs GROUP BY type ORDER BY type").all()).toEqual([
-      { type: "kot", count: 1 },
-      { type: "parcel_slip", count: 1 },
-      { type: "receipt", count: 1 }
+    enqueueWebsitePrintAck(db, kitchen!.id, true);
+    enqueueWebsitePrintAck(db, receipt!.id, false);
+    expect(listPendingWebsiteOutbox(db).map((event) => event.eventType)).toEqual(["print.ack", "print.ack"]);
+    expect(listPendingWebsiteOutbox(db).map((event) => event.payload)).toEqual([
+      { kind: "kitchen_copy", succeeded: true, errorCode: null },
+      { kind: "customer_receipt", succeeded: false, errorCode: "LOCAL_PRINT_FAILED" }
     ]);
-    expect(getSalesSummary(db)).toMatchObject({ totalOrders: 1, totalSales: 275, openOrders: 0 });
-    expect(listPendingWebsiteOutbox(db).map((event) => event.eventType)).toEqual([
-      "order.accepted",
-      "order.preparing",
-      "order.ready",
-      "order.out_for_delivery",
-      "order.delivered"
-    ]);
-    expect(listPendingWebsiteOutbox(db).map((event) => event.payload.expectedVersion)).toEqual([1, 2, 3, 4, 5]);
   });
 
-  it("requires a reason to reject and never creates a POS order for rejected orders", () => {
-    const order = snapshot({ remoteId: "web-reject-1", orderCode: "WEB-REJECT-1", isTest: false });
-    importWebsiteOrderSnapshots(db, [order]);
-    expect(() => rejectWebsiteOrder(db, order.remoteId, " ")).toThrow(/required/i);
-    expect(rejectWebsiteOrder(db, order.remoteId, "Outside delivery hours").status).toBe("rejected");
+  it("allows a delivered order to be reprinted from the newest website version", () => {
+    const accepted = snapshot({ status: "accepted", remoteVersion: 1 });
+    importWebsiteOrderSnapshots(db, [accepted]);
+    queueWebsiteOrderPrint(db, accepted.remoteId, "customer_receipt");
+
+    const delivered = {
+      ...accepted,
+      remoteVersion: 2,
+      status: "delivered" as const,
+      discount: 20,
+      total: 255,
+      remoteUpdatedAt: "2026-08-05T05:30:00.000Z"
+    };
+    expect(importWebsiteOrderSnapshots(db, [delivered])).toEqual({ inserted: 0, updated: 1, unchanged: 0, ignoredStale: 0 });
+    const batch = queueWebsiteOrderPrint(db, delivered.remoteId, "customer_receipt");
+    const content = db.prepare("SELECT content FROM print_jobs WHERE id = ?").get(batch.jobs[0].id) as { content: string };
+    expect(getWebsiteOrderDetail(db, delivered.remoteId)).toMatchObject({ status: "delivered", remoteVersion: 2, total: 255 });
+    expect(listWebsiteOrders(db, ["delivered"])).toMatchObject([{ remoteId: delivered.remoteId, status: "delivered", total: 255 }]);
     expect(db.prepare("SELECT COUNT(*) AS count FROM orders").get()).toEqual({ count: 0 });
+    expect(content.content).toContain("DISCOUNT: -20 TK");
+    expect(content.content).toContain("TOTAL: 255 TK");
   });
 
-  it("cancels an accepted website order and its linked POS order atomically", () => {
-    const order = snapshot({ remoteId: "web-cancel-1", orderCode: "WEB-CANCEL-1", isTest: false });
-    importWebsiteOrderSnapshots(db, [order]);
-    const accepted = acceptWebsiteOrder(db, order.remoteId);
-
-    expect(transitionWebsiteOrder(db, order.remoteId, "cancelled").status).toBe("cancelled");
-    expect(db.prepare("SELECT status FROM orders WHERE id = ?").get(accepted.posOrder.id)).toEqual({ status: "cancelled" });
-    expect(getSalesSummary(db)).toMatchObject({ totalOrders: 0, totalSales: 0, openOrders: 0 });
-    expect(listPendingWebsiteOutbox(db).map((event) => event.eventType)).toEqual(["order.accepted", "order.cancelled"]);
+  it("never prints an order that Website Admin has not approved or has closed without delivery", () => {
+    for (const status of ["pending", "rejected", "cancelled"] as const) {
+      const order = snapshot({ remoteId: `web-${status}`, orderCode: `WEB-${status}`, status });
+      importWebsiteOrderSnapshots(db, [order]);
+      expect(() => queueWebsiteOrderPrint(db, order.remoteId)).toThrow(/not approved/i);
+    }
   });
 
-  it("excludes test orders from sales, Google Sheets, and inventory, then permanently deletes their local data", () => {
-    const order = snapshot({ remoteId: "web-test-1", orderCode: "WEB-TEST-1", isTest: true });
-    importWebsiteOrderSnapshots(db, [order]);
-    const accepted = acceptWebsiteOrder(db, order.remoteId);
-    transitionWebsiteOrder(db, order.remoteId, "preparing");
-    transitionWebsiteOrder(db, order.remoteId, "ready");
-    transitionWebsiteOrder(db, order.remoteId, "delivered");
-
-    expect(getSalesSummary(db)).toMatchObject({ totalOrders: 0, totalSales: 0, openOrders: 0 });
-    expect(buildGoogleSheetsSnapshot(db).orders.rows).toHaveLength(0);
-    expect(buildGoogleSheetsSnapshot(db).orderItems.rows).toHaveLength(0);
-    expect(db.prepare("SELECT COUNT(*) AS count FROM inventory_adjustments WHERE order_id = ?").get(accepted.posOrder.id)).toEqual({ count: 0 });
-    expect(db.prepare("SELECT COUNT(*) AS count FROM order_cost_snapshots WHERE order_id = ?").get(accepted.posOrder.id)).toEqual({ count: 0 });
-
-    const unrelatedPrintJobId = Number(db.prepare(
-      "INSERT INTO print_jobs (type, content, status) VALUES ('receipt', ?, 'printed')"
-    ).run(`ORDER: ${accepted.posOrder.orderNumber}0\nUnrelated live order`).lastInsertRowid);
-    const testPrintJobIds = (db.prepare("SELECT id FROM print_jobs WHERE id <> ? ORDER BY id").all(unrelatedPrintJobId) as Array<{ id: number }>).map((row) => row.id);
-
-    expect(hardDeleteTestWebsiteOrder(db, order.remoteId)).toBe(true);
-    expect(db.prepare("SELECT COUNT(*) AS count FROM website_orders").get()).toEqual({ count: 0 });
-    expect(db.prepare("SELECT COUNT(*) AS count FROM orders").get()).toEqual({ count: 0 });
-    expect(db.prepare(`SELECT COUNT(*) AS count FROM print_jobs WHERE id IN (${testPrintJobIds.map(() => "?").join(",")})`).get(...testPrintJobIds)).toEqual({ count: 0 });
-    expect(db.prepare("SELECT content FROM print_jobs WHERE id = ?").get(unrelatedPrintJobId)).toEqual({
-      content: `ORDER: ${accepted.posOrder.orderNumber}0\nUnrelated live order`
-    });
-    expect(hardDeleteTestWebsiteOrder(db, order.remoteId)).toBe(false);
-  });
-
-  it("never permanently deletes a live website order", () => {
-    const order = snapshot({ remoteId: "web-live-1", orderCode: "WEB-LIVE-1", isTest: false });
-    importWebsiteOrderSnapshots(db, [order]);
-    expect(() => hardDeleteTestWebsiteOrder(db, order.remoteId)).toThrow(/only test/i);
-    expect(getWebsiteOrderDetail(db, order.remoteId).status).toBe("pending");
-  });
-
-  it("refuses destructive cleanup when the linked POS test flag is inconsistent", () => {
-    const order = snapshot({ remoteId: "web-test-mismatch", orderCode: "WEB-TEST-MISMATCH", isTest: true });
-    importWebsiteOrderSnapshots(db, [order]);
-    const accepted = acceptWebsiteOrder(db, order.remoteId);
-    db.prepare("UPDATE orders SET is_test = 0 WHERE id = ?").run(accepted.posOrder.id);
-
-    expect(() => hardDeleteTestWebsiteOrder(db, order.remoteId)).toThrow(/safety check/i);
-    expect(db.prepare("SELECT COUNT(*) AS count FROM website_orders WHERE remote_id = ?").get(order.remoteId)).toEqual({ count: 1 });
-    expect(db.prepare("SELECT COUNT(*) AS count FROM orders WHERE id = ?").get(accepted.posOrder.id)).toEqual({ count: 1 });
-  });
-
-  it("refuses an unknown public ID even when its display name matches", () => {
-    const order = snapshot({
-      remoteId: "web-name-map",
-      orderCode: "WEB-NAME-MAP",
-      items: [{
-        remoteItemId: "web-name-item",
-        menuItemPublicId: "menu_item_remote_key",
-        name: "Website Momo",
-        quantity: 1,
-        unitPrice: 250,
-        note: null
-      }]
-    });
-    importWebsiteOrderSnapshots(db, [order]);
-    expect(getWebsiteOrderDetail(db, order.remoteId).items[0]).toMatchObject({ mapped: false });
-    expect(() => acceptWebsiteOrder(db, order.remoteId)).toThrow(/map every website item/i);
-  });
-
-  it("normalizes remote control characters before they reach durable print content", () => {
-    const order = snapshot({
-      remoteId: "web-safe-print",
-      orderCode: "WEB-SAFE-PRINT",
-      customerName: "Test\u001b Customer\nName",
-      deliveryNote: "Ring\tthe bell\u0000 twice"
-    });
-    importWebsiteOrderSnapshots(db, [order]);
-    const accepted = acceptWebsiteOrder(db, order.remoteId);
-    const content = (db.prepare("SELECT content FROM print_jobs WHERE id = ?").get(accepted.deliveryPrintJobId) as { content: string }).content;
-    expect(content).toContain("Customer: Test Customer Name");
-    expect(content).toContain("Note: Ring the bell twice");
-    expect([...content].some((character) => {
-      const code = character.codePointAt(0) ?? 0;
-      return code === 0x1b || code === 0;
-    })).toBe(false);
-  });
-
-  it("keeps transport work behind a mockable main-process sync boundary", async () => {
-    const order = snapshot({ remoteId: "web-sync-1", orderCode: "WEB-SYNC-1", isTest: false });
-    const pushedIds: number[][] = [];
+  it("keeps transport work behind a mockable, read-only main-process sync boundary", async () => {
+    const accepted = snapshot({ remoteId: "web-sync-1", orderCode: "WEB-SYNC-1", status: "accepted", isTest: false });
+    const delivered = {
+      ...accepted,
+      remoteVersion: 2,
+      status: "delivered" as const,
+      remoteUpdatedAt: "2026-08-05T05:35:00.000Z"
+    };
+    let pullCount = 0;
     const transport: WebsiteOrderSyncTransport = {
-      pullOrders: async () => ({ orders: [order], nextCursor: "cursor-1" }),
-      pushEvents: async (events) => {
-        const ids = events.map((event) => event.id);
-        pushedIds.push(ids);
-        return { acceptedEventIds: ids };
-      }
+      pullOrders: async () => ({ orders: pullCount++ === 0 ? [accepted] : [delivered], nextCursor: "cursor-1" }),
+      pushEvents: async (events) => ({ acceptedEventIds: events.map((event) => event.id) })
     };
     const service = new WebsiteOrderSyncService(db, transport);
     expect(await service.syncOnce()).toMatchObject({ inserted: 1, pushed: 0, cursor: "cursor-1" });
-    acceptWebsiteOrder(db, order.remoteId);
-    expect(await service.syncOnce()).toMatchObject({ ignoredStale: 1, pushed: 1, cursor: "cursor-1" });
-    expect(pushedIds).toHaveLength(1);
-    expect(db.prepare("SELECT status FROM website_sync_outbox").all()).toEqual([{ status: "sent" }]);
-  });
-
-  it("queues durable, independently retryable acknowledgements for website print jobs", () => {
-    const order = snapshot({ remoteId: "c7a3c315-5381-4676-97b7-75c57294198f", orderCode: "WEB-PRINT-ACK", isTest: false });
-    importWebsiteOrderSnapshots(db, [order]);
-    const accepted = acceptWebsiteOrder(db, order.remoteId);
-
-    enqueueWebsitePrintAck(db, accepted.kitchenPrintJobId, false);
-    enqueueWebsitePrintAck(db, accepted.kitchenPrintJobId, true);
-    enqueueWebsitePrintAck(db, accepted.deliveryPrintJobId, true);
-
-    const events = listPendingWebsiteOutbox(db);
-    expect(events.every((event) => /^[0-9a-f-]{36}$/i.test(event.eventKey))).toBe(true);
-    expect(events.map((event) => event.eventType)).toEqual([
-      "order.accepted",
-      "print.ack",
-      "print.ack",
-      "print.ack"
-    ]);
-    expect(events.slice(1).map((event) => event.payload)).toEqual([
-      { kind: "kitchen_copy", succeeded: false, errorCode: "LOCAL_PRINT_FAILED" },
-      { kind: "kitchen_copy", succeeded: true, errorCode: null },
-      { kind: "customer_receipt", succeeded: true, errorCode: null }
-    ]);
+    expect(await service.syncOnce()).toMatchObject({ updated: 1, pushed: 0, cursor: "cursor-1" });
+    expect(getWebsiteOrderDetail(db, accepted.remoteId)).toMatchObject({ status: "delivered", remoteVersion: 2 });
+    expect(listPendingWebsiteOutbox(db)).toHaveLength(0);
   });
 });
 
@@ -281,5 +230,58 @@ function contract(entries: Array<{
     schemaVersion: 1 as const,
     catalogDigest: createHash("sha256").update(JSON.stringify(entries)).digest("hex"),
     entries
+  };
+}
+
+function rawSyncedOrder(sourceItemPublicKey: string) {
+  return {
+    order_id: "5c22a034-5ca7-4f2c-9127-4b1ddde4f3c9",
+    order_reference: "YZ-20260809-00000001",
+    mode: "test",
+    status: "accepted",
+    version: 2,
+    locale: "en",
+    subtotal_minor: 25_000,
+    discount_minor: 0,
+    delivery_fee_minor: 2_500,
+    grand_total_minor: 27_500,
+    currency_code: "BDT",
+    customer_note: "Gate is on the left",
+    placed_at: "2026-08-09T04:00:00.000Z",
+    accepted_at: "2026-08-09T04:01:00.000Z",
+    completed_at: null,
+    cancelled_at: null,
+    archived_at: null,
+    updated_at: "2026-08-09T04:01:00.000Z",
+    contact: {
+      full_name: "Test Customer",
+      phone_e164: "+8801712345678",
+      sector_number: 11,
+      road_number: "20",
+      house_number: "80",
+      flat_number: "4B"
+    },
+    items: [{
+      id: "268b3bd9-9ac0-4980-ae9b-9b493319fc66",
+      source_item_id: "6b27a59c-d64a-4f50-a37e-346ad947099f",
+      source_item_public_key: sourceItemPublicKey,
+      source_item_slug: "website-momo",
+      name_en: "Website Momo",
+      name_bn: "Website Momo",
+      quantity: 1,
+      unit_price_minor: 25_000,
+      modifier_unit_total_minor: 0,
+      effective_unit_price_minor: 25_000,
+      line_total_minor: 25_000,
+      customer_note: "No chilli",
+      modifiers: [{
+        source_option_id: null,
+        group_name_en: "Sauce",
+        group_name_bn: "Sauce",
+        option_name_en: "Tartar",
+        option_name_bn: "Tartar",
+        price_delta_minor: 0
+      }]
+    }]
   };
 }
