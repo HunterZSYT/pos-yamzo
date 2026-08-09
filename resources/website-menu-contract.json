@@ -1,0 +1,318 @@
+{
+  "schemaVersion": 1,
+  "catalogDigest": "5b20e7d347c2a039e4c33bf5e60f77988f9f703caa9476d8d4b8fb745deb1021",
+  "entries": [
+    {
+      "websitePublicId": "menu_item_fried_calamari",
+      "effectiveUnitPrice": 290,
+      "websiteName": "Fried Calamari",
+      "expectedPosName": "Fried Calamari"
+    },
+    {
+      "websitePublicId": "menu_item_grill_calamari",
+      "effectiveUnitPrice": 320,
+      "websiteName": "Grill Calamari",
+      "expectedPosName": "Grill Calamari"
+    },
+    {
+      "websitePublicId": "menu_item_golden_fish_finger",
+      "effectiveUnitPrice": 195,
+      "websiteName": "Golden Fish Finger",
+      "expectedPosName": "Golden Fish Finger"
+    },
+    {
+      "websitePublicId": "menu_item_fish_nugget",
+      "effectiveUnitPrice": 190,
+      "websiteName": "Fish Nugget",
+      "expectedPosName": "Fish Nugget"
+    },
+    {
+      "websitePublicId": "menu_item_octopus_fry",
+      "effectiveUnitPrice": 295,
+      "websiteName": "Octopus Fry",
+      "expectedPosName": "Octopus Fry"
+    },
+    {
+      "websitePublicId": "menu_item_bbq_octopus_masala",
+      "effectiveUnitPrice": 355,
+      "websiteName": "BBQ Octopus Masala",
+      "expectedPosName": "BBQ Octopus Masala"
+    },
+    {
+      "websitePublicId": "menu_item_signature_octopus_masala",
+      "effectiveUnitPrice": 395,
+      "websiteName": "Signature Octopus Masala",
+      "expectedPosName": "Signature Octopus Masala"
+    },
+    {
+      "websitePublicId": "menu_item_crispy_prawn",
+      "effectiveUnitPrice": 295,
+      "websiteName": "Crispy Prawn",
+      "expectedPosName": "Crispy Prawn"
+    },
+    {
+      "websitePublicId": "menu_item_hot_fry_crab",
+      "effectiveUnitPrice": 195,
+      "websiteName": "Hot Fry Crab",
+      "expectedPosName": "Hot Fry Crab"
+    },
+    {
+      "websitePublicId": "menu_item_loitta_fry",
+      "effectiveUnitPrice": 175,
+      "websiteName": "Loitta Fry",
+      "expectedPosName": "Loitta Fry"
+    },
+    {
+      "websitePublicId": "menu_item_spicy_crab_masala",
+      "effectiveUnitPrice": 225,
+      "websiteName": "Spicy Crab Masala",
+      "expectedPosName": "Spicy Crab Masala"
+    },
+    {
+      "websitePublicId": "menu_item_signature_crab_masala",
+      "effectiveUnitPrice": 265,
+      "websiteName": "Signature Crab Masala",
+      "expectedPosName": "Signature Crab Masala"
+    },
+    {
+      "websitePublicId": "menu_item_danish_fish_and_chips",
+      "effectiveUnitPrice": 375,
+      "websiteName": "Danish Fish and Chips",
+      "expectedPosName": "Danish Fish and Chips"
+    },
+    {
+      "websitePublicId": "menu_item_swiss_fish_and_chips",
+      "effectiveUnitPrice": 355,
+      "websiteName": "Swiss Fish and Chips",
+      "expectedPosName": "Swiss Fish and Chips"
+    },
+    {
+      "websitePublicId": "menu_item_bengali_fish_and_chips",
+      "effectiveUnitPrice": 335,
+      "websiteName": "Bengali Fish and Chips",
+      "expectedPosName": "Bengali Fish and Chips"
+    },
+    {
+      "websitePublicId": "menu_item_best_fish_and_chips",
+      "effectiveUnitPrice": 320,
+      "websiteName": "Best Fish and Chips",
+      "expectedPosName": "Best Fish and Chips"
+    },
+    {
+      "websitePublicId": "menu_item_chicken_momo",
+      "effectiveUnitPrice": 195,
+      "websiteName": "Chicken Momo",
+      "expectedPosName": "Chicken Momo"
+    },
+    {
+      "websitePublicId": "menu_item_chicken_cheese_momo",
+      "effectiveUnitPrice": 245,
+      "websiteName": "Chicken Cheese Momo",
+      "expectedPosName": "Chicken Cheese Momo"
+    },
+    {
+      "websitePublicId": "menu_item_naga_chicken_momo",
+      "effectiveUnitPrice": 210,
+      "websiteName": "Naga Chicken Momo",
+      "expectedPosName": "Naga Chicken Momo"
+    },
+    {
+      "websitePublicId": "menu_item_twin_flavor_momo",
+      "effectiveUnitPrice": 295,
+      "websiteName": "Twin Flavor Momo",
+      "expectedPosName": "Twin Flavor Momo"
+    },
+    {
+      "websitePublicId": "menu_item_dumpling_with_chili_soup",
+      "effectiveUnitPrice": 345,
+      "websiteName": "Dumpling with Chili Soup",
+      "expectedPosName": "Dumpling with Chili Soup"
+    },
+    {
+      "websitePublicId": "menu_item_seafood_chilli_pasta",
+      "effectiveUnitPrice": 439,
+      "websiteName": "Seafood Chilli Pasta",
+      "expectedPosName": "Seafood Chilli Pasta"
+    },
+    {
+      "websitePublicId": "menu_item_white_cream_pasta",
+      "effectiveUnitPrice": 399,
+      "websiteName": "White Cream Pasta",
+      "expectedPosName": "White Cream Pasta"
+    },
+    {
+      "websitePublicId": "menu_item_chicken_chow_mein",
+      "effectiveUnitPrice": 185,
+      "websiteName": "Chicken Chow Mein",
+      "expectedPosName": "Chicken Chow Mein"
+    },
+    {
+      "websitePublicId": "menu_item_signature_seafood_soup",
+      "effectiveUnitPrice": 280,
+      "websiteName": "Signature Seafood Soup",
+      "expectedPosName": "Signature Seafood Soup"
+    },
+    {
+      "websitePublicId": "menu_item_thai_thick_soup",
+      "effectiveUnitPrice": 189,
+      "websiteName": "Thai Thick Soup",
+      "expectedPosName": "Thai Thick Soup"
+    },
+    {
+      "websitePublicId": "menu_item_cream_of_mushroom_soup",
+      "effectiveUnitPrice": 255,
+      "websiteName": "Cream of Mushroom Soup",
+      "expectedPosName": "Cream of Mushroom Soup"
+    },
+    {
+      "websitePublicId": "menu_item_chicken_nanban",
+      "effectiveUnitPrice": 230,
+      "websiteName": "Chicken Nanban",
+      "expectedPosName": "Chicken Nanban"
+    },
+    {
+      "websitePublicId": "menu_item_chicken_popcorn",
+      "effectiveUnitPrice": 190,
+      "websiteName": "Chicken Popcorn",
+      "expectedPosName": "Chicken Popcorn"
+    },
+    {
+      "websitePublicId": "menu_item_chicken_tempura",
+      "effectiveUnitPrice": 210,
+      "websiteName": "Chicken Tempura",
+      "expectedPosName": "Chicken Tempura"
+    },
+    {
+      "websitePublicId": "menu_item_chicken_katsu_with_fries",
+      "effectiveUnitPrice": 290,
+      "websiteName": "Chicken Katsu with Fries",
+      "expectedPosName": "Chicken Katsu with Fries"
+    },
+    {
+      "websitePublicId": "menu_item_garlic_mushroom",
+      "effectiveUnitPrice": 290,
+      "websiteName": "Garlic Mushroom",
+      "expectedPosName": "Garlic Mushroom"
+    },
+    {
+      "websitePublicId": "menu_item_seafood_rice_bowl",
+      "effectiveUnitPrice": 390,
+      "websiteName": "Seafood Rice Bowl",
+      "expectedPosName": "Seafood Rice Bowl"
+    },
+    {
+      "websitePublicId": "menu_item_garlic_chicken_fried_rice",
+      "effectiveUnitPrice": 270,
+      "websiteName": "Garlic Chicken Fried Rice",
+      "expectedPosName": "Garlic Chicken Fried Rice"
+    },
+    {
+      "websitePublicId": "menu_item_fried_rice_meal",
+      "effectiveUnitPrice": 190,
+      "websiteName": "Fried Rice Meal",
+      "expectedPosName": "Fried Rice Meal"
+    },
+    {
+      "websitePublicId": "menu_item_masala_french_fries",
+      "effectiveUnitPrice": 120,
+      "websiteName": "Masala French Fries",
+      "expectedPosName": "Masala French Fries"
+    },
+    {
+      "websitePublicId": "menu_item_naga_shingara",
+      "effectiveUnitPrice": 60,
+      "websiteName": "Naga Shingara",
+      "expectedPosName": "Naga Shingara Regular Pack"
+    },
+    {
+      "websitePublicId": "menu_item_naga_shingara",
+      "effectiveUnitPrice": 110,
+      "websiteName": "Naga Shingara",
+      "expectedPosName": "Naga Shingara Family Pack"
+    },
+    {
+      "websitePublicId": "menu_item_naga_shingara",
+      "effectiveUnitPrice": 200,
+      "websiteName": "Naga Shingara",
+      "expectedPosName": "Naga Shingara Party Pack"
+    },
+    {
+      "websitePublicId": "menu_item_chicken_shingara",
+      "effectiveUnitPrice": 90,
+      "websiteName": "Chicken Shingara",
+      "expectedPosName": "Chicken Shingara Regular Pack"
+    },
+    {
+      "websitePublicId": "menu_item_chicken_shingara",
+      "effectiveUnitPrice": 170,
+      "websiteName": "Chicken Shingara",
+      "expectedPosName": "Chicken Shingara Family Pack"
+    },
+    {
+      "websitePublicId": "menu_item_chicken_shingara",
+      "effectiveUnitPrice": 320,
+      "websiteName": "Chicken Shingara",
+      "expectedPosName": "Chicken Shingara Party Pack"
+    },
+    {
+      "websitePublicId": "menu_item_mutton_liver_shingara",
+      "effectiveUnitPrice": 120,
+      "websiteName": "Mutton Liver Shingara",
+      "expectedPosName": "Mutton Liver Shingara Regular Pack"
+    },
+    {
+      "websitePublicId": "menu_item_mutton_liver_shingara",
+      "effectiveUnitPrice": 230,
+      "websiteName": "Mutton Liver Shingara",
+      "expectedPosName": "Mutton Liver Shingara Family Pack"
+    },
+    {
+      "websitePublicId": "menu_item_mutton_liver_shingara",
+      "effectiveUnitPrice": 430,
+      "websiteName": "Mutton Liver Shingara",
+      "expectedPosName": "Mutton Liver Shingara Party Pack"
+    },
+    {
+      "websitePublicId": "menu_item_shingara_combo",
+      "effectiveUnitPrice": 160,
+      "websiteName": "Shingara Combo Pack",
+      "expectedPosName": "Shingara Combo Pack"
+    },
+    {
+      "websitePublicId": "menu_item_tartar_sauce",
+      "effectiveUnitPrice": 10,
+      "websiteName": "Tartar Sauce",
+      "expectedPosName": "Tartar Sauce"
+    },
+    {
+      "websitePublicId": "menu_item_spicy_mango_sauce",
+      "effectiveUnitPrice": 20,
+      "websiteName": "Spicy Mango Sauce",
+      "expectedPosName": "Spicy Mango Sauce"
+    },
+    {
+      "websitePublicId": "menu_item_chili_ketchup",
+      "effectiveUnitPrice": 10,
+      "websiteName": "Chili Ketchup",
+      "expectedPosName": "Chili Ketchup"
+    },
+    {
+      "websitePublicId": "menu_item_green_sauce",
+      "effectiveUnitPrice": 10,
+      "websiteName": "Green Sauce",
+      "expectedPosName": "Green Sauce"
+    },
+    {
+      "websitePublicId": "menu_item_chili_oil",
+      "effectiveUnitPrice": 10,
+      "websiteName": "Chili Oil",
+      "expectedPosName": "Chili Oil"
+    },
+    {
+      "websitePublicId": "menu_item_lemon_butter",
+      "effectiveUnitPrice": 20,
+      "websiteName": "Lemon Butter",
+      "expectedPosName": "Lemon Butter"
+    }
+  ]
+}

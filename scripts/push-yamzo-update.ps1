@@ -7,7 +7,7 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$secretPathPattern = '(^|/)(\.env($|\.)|yamzo_google_creds\.txt$|gmail-(token|credentials).*\.json$|google-(oauth-client|sheets-token)\.json$|client_secret.*\.json$|tokens/|[^/]*\.secret\.[^/]*$)'
+$secretPathPattern = '(^|/)(\.env($|\.)|yamzo_google_creds\.txt$|gmail-(token|credentials).*\.json$|google-(oauth-client|sheets-token)\.json$|client_secret.*\.json$|website-terminal-.*\.protected\.json$|tokens/|[^/]*\.secret\.[^/]*$)'
 $highConfidenceSecretPattern = '-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|GOCSPX-[A-Za-z0-9_-]{20,}|AIza[0-9A-Za-z_-]{30,}|gh(?:p|o|u|s|r)_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{20,}|ya29\.[A-Za-z0-9._-]{20,}|AKIA[0-9A-Z]{16}|"client_secret"\s*:\s*"(?!(?:REDACTED|YOUR_|<))[^"\r\n]{12,}"|"refresh_token"\s*:\s*"(?!(?:REDACTED|YOUR_|<))[^"\r\n]{12,}"'
 
 function Invoke-Checked {

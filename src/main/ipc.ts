@@ -31,6 +31,11 @@ import {
 } from "./domain/orders.js";
 import { getSalesSummary } from "./domain/reports.js";
 import {
+  getWebsiteOrderDetail,
+  listWebsiteOrders,
+  queueWebsiteOrderPrint
+} from "./domain/websiteOrders.js";
+import {
   addCostRecord,
   addPriceRecord,
   addPhysicalCount,
@@ -229,6 +234,9 @@ export function registerIpc(db: Database.Database): void {
   ipcMain.handle("orders:reprintReceipt", (_event, orderId: number) => reprintReceipt(db, orderId));
   ipcMain.handle("orders:printBill", (_event, orderId: number, paymentInfo) => printBillCopy(db, orderId, paymentInfo));
   ipcMain.handle("orders:printAudit", (_event, orderId: number) => printAuditCopy(db, orderId));
+  ipcMain.handle("websiteOrders:list", (_event, statuses) => listWebsiteOrders(db, statuses));
+  ipcMain.handle("websiteOrders:detail", (_event, remoteId: string) => getWebsiteOrderDetail(db, remoteId));
+  ipcMain.handle("websiteOrders:queuePrint", (_event, remoteId: string, kind) => queueWebsiteOrderPrint(db, remoteId, kind));
   ipcMain.handle("print:listJobs", (_event, status?: string) => listPrintJobs(db, status));
   ipcMain.handle("print:listPrinters", () => listWindowsPrinters());
   ipcMain.handle("print:printJob", (_event, id: number) => printJob(db, id));

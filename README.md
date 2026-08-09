@@ -74,6 +74,72 @@ Configure Sheets sync, the report tool, and scheduled email under **Admin > Inte
 
 Google/network failures are recorded as a pending sync and never block local order or cost CRUD.
 
+## Website Orders Transport
+
+Website-order synchronization runs only in Electron's main process and stays
+disabled when no transport configuration is present. Configure these two
+non-secret values in the protected Windows launch environment:
+
+- `YAMZO_WEBSITE_API_URL=https://yamzouttara.com`
+- `YAMZO_POS_TERMINAL_CODE=YAMZO_UTTARA_01`
+
+Set `YAMZO_POS_INCLUDE_TEST_ORDERS=1` only on a terminal intended to receive
+test-mode orders. Cleartext HTTP is rejected except for loopback development.
+
+Provision the terminal key once with the packaged executable while the normal
+POS is closed:
+
+```powershell
+& '.\Yamzo POS.exe' --provision-website-terminal=YAMZO_UTTARA_01
+```
+
+Electron encrypts the Ed25519 private key with Windows DPAPI and writes only a
+protected credential under the app's user-data folder. The command prints and
+writes public registration material only. Register its `publicKeyBase64Url`
+through the permission-gated `api.register_pos_terminal_key` RPC, then start the
+POS normally. Supabase stores only the public key and fingerprint.
+
+```sql
+select api.register_pos_terminal_key(
+  'YAMZO_UTTARA_01',
+  'Yamzo Uttara POS',
+  '<publicKeyBase64Url from the provisioning result>',
+  now() + interval '180 days'
+);
+```
+
+For planned rotation, close the POS and use
+`--rotate-website-terminal=YAMZO_UTTARA_01`. The old DPAPI-protected file is
+retained as a recovery copy; register the newly returned public key before
+restarting sync. Never paste a private key into Supabase, the website,
+renderer/preload, logs, Git, or a repository `.env` file.
+
+### Website menu reconciliation
+
+Website items are mapped by the authoritative public ID **and exact effective
+unit price**. There is no name fallback. This supports package variants such as
+regular/family/party shingara without applying the wrong inventory recipe.
+
+After importing and reviewing the real active POS menu, build the Electron main
+process and run a read-only reconciliation:
+
+```powershell
+npm run build:electron
+node scripts\reconcile-website-menu.mjs
+```
+
+The packaged catalog contract is `resources\website-menu-contract.json`.
+Reconciliation must report `canApply: true` for every entry. Then apply it with
+an automatic SQLite backup:
+
+```powershell
+node scripts\reconcile-website-menu.mjs --apply
+```
+
+Until a complete contract is applied, or whenever a mapped POS item is
+archived/renamed/repriced, website items remain unmapped and cannot be accepted,
+printed, or applied to inventory.
+
 ## Database Upgrade Safety
 
 Before a schema upgrade, the app creates a transactionally consistent SQLite backup under the local `backups` folder. It keeps the five newest automatic migration backups and aborts the migration if a recovery copy cannot be created.

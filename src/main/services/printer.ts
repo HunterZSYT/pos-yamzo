@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { getPrintJob, markPrintJobFailed, markPrintJobPrinted, markPrintJobRetry } from "./printQueue.js";
+import { enqueueWebsitePrintAck } from "../domain/websiteOrders.js";
 
 const execFileAsync = promisify(execFile);
 const REVIEW_URL = "https://www.facebook.com/yamzo.uttara/reviews";
@@ -40,9 +41,11 @@ export async function printJob(db: Database.Database, id: number): Promise<boole
   try {
     await printPlainText(job.content, job.printer ?? undefined);
     markPrintJobPrinted(db, id);
+    enqueueWebsitePrintAck(db, id, true);
     return true;
   } catch (error) {
     markPrintJobFailed(db, id, error instanceof Error ? error.message : String(error));
+    enqueueWebsitePrintAck(db, id, false);
     return false;
   }
 }

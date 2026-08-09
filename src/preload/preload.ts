@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron";
-import type { BrandingSettings, EmailSettingsInput, GoogleOAuthClientInput, GoogleSheetsSettingsInput, HistoricalScope, MenuDataSetting, MenuItemInput, MenuTypeSetting, OrderItemInput, OrderSource, PaymentMethod, PhysicalCountInput, PhysicalCountUpdateInput, ReceiptPaymentInfo, RecipeSaveInput, RestockEntryInput, RestockEntryUpdateInput, SalesSummary } from "../shared/types.js";
+import type { BrandingSettings, EmailSettingsInput, GoogleOAuthClientInput, GoogleSheetsSettingsInput, HistoricalScope, MenuDataSetting, MenuItemInput, MenuTypeSetting, OrderItemInput, OrderSource, PaymentMethod, PhysicalCountInput, PhysicalCountUpdateInput, ReceiptPaymentInfo, RecipeSaveInput, RestockEntryInput, RestockEntryUpdateInput, SalesSummary, WebsiteOrderDetail, WebsiteOrderPrintBatch, WebsiteOrderPrintKind, WebsiteOrderStatus, WebsiteOrderSummary } from "../shared/types.js";
 
 const api = {
   auth: {
@@ -92,6 +92,12 @@ const api = {
     reprintReceipt: (orderId: number) => ipcRenderer.invoke("orders:reprintReceipt", orderId),
     printBill: (orderId: number, paymentInfo?: ReceiptPaymentInfo) => ipcRenderer.invoke("orders:printBill", orderId, paymentInfo),
     printAudit: (orderId: number) => ipcRenderer.invoke("orders:printAudit", orderId)
+  },
+  websiteOrders: {
+    list: (statuses?: WebsiteOrderStatus[]): Promise<WebsiteOrderSummary[]> => ipcRenderer.invoke("websiteOrders:list", statuses),
+    detail: (remoteId: string): Promise<WebsiteOrderDetail> => ipcRenderer.invoke("websiteOrders:detail", remoteId),
+    queuePrint: (remoteId: string, kind?: WebsiteOrderPrintKind | "both"): Promise<WebsiteOrderPrintBatch> =>
+      ipcRenderer.invoke("websiteOrders:queuePrint", remoteId, kind)
   },
   print: {
     listJobs: (status?: string) => ipcRenderer.invoke("print:listJobs", status),

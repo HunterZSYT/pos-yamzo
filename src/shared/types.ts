@@ -24,6 +24,7 @@ export interface User {
 
 export interface MenuItem {
   id: number;
+  publicId: string;
   name: string;
   price: number;
   menuPrices?: Record<string, number>;
@@ -104,6 +105,7 @@ export interface OrderSummary {
   tableNumber: string | null;
   status: OrderStatus;
   subtotal: number;
+  deliveryFee?: number;
   discount: number;
   total: number;
   createdAt: string;
@@ -113,6 +115,7 @@ export interface OrderSummary {
   itemCount: number;
   itemPreview: string[];
   batches: OrderBatch[];
+  isTest?: boolean;
 }
 
 export interface OrderDetail extends OrderSummary {
@@ -161,6 +164,113 @@ export interface SalesSummary {
     rawCost: number;
   }>;
   averageKitchenMinutes: number;
+}
+
+export type WebsiteOrderStatus =
+  | "pending"
+  | "accepted"
+  | "preparing"
+  | "ready"
+  | "out_for_delivery"
+  | "delivered"
+  | "rejected"
+  | "cancelled";
+
+export interface WebsiteOrderAddress {
+  sector: string;
+  road: string;
+  house: string;
+  flat: string;
+}
+
+export interface WebsiteOrderItemSnapshot {
+  remoteItemId: string;
+  /** Stable cross-system catalog key (for example, menu_item_chicken_momo), never a POS row id. */
+  menuItemPublicId: string;
+  name: string;
+  quantity: number;
+  /** Whole Bangladeshi taka after the main-process transport validates/converts remote minor units. */
+  unitPrice: number;
+  note?: string | null;
+}
+
+export interface WebsiteOrderSnapshot {
+  remoteId: string;
+  orderCode: string;
+  remoteVersion: number;
+  /**
+   * The Website Admin is authoritative for this status. The terminal may
+   * display and print the projection, but it must never advance this value.
+   */
+  status: WebsiteOrderStatus;
+  customerName: string;
+  customerPhone: string;
+  address: WebsiteOrderAddress;
+  deliveryNote?: string | null;
+  subtotal: number;
+  deliveryFee: number;
+  discount: number;
+  total: number;
+  isTest: boolean;
+  remoteCreatedAt: string;
+  remoteUpdatedAt: string;
+  items: WebsiteOrderItemSnapshot[];
+}
+
+export interface WebsiteOrderItem extends WebsiteOrderItemSnapshot {
+  id: number;
+  menuItemId: number | null;
+  mapped: boolean;
+}
+
+export interface WebsiteOrderSummary {
+  remoteId: string;
+  orderCode: string;
+  remoteVersion: number;
+  status: WebsiteOrderStatus;
+  customerName: string;
+  customerPhone: string;
+  total: number;
+  isTest: boolean;
+  itemCount: number;
+  itemPreview: string[];
+  posOrderId: number | null;
+  receivedAt: string;
+  remoteCreatedAt: string;
+  updatedAt: string;
+}
+
+export interface WebsiteOrderDetail extends WebsiteOrderSummary {
+  address: WebsiteOrderAddress;
+  deliveryNote: string | null;
+  subtotal: number;
+  deliveryFee: number;
+  discount: number;
+  rejectionReason: string | null;
+  items: WebsiteOrderItem[];
+}
+
+export type WebsiteOrderPrintKind = "kitchen_copy" | "customer_receipt";
+
+export interface WebsiteOrderPrintJob {
+  id: number;
+  kind: WebsiteOrderPrintKind;
+}
+
+export interface WebsiteOrderPrintBatch {
+  websiteOrder: WebsiteOrderDetail;
+  jobs: WebsiteOrderPrintJob[];
+}
+
+export interface WebsiteOutboxEvent {
+  id: number;
+  /** Durable UUID used for remote idempotency even if the local SQLite IDs are reused. */
+  eventKey: string;
+  remoteOrderId: string;
+  eventType: string;
+  payload: Record<string, unknown>;
+  attempts: number;
+  createdAt: string;
 }
 
 export interface InventoryReportEvent {
