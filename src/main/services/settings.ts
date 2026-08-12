@@ -1,9 +1,16 @@
 import type Database from "better-sqlite3";
-import type { BrandingSettings, MenuDataSetting, MenuTypeSetting } from "../../shared/types.js";
+import type { BrandingSettings, MenuDataSetting, MenuTypeSetting, PaymentMethodSetting } from "../../shared/types.js";
 
 const DEFAULT_LOGO_PATH = "yamzo://default-logo";
 const DEFAULT_QR_PATH = "yamzo://review-qr";
 const DEFAULT_HOST_NAMES = ["Cashier"];
+const DEFAULT_PAYMENT_METHODS: PaymentMethodSetting[] = [
+  { key: "cash", label: "Cash", active: true },
+  { key: "bkash", label: "bKash", active: true },
+  { key: "nagad", label: "Nagad", active: true },
+  { key: "card", label: "Card", active: true },
+  { key: "other", label: "Other", active: true }
+];
 const DEFAULT_MENU_CATEGORIES = ["Seafood", "Momo", "Fish & Chips", "Pasta", "Rice", "Soup", "Snacks", "Sauce", "Drinks", "Other"];
 const DEFAULT_MENU_DATA: MenuDataSetting[] = [
   { key: "in_house", label: "Store Menu", active: true, externalOrderIdEnabled: false },
@@ -96,6 +103,24 @@ export function getHostNames(db: Database.Database): string[] {
 export function setHostNames(db: Database.Database, hostNames: string[]): void {
   const cleaned = Array.from(new Set(hostNames.map((host) => host.trim()).filter(Boolean)));
   setSetting(db, "hostNames", cleaned.length ? cleaned : DEFAULT_HOST_NAMES);
+}
+
+export function getPaymentMethods(db: Database.Database): PaymentMethodSetting[] {
+  const saved = getSetting<PaymentMethodSetting[]>(db, "paymentMethods", DEFAULT_PAYMENT_METHODS);
+  const known = new Set(DEFAULT_PAYMENT_METHODS.map((method) => method.key));
+  const cleaned = saved
+    .filter((method) => known.has(method.key))
+    .map((method) => ({ key: method.key, label: method.label.trim() || method.key, active: method.active !== false }));
+  return cleaned.some((method) => method.active) ? cleaned : DEFAULT_PAYMENT_METHODS;
+}
+
+export function setPaymentMethods(db: Database.Database, methods: PaymentMethodSetting[]): void {
+  const known = new Set(DEFAULT_PAYMENT_METHODS.map((method) => method.key));
+  const cleaned = methods
+    .filter((method) => known.has(method.key))
+    .map((method) => ({ key: method.key, label: method.label.trim() || method.key, active: method.active !== false }));
+  if (!cleaned.some((method) => method.active)) throw new Error("At least one payment method must stay active.");
+  setSetting(db, "paymentMethods", cleaned);
 }
 
 export function getMenuCategories(db: Database.Database): string[] {

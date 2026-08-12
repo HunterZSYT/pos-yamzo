@@ -3,6 +3,7 @@ dist/
 dist-electron/
 release/
 release-packaged/
+release-history/
 coverage/
 *.log
 .env

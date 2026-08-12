@@ -43,6 +43,11 @@ export interface WebsiteTerminalProvisioningResult {
   previousCredentialBackupPath: string | null;
 }
 
+export interface WebsiteTerminalRestoreResult {
+  identity: WebsiteTerminalIdentity;
+  displacedCredentialPath: string;
+}
+
 export interface WebsiteTerminalCredentialOptions {
   terminalCode: string;
   userDataPath: string;
@@ -232,6 +237,47 @@ export function provisionWebsiteTerminalIdentity(
   };
 }
 
+export function restorePreviousWebsiteTerminalIdentity(
+  options: WebsiteTerminalCredentialOptions & { previousCredentialBackupPath: string }
+): WebsiteTerminalRestoreResult {
+  const terminalCode = cleanTerminalCode(options.terminalCode);
+  assertEncryptionAvailable(options.protector);
+  const directory = credentialDirectory(options.userDataPath);
+  const credentialFilePath = credentialPath(options.userDataPath, terminalCode);
+  const backupPath = path.resolve(options.previousCredentialBackupPath);
+  const expectedDirectory = `${path.resolve(directory)}${path.sep}`;
+  if (
+    !backupPath.startsWith(expectedDirectory)
+    || !path.basename(backupPath).startsWith(`website-terminal-${terminalCode}.previous-`)
+    || !backupPath.endsWith(".protected.json")
+    || !fs.existsSync(backupPath)
+    || !fs.existsSync(credentialFilePath)
+  ) {
+    throw new Error("The previous terminal credential backup is unavailable.");
+  }
+
+  const displacedCredentialPath = uniqueFailedRotationPath(
+    options.userDataPath,
+    terminalCode,
+    options.now?.() ?? new Date()
+  );
+  fs.renameSync(credentialFilePath, displacedCredentialPath);
+  try {
+    fs.renameSync(backupPath, credentialFilePath);
+    const identity = loadWebsiteTerminalIdentity({ ...options, terminalCode });
+    writeRegistrationFile(registrationPath(options.userDataPath, terminalCode), identity.registration);
+    return { identity, displacedCredentialPath };
+  } catch (error) {
+    if (fs.existsSync(credentialFilePath) && !fs.existsSync(backupPath)) {
+      fs.renameSync(credentialFilePath, backupPath);
+    }
+    if (fs.existsSync(displacedCredentialPath) && !fs.existsSync(credentialFilePath)) {
+      fs.renameSync(displacedCredentialPath, credentialFilePath);
+    }
+    throw error;
+  }
+}
+
 function registrationFromPrivateKey(
   terminalCode: string,
   privateKey: KeyObject,
@@ -347,6 +393,28 @@ function uniqueBackupPath(
     candidate = path.join(
       directory,
       `website-terminal-${terminalCode}.previous-${timestamp}-${suffix}.protected.json`
+    );
+    suffix += 1;
+  }
+  return candidate;
+}
+
+function uniqueFailedRotationPath(
+  userDataPath: string,
+  terminalCode: string,
+  now: Date
+): string {
+  const timestamp = now.toISOString().replace(/[-:.Z]/g, "").replace("T", "-");
+  const directory = credentialDirectory(userDataPath);
+  let candidate = path.join(
+    directory,
+    `website-terminal-${terminalCode}.failed-rotation-${timestamp}.protected.json`
+  );
+  let suffix = 1;
+  while (fs.existsSync(candidate)) {
+    candidate = path.join(
+      directory,
+      `website-terminal-${terminalCode}.failed-rotation-${timestamp}-${suffix}.protected.json`
     );
     suffix += 1;
   }

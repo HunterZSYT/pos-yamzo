@@ -93,7 +93,7 @@ export function buildReceipt(
   const addressLines = splitAddress(branding.address);
   const paymentLines = renderPaymentLines(payments, paymentInfo);
   const printsLogo = Boolean(branding.showLogo && branding.logoPath);
-  const hostName = paymentInfo?.host?.trim() || "Cashier";
+  const hostName = paymentInfo?.host?.trim() || String(order.host_name ?? "Cashier");
   const sourceLabel = configuredSourceLabel(db, String(order.source));
 
   return cleanReceiptLines([
@@ -110,6 +110,7 @@ export function buildReceipt(
     leftRightReceiptLine(`HOST: ${hostName}`, date),
     leftRightReceiptLine(`ORDER: ${String(order.order_number)}`, time),
     order.table_number ? receiptTextLine(`TABLE: ${order.table_number}`) : "",
+    order.table_number ? receiptTextLine(`GUESTS: ${order.guest_count ?? 1}`) : "",
     receiptTextLine(`TYPE:  ${sourceLabel}`),
     "",
     receiptSeparator(),

@@ -5,12 +5,57 @@ export function enqueuePrintJob(
   db: Database.Database,
   type: PrintJobType,
   content: string,
-  printer?: string | null
+  printer?: string | null,
+  context?: {
+    orderId?: number;
+    operator?: string;
+    managerId?: number;
+    reason?: string;
+    relatedPrintJobId?: number;
+  }
 ): number {
   const result = db
     .prepare("INSERT INTO print_jobs (type, content, printer, status) VALUES (?, ?, ?, 'pending')")
     .run(type, content, printer ?? null);
+  const id = Number(result.lastInsertRowid);
+  if (context) {
+    db.prepare(
+      `INSERT INTO print_job_context
+        (print_job_id, order_id, operator, manager_id, reason, related_print_job_id)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    ).run(
+      id,
+      context.orderId ?? null,
+      context.operator?.trim() || null,
+      context.managerId ?? null,
+      context.reason?.trim() || null,
+      context.relatedPrintJobId ?? null
+    );
+  }
+  return id;
+}
+
+export function beginPrintAttempt(db: Database.Database, printJobId: number): number {
+  const row = db.prepare(
+    "SELECT COALESCE(MAX(attempt_number), 0) + 1 AS next_attempt FROM print_attempts WHERE print_job_id = ?"
+  ).get(printJobId) as { next_attempt: number };
+  const result = db.prepare(
+    "INSERT INTO print_attempts (print_job_id, attempt_number) VALUES (?, ?)"
+  ).run(printJobId, row.next_attempt);
   return Number(result.lastInsertRowid);
+}
+
+export function finishPrintAttempt(
+  db: Database.Database,
+  attemptId: number,
+  success: boolean,
+  errorMessage?: string
+): void {
+  db.prepare(
+    `UPDATE print_attempts
+     SET completed_at = CURRENT_TIMESTAMP, success = ?, error_message = ?
+     WHERE id = ? AND completed_at IS NULL`
+  ).run(success ? 1 : 0, success ? null : (errorMessage ?? "Printing failed.").slice(0, 500), attemptId);
 }
 
 export function markPrintJobFailed(db: Database.Database, id: number, message: string): void {

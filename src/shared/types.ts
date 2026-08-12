@@ -2,6 +2,11 @@ export type OrderSource = string;
 
 export type OrderStatus = "open" | "kitchen_sent" | "settled" | "cancelled";
 export type PaymentMethod = "cash" | "bkash" | "nagad" | "card" | "other" | "split";
+export interface PaymentMethodSetting {
+  key: Exclude<PaymentMethod, "split">;
+  label: string;
+  active: boolean;
+}
 export type PrintJobStatus = "pending" | "printed" | "failed" | "retry";
 export type PrintJobType =
   | "kot"
@@ -103,6 +108,8 @@ export interface OrderSummary {
   externalOrderId: string | null;
   source: OrderSource;
   tableNumber: string | null;
+  guestCount: number;
+  hostName: string;
   status: OrderStatus;
   subtotal: number;
   deliveryFee?: number;
@@ -116,6 +123,51 @@ export interface OrderSummary {
   itemPreview: string[];
   batches: OrderBatch[];
   isTest?: boolean;
+  initialKotState: InitialKotState | null;
+  initialKotPrintJobId: number | null;
+  paid: boolean;
+  payment: OrderPayment | null;
+  requiredKotCount: number;
+  unresolvedKotCount: number;
+  failedKotCount: number;
+  billState: PrintJobStatus | "not_printed";
+  websiteInitialKotState?: WebsiteInitialKotState | null;
+}
+
+export interface Manager {
+  id: number;
+  managerCode: string;
+  name: string;
+  active: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ManagerInput {
+  id?: number;
+  managerCode: string;
+  name: string;
+  pin?: string;
+  active?: boolean;
+}
+
+export interface ManagerAuthorization {
+  managerId: number;
+  pin: string;
+  reason: string;
+  operator: string;
+}
+
+export type InitialKotState = "required" | "queued" | "awaiting_retry" | "confirmed";
+
+export interface OrderPayment {
+  method: PaymentMethod;
+  amount: number;
+  cashReceived: number | null;
+  changeGiven: number;
+  reference: string | null;
+  hostName: string;
+  createdAt: string;
 }
 
 export interface OrderDetail extends OrderSummary {
@@ -132,6 +184,8 @@ export interface SalesSummary {
   totalOrders: number;
   openOrders: number;
   settledOrders: number;
+  dineInGuests: number;
+  averageGuestsPerDineInOrder: number;
   discountTotal: number;
   voidTotal: number;
   commissionTotal: number;
@@ -199,8 +253,8 @@ export interface WebsiteOrderSnapshot {
   orderCode: string;
   remoteVersion: number;
   /**
-   * The Website Admin is authoritative for this status. The terminal may
-   * display and print the projection, but it must never advance this value.
+   * Cloud mirror of the POS-owned restaurant lifecycle after terminal claim.
+   * Website Admin remains the gateway/observer and cannot advance this value.
    */
   status: WebsiteOrderStatus;
   customerName: string;
@@ -238,6 +292,80 @@ export interface WebsiteOrderSummary {
   receivedAt: string;
   remoteCreatedAt: string;
   updatedAt: string;
+  initialKotState: WebsiteInitialKotState | null;
+}
+
+export type WebsiteInitialKotState =
+  | "queued"
+  | "printing"
+  | "awaiting_retry"
+  | "confirmed";
+
+export interface WebsiteConnectionSettings {
+  baseUrl: string;
+  terminalCode: string;
+  includeTestOrders: boolean;
+}
+
+export type WebsiteConnectionState =
+  | "connected"
+  | "reconnecting"
+  | "offline"
+  | "error"
+  | "disconnected";
+
+export type WebsiteRealtimeState =
+  | "connected"
+  | "reconnecting"
+  | "offline";
+
+export interface WebsiteRealtimeSession {
+  supabaseUrl: string;
+  publishableKey: string;
+  accessToken: string;
+  expiresAt: string;
+  topic: string;
+  event: "pending_order_may_exist";
+  terminal: {
+    id: string;
+    code: string;
+    name: string;
+    mode: "test" | "live";
+    lastHeartbeatAt: string | null;
+    keyRotatedAt: string;
+    keyExpiresAt: string | null;
+  };
+}
+
+export interface WebsiteConnectionStatus {
+  configured: boolean;
+  connection: WebsiteConnectionState;
+  realtime: WebsiteRealtimeState;
+  terminalName: string | null;
+  terminalCode: string | null;
+  environment: "test" | "live" | null;
+  lastHeartbeatAt: string | null;
+  lastSyncAt: string | null;
+  lastWebsiteOrder: { reference: string; receivedAt: string } | null;
+  menuReconciliation: {
+    status: "ready" | "issues";
+    issueCount: number;
+  };
+  terminalKey: {
+    status: "valid" | "expiring" | "rotation_required" | "unknown";
+    rotatedAt: string | null;
+    expiresAt: string | null;
+  };
+  errors: string[];
+}
+
+export interface WebsiteConnectionDiagnostics extends WebsiteConnectionStatus {
+  baseUrl: string | null;
+  syncCursorPresent: boolean;
+  pendingLocalEvents: number;
+  failedLocalEvents: number;
+  pendingInitialKotCount: number;
+  generatedAt: string;
 }
 
 export interface WebsiteOrderDetail extends WebsiteOrderSummary {
@@ -271,6 +399,13 @@ export interface WebsiteOutboxEvent {
   payload: Record<string, unknown>;
   attempts: number;
   createdAt: string;
+}
+
+export interface WebsiteTransitionResult {
+  eventId: number;
+  remoteOrderId: string;
+  status: WebsiteOrderStatus;
+  remoteVersion: number;
 }
 
 export interface InventoryReportEvent {
@@ -344,6 +479,54 @@ export interface InventoryItem {
   estimatedWastage: number;
   countRequired: boolean;
   active: boolean;
+}
+
+export interface HistoryRange {
+  startDate?: string;
+  endDate?: string;
+}
+
+export interface KotHistoryEntry {
+  printJobId: number;
+  orderId: number;
+  orderNumber: string;
+  source: string;
+  tableNumber: string | null;
+  guestCount: number;
+  kotType: string;
+  items: string[];
+  printer: string | null;
+  operator: string;
+  managerName: string | null;
+  reason: string | null;
+  status: PrintJobStatus;
+  errorMessage: string | null;
+  requestedAt: string;
+  printedAt: string | null;
+  attemptCount: number;
+  successfulPrintCount: number;
+  reprintCount: number;
+}
+
+export interface SwapHistoryEntry {
+  id: number;
+  orderId: number;
+  orderNumber: string;
+  source: string;
+  tableNumber: string | null;
+  guestCount: number;
+  originalName: string;
+  originalQuantity: number;
+  replacementName: string | null;
+  replacementQuantity: number | null;
+  reason: string;
+  managerName: string;
+  operator: string;
+  originalKotPrintJobId: number | null;
+  adjustmentPrintJobId: number;
+  adjustmentStatus: PrintJobStatus;
+  successfulPrintCount: number;
+  createdAt: string;
 }
 
 export type InventoryBindingType = "recipe" | "item";

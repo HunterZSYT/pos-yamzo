@@ -94,6 +94,88 @@ describe("website order HTTP transport", () => {
     });
   });
 
+  it("sends a signed explicit Accept+Claim request and validates the accepted order", async () => {
+    const paths: string[] = [];
+    const bodies: Array<Record<string, unknown>> = [];
+    const raw = { ...rawSyncedOrder(), status: "accepted", version: 2, accepted_at: "2026-08-09T04:01:00.000Z" };
+    const transport = new WebsiteOrderHttpTransport(config, {
+      fetchImpl: (async (input, init) => {
+        paths.push(new URL(String(input)).pathname);
+        bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        return new Response(JSON.stringify({ order: raw }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        });
+      }) as typeof fetch
+    });
+
+    await expect(transport.acceptOrder(raw.order_id, 1)).resolves.toMatchObject({
+      remoteId: raw.order_id,
+      status: "accepted",
+      remoteVersion: 2
+    });
+    expect(paths).toEqual(["/api/pos/orders/claim"]);
+    expect(bodies).toEqual([{ orderId: raw.order_id, expectedVersion: 1 }]);
+  });
+
+  it("accepts only a terminal-scoped, short-lived private Realtime session", async () => {
+    const terminalId = "8e2ea890-833b-4a94-b261-7caab1ec8709";
+    const now = Date.parse("2026-08-11T10:00:00.000Z");
+    const realtime = {
+      supabaseUrl: "https://example.supabase.co",
+      publishableKey: "sb_publishable_abcdefghijklmnopqrstuvwxyz",
+      accessToken: "eyJabcdefghijklmnopqrstuvwxyz.abcdefghijklmnopqrstuvwxyz.abcdefghijklmnopqrstuvwxyz",
+      expiresAt: "2026-08-11T11:00:00.000Z",
+      topic: `pos-order-wake:${terminalId}`,
+      event: "pending_order_may_exist",
+      terminal: {
+        id: terminalId,
+        code: config.terminalCode,
+        name: "Yamzo Development Terminal",
+        mode: "test",
+        lastHeartbeatAt: "2026-08-11T09:59:00.000Z",
+        keyRotatedAt: "2026-08-09T09:00:00.000Z",
+        keyExpiresAt: "2027-02-07T09:00:00.000Z"
+      }
+    };
+    const transport = new WebsiteOrderHttpTransport(config, {
+      now: () => now,
+      fetchImpl: (async () => new Response(JSON.stringify({ realtime }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      })) as typeof fetch
+    });
+
+    await expect(transport.requestRealtimeSession()).resolves.toEqual(realtime);
+
+    const wrongTopic = new WebsiteOrderHttpTransport(config, {
+      now: () => now,
+      fetchImpl: (async () => new Response(JSON.stringify({
+        realtime: { ...realtime, topic: "pos-order-wake:another-terminal" }
+      }), { status: 200, headers: { "content-type": "application/json" } })) as typeof fetch
+    });
+    await expect(wrongTopic.requestRealtimeSession()).rejects.toThrow(/invalid Realtime session/i);
+  });
+
+  it("rotates by a signed old-key request and verifies the returned fingerprint", async () => {
+    const nextKey = generateKeyPairSync("ed25519").publicKey.export({ format: "der", type: "spki" });
+    const publicKey = nextKey.toString("base64url");
+    const fingerprint = createHash("sha256").update(nextKey).digest("hex");
+    const calls: Array<{ pathname: string; body: unknown }> = [];
+    const transport = new WebsiteOrderHttpTransport(config, {
+      fetchImpl: (async (input, init) => {
+        calls.push({ pathname: new URL(String(input)).pathname, body: JSON.parse(String(init?.body)) });
+        return new Response(JSON.stringify({
+          terminalCode: config.terminalCode,
+          publicKeyFingerprint: fingerprint
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }) as typeof fetch
+    });
+
+    await expect(transport.rotateTerminalKey(publicKey, fingerprint)).resolves.toBeUndefined();
+    expect(calls).toEqual([{ pathname: "/api/pos/terminal/rotate", body: { publicKey } }]);
+  });
+
   it("fails closed when a synchronized website amount cannot be represented in local taka", async () => {
     const raw = rawSyncedOrder();
     raw.items[0].unit_price_minor = 25_050;
@@ -148,7 +230,10 @@ describe("website order HTTP transport", () => {
       }
     ];
 
-    expect(await transport.pushEvents(events)).toEqual({ acceptedEventIds: [1, 2] });
+    expect(await transport.pushEvents(events)).toEqual({
+      acceptedEventIds: [1, 2],
+      transitions: []
+    });
     expect(paths).toEqual(["/api/pos/print/ack"]);
     expect(bodies[0]).toMatchObject({
       eventKey: events[1].eventKey,
@@ -172,6 +257,15 @@ describe("website order HTTP transport", () => {
       baseUrl: config.baseUrl,
       terminalCode: config.terminalCode,
       includeTestOrders: false
+    });
+    expect(loadWebsiteOrderHttpConfig({}, () => terminalKeyPair.privateKey, {
+      baseUrl: config.baseUrl,
+      terminalCode: "YAMZO_DEV_01",
+      includeTestOrders: true
+    })).toMatchObject({
+      baseUrl: config.baseUrl,
+      terminalCode: "YAMZO_DEV_01",
+      includeTestOrders: true
     });
   });
 

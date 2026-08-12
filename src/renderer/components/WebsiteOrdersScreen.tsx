@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import type {
+  OrderSummary,
   WebsiteOrderDetail,
   WebsiteOrderPrintKind,
   WebsiteOrderStatus,
@@ -25,19 +26,22 @@ const SCREEN_POLL_MS = 10_000;
 
 interface WebsiteOrdersScreenProps {
   onMessage?: (message: string) => void;
+  onAccepted?: (order: OrderSummary) => void | Promise<void>;
 }
 
 /**
- * A local, read-only projection of Website Admin orders. The terminal is
- * deliberately incapable of accepting, rejecting, editing, or transitioning
- * the remote order. Its only write is a local print job and print receipt.
+ * Pending website orders remain cloud-owned until staff explicitly accepts
+ * one. Acceptance is signed in the main process and imports the claimed order
+ * into the normal local POS order model.
  */
-export function WebsiteOrdersScreen({ onMessage }: WebsiteOrdersScreenProps) {
+export function WebsiteOrdersScreen({ onMessage, onAccepted }: WebsiteOrdersScreenProps) {
   const [orders, setOrders] = useState<WebsiteOrderSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [selected, setSelected] = useState<WebsiteOrderDetail | null>(null);
   const [busyPrint, setBusyPrint] = useState<string | null>(null);
+  const [busyAccept, setBusyAccept] = useState<string | null>(null);
+  const [busyKot, setBusyKot] = useState<string | null>(null);
 
   const refresh = useCallback(async (quiet = false) => {
     if (!window.yamzo?.websiteOrders) {
@@ -59,8 +63,15 @@ export function WebsiteOrdersScreen({ onMessage }: WebsiteOrdersScreenProps) {
   useEffect(() => {
     void refresh();
     const timer = window.setInterval(() => void refresh(true), SCREEN_POLL_MS);
-    return () => window.clearInterval(timer);
-  }, [refresh]);
+    const unsubscribe = window.yamzo?.websiteOrders.onChanged(() => {
+      onMessage?.("New website order received. Review it before accepting.");
+      void refresh(true);
+    });
+    return () => {
+      window.clearInterval(timer);
+      unsubscribe?.();
+    };
+  }, [onMessage, refresh]);
 
   async function viewOrder(remoteId: string) {
     if (!window.yamzo?.websiteOrders) return;
@@ -69,6 +80,50 @@ export function WebsiteOrdersScreen({ onMessage }: WebsiteOrdersScreenProps) {
       setError("");
     } catch (reason) {
       setError(errorMessage(reason));
+    }
+  }
+
+  async function acceptOrder(order: WebsiteOrderSummary) {
+    if (!window.yamzo?.websiteOrders) return;
+    setBusyAccept(order.remoteId);
+    try {
+      const accepted = await window.yamzo.websiteOrders.accept(
+        order.remoteId,
+        order.remoteVersion
+      );
+      setSelected(null);
+      onMessage?.(
+        accepted.websiteInitialKotState === "confirmed"
+          ? `${order.orderCode} accepted. Initial Kitchen KOT printed.`
+          : `${order.orderCode} accepted. Awaiting KOT; retry Kitchen KOT before continuing.`
+      );
+      await refresh(true);
+      await onAccepted?.(accepted);
+      setError("");
+    } catch (reason) {
+      setError(errorMessage(reason));
+    } finally {
+      setBusyAccept(null);
+    }
+  }
+
+  async function retryInitialKot(order: WebsiteOrderSummary) {
+    if (!window.yamzo?.websiteOrders) return;
+    setBusyKot(order.remoteId);
+    try {
+      const local = await window.yamzo.websiteOrders.retryInitialKot(order.remoteId);
+      onMessage?.(
+        local.websiteInitialKotState === "confirmed"
+          ? `${order.orderCode}: Kitchen KOT printed. Workflow unlocked.`
+          : `${order.orderCode}: Kitchen KOT still needs retry.`
+      );
+      await refresh(true);
+      await onAccepted?.(local);
+      setError("");
+    } catch (reason) {
+      setError(errorMessage(reason));
+    } finally {
+      setBusyKot(null);
     }
   }
 
@@ -110,9 +165,9 @@ export function WebsiteOrdersScreen({ onMessage }: WebsiteOrdersScreenProps) {
             <div className="grid gap-1">
               <div className="flex flex-wrap items-center gap-2">
                 <CardTitle className="flex items-center gap-2"><PackageCheck className="size-5 text-emerald-700" /> Website Orders</CardTitle>
-                <Badge variant="outline" className="border-emerald-300 text-emerald-800">Read-only mirror</Badge>
+                <Badge variant="outline" className="border-emerald-300 text-emerald-800">Signed gateway</Badge>
               </div>
-              <CardDescription>Website Admin owns every edit and status. This POS only prints the latest synced snapshot.</CardDescription>
+              <CardDescription>Review pending website orders, then accept them securely into Open Orders.</CardDescription>
             </div>
             <Button variant="secondary" disabled={loading} onClick={() => void refresh()}>
               <RefreshCw className={loading ? "animate-spin" : ""} /> Refresh
@@ -127,17 +182,23 @@ export function WebsiteOrdersScreen({ onMessage }: WebsiteOrdersScreenProps) {
               description="Accepted website orders stay in sync here. Printing never changes the website order."
               orders={active}
               busyPrint={busyPrint}
+              busyAccept={busyAccept}
+              busyKot={busyKot}
               onView={viewOrder}
               onPrint={queueAndPrint}
+              onRetryInitialKot={retryInitialKot}
             />
             {pending.length > 0 && (
               <OrderSection
-                title="Awaiting Website Admin"
-                description="These orders are waiting for an admin decision and cannot be printed from the POS."
+                title="Awaiting POS Acceptance"
+                description="Review each order, then accept it into the restaurant's Open Orders workflow."
                 orders={pending}
                 busyPrint={busyPrint}
+                busyAccept={busyAccept}
+                busyKot={busyKot}
                 onView={viewOrder}
                 onPrint={queueAndPrint}
+                onAccept={acceptOrder}
               />
             )}
             <OrderSection
@@ -145,8 +206,11 @@ export function WebsiteOrdersScreen({ onMessage }: WebsiteOrdersScreenProps) {
               description="Delivered, rejected, and cancelled states are mirrored from Website Admin. Delivered orders remain reprintable."
               orders={history}
               busyPrint={busyPrint}
+              busyAccept={busyAccept}
+              busyKot={busyKot}
               onView={viewOrder}
               onPrint={queueAndPrint}
+              onRetryInitialKot={retryInitialKot}
             />
           </CardContent>
         </ScrollArea>
@@ -267,15 +331,23 @@ function OrderSection({
   description,
   orders,
   busyPrint,
+  busyAccept,
+  busyKot,
   onView,
-  onPrint
+  onPrint,
+  onAccept,
+  onRetryInitialKot
 }: {
   title: string;
   description: string;
   orders: WebsiteOrderSummary[];
   busyPrint: string | null;
+  busyAccept: string | null;
+  busyKot: string | null;
   onView: (remoteId: string) => void | Promise<void>;
   onPrint: (order: WebsiteOrderSummary, kind: WebsiteOrderPrintKind | "both") => void | Promise<void>;
+  onAccept?: (order: WebsiteOrderSummary) => void | Promise<void>;
+  onRetryInitialKot?: (order: WebsiteOrderSummary) => void | Promise<void>;
 }) {
   return (
     <section className="grid gap-3" aria-labelledby={`website-orders-${title.replaceAll(/[^a-z0-9]+/gi, "-").toLowerCase()}`}>
@@ -290,6 +362,8 @@ function OrderSection({
           {orders.map((order) => {
             const printable = isPrintable(order.status);
             const printing = busyPrint === `${order.remoteId}:both`;
+            const accepting = busyAccept === order.remoteId;
+            const retryingKot = busyKot === order.remoteId;
             return (
               <Card key={order.remoteId} className={order.status === "pending" ? "border-slate-300 bg-slate-50/50" : order.status === "accepted" ? "border-emerald-300 bg-emerald-50/40" : ""}>
                 <CardHeader className="border-b">
@@ -312,8 +386,23 @@ function OrderSection({
                     </div>
                     <strong className="shrink-0 text-lg">{formatTk(order.total)}</strong>
                   </div>
+                  {order.initialKotState === "awaiting_retry" && (
+                    <p role="status" className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-950">
+                      Awaiting KOT. Payment and kitchen completion are locked until printing succeeds.
+                    </p>
+                  )}
                   <div className="flex flex-wrap gap-2">
                     <Button variant="outline" onClick={() => void onView(order.remoteId)}>Open</Button>
+                    {order.status === "pending" && onAccept && (
+                      <Button disabled={accepting} onClick={() => void onAccept(order)}>
+                        {accepting ? "Accepting..." : "Accept"}
+                      </Button>
+                    )}
+                    {order.initialKotState === "awaiting_retry" && onRetryInitialKot && (
+                      <Button disabled={retryingKot} onClick={() => void onRetryInitialKot(order)}>
+                        {retryingKot ? "Retrying..." : "Retry Kitchen KOT"}
+                      </Button>
+                    )}
                     {printable && (
                       <Button disabled={printing} onClick={() => void onPrint(order, "both")}>
                         {printing ? "Printing..." : "Print copies"}

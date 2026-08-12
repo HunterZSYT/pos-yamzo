@@ -103,6 +103,10 @@ export function getSalesSummary(
   const recordedCosts = getRecordedCostMetrics(db, range);
   const inventoryEvents = getInventoryEventMetrics(db, range);
   const operatingProfit = roundMoney(netAfterCommission - rawMaterials.total - recordedCosts.total);
+  const guestMetrics = db.prepare(
+    `SELECT COALESCE(SUM(o.guest_count), 0) AS guests, COUNT(*) AS orders
+     FROM orders o ${where} AND o.table_number IS NOT NULL`
+  ).get(...params) as { guests: number; orders: number };
   const topItems = db
     .prepare(
       `SELECT oi.name, SUM(oi.quantity) AS quantity, SUM(oi.quantity * oi.unit_price) AS total
@@ -124,6 +128,8 @@ export function getSalesSummary(
     totalOrders: orders.length,
     openOrders: getOpenOrderCount(db, range),
     settledOrders: orders.length,
+    dineInGuests: Number(guestMetrics.guests) || 0,
+    averageGuestsPerDineInOrder: guestMetrics.orders ? roundMoney(guestMetrics.guests / guestMetrics.orders) : 0,
     discountTotal,
     voidTotal: getVoidTotal(db, where, params),
     commissionTotal,

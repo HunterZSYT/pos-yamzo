@@ -3,6 +3,8 @@ import {
   CheckCircle2,
   Clock3,
   Cloud,
+  KeyRound,
+  Radio,
   ExternalLink,
   FileSpreadsheet,
   Mail,
@@ -14,7 +16,9 @@ import type {
   EmailSettings,
   GoogleSheetTabOption,
   GoogleSheetsSettings,
-  GoogleSpreadsheetOption
+  GoogleSpreadsheetOption,
+  WebsiteConnectionDiagnostics,
+  WebsiteConnectionStatus
 } from "../../shared/types";
 import {
   AlertDialog,
@@ -48,6 +52,12 @@ type BusyAction =
   | "email"
   | "preview"
   | "send"
+  | "website-test"
+  | "website-register"
+  | "website-reconnect"
+  | "website-disconnect"
+  | "website-rotate"
+  | "website-diagnostics"
   | "";
 
 const defaultEmail: EmailSettings = {
@@ -70,6 +80,11 @@ export function IntegrationsAdmin() {
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const [disconnectOpen, setDisconnectOpen] = useState(false);
+  const [websiteStatus, setWebsiteStatus] = useState<WebsiteConnectionStatus | null>(null);
+  const [websiteDiagnostics, setWebsiteDiagnostics] = useState<WebsiteConnectionDiagnostics | null>(null);
+  const [websiteRotateOpen, setWebsiteRotateOpen] = useState(false);
+  const [websiteBaseUrl, setWebsiteBaseUrl] = useState("https://yamzouttara.com");
+  const [websiteRegistrationCode, setWebsiteRegistrationCode] = useState("");
 
   useEffect(() => {
     let active = true;
@@ -82,14 +97,16 @@ export function IntegrationsAdmin() {
         return;
       }
       try {
-        const [googleSettings, emailSettings] = await Promise.all([
+        const [googleSettings, emailSettings, connectionStatus] = await Promise.all([
           window.yamzo.settings.getGoogleSheets(),
-          window.yamzo.email.getSettings()
+          window.yamzo.email.getSettings(),
+          window.yamzo.websiteConnection.status()
         ]);
         if (!active) return;
         setGoogle(googleSettings);
         setClientId(googleSettings.clientId ?? "");
         setEmail({ ...defaultEmail, ...emailSettings, sendTime: emailSettings.sendTime || "21:00" });
+        setWebsiteStatus(connectionStatus);
         if (googleSettings.connected) {
           void discoverSpreadsheets(false);
           if (googleSettings.spreadsheetId) void discoverTabs(googleSettings.spreadsheetId, false);
@@ -101,8 +118,12 @@ export function IntegrationsAdmin() {
       }
     }
     void load();
+    const unsubscribe = window.yamzo?.websiteConnection.onStatusChanged((status) => {
+      if (active) setWebsiteStatus(status);
+    });
     return () => {
       active = false;
+      unsubscribe?.();
     };
     // Initial load owns discovery; later refreshes are explicit to avoid duplicate OAuth requests in StrictMode.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -388,6 +409,59 @@ export function IntegrationsAdmin() {
     }
   }
 
+  async function runWebsiteAction(
+    action: Extract<BusyAction, "website-test" | "website-reconnect" | "website-disconnect" | "website-rotate">,
+    operation: () => Promise<WebsiteConnectionStatus>,
+    successMessage: string
+  ) {
+    if (!window.yamzo) return;
+    startAction(action);
+    try {
+      const status = await operation();
+      setWebsiteStatus(status);
+      setWebsiteDiagnostics(null);
+      setNotice(successMessage);
+    } catch (caught) {
+      finishError(caught, "The Yamzo Website Connection action failed.");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function viewWebsiteDiagnostics() {
+    if (!window.yamzo) return;
+    if (websiteDiagnostics) {
+      setWebsiteDiagnostics(null);
+      return;
+    }
+    startAction("website-diagnostics");
+    try {
+      setWebsiteDiagnostics(await window.yamzo.websiteConnection.diagnostics());
+    } catch (caught) {
+      finishError(caught, "Could not load safe Website Connection diagnostics.");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function registerWebsiteTerminal() {
+    if (!window.yamzo) return;
+    startAction("website-register");
+    try {
+      const status = await window.yamzo.websiteConnection.register(
+        websiteBaseUrl,
+        websiteRegistrationCode
+      );
+      setWebsiteStatus(status);
+      setWebsiteRegistrationCode("");
+      setNotice(`Terminal ${status.terminalCode ?? ""} registered. The private key stays protected on this computer.`);
+    } catch (caught) {
+      finishError(caught, "Terminal registration failed.");
+    } finally {
+      setBusy("");
+    }
+  }
+
   if (!google) {
     return <div className="pt-4"><Card><CardContent className="flex items-center gap-3 p-5 text-muted-foreground"><RefreshCw className="size-4 animate-spin" />Loading integrations...</CardContent></Card></div>;
   }
@@ -427,6 +501,76 @@ export function IntegrationsAdmin() {
           {error || notice}
         </div>
       )}
+
+      <Card>
+        <CardHeader className="border-b">
+          <CardTitle className="flex items-center gap-2"><Radio className="size-4" />Yamzo Website Connection</CardTitle>
+          <CardDescription>Private terminal link for website-order wakeups and signed reconciliation. Realtime only wakes the POS; staff acceptance remains required.</CardDescription>
+          <CardAction>
+            <Badge variant={websiteStatus?.connection === "connected" ? "default" : websiteStatus?.connection === "error" ? "destructive" : "secondary"}>
+              {websiteStatus ? humanize(websiteStatus.connection) : "Unavailable"}
+            </Badge>
+          </CardAction>
+        </CardHeader>
+        <CardContent className="grid gap-5">
+          {!websiteStatus?.configured ? (
+            <div className="grid gap-4 rounded-xl border border-sky-200 bg-sky-50 p-4 lg:grid-cols-[minmax(0,1fr)_13rem_auto] lg:items-end">
+              <div className="grid gap-1.5">
+                <Label htmlFor="website-gateway-url">Yamzo website</Label>
+                <Input id="website-gateway-url" value={websiteBaseUrl} onChange={(event) => setWebsiteBaseUrl(event.target.value)} placeholder="https://yamzouttara.com" />
+              </div>
+              <div className="grid gap-1.5">
+                <Label htmlFor="website-registration-code">One-time registration code</Label>
+                <Input id="website-registration-code" value={websiteRegistrationCode} onChange={(event) => setWebsiteRegistrationCode(event.target.value.toUpperCase())} placeholder="AB12-CD34" maxLength={9} autoComplete="off" spellCheck={false} />
+              </div>
+              <Button onClick={() => void registerWebsiteTerminal()} disabled={Boolean(busy) || !/^[A-F0-9]{4}-[A-F0-9]{4}$/.test(websiteRegistrationCode)}>
+                <KeyRound />{busy === "website-register" ? "Registering..." : "Register terminal"}
+              </Button>
+              <p className="text-xs text-sky-950 lg:col-span-3">Create the short-lived code in Website Admin. This POS generates its Ed25519 key locally, encrypts it with Windows, and sends only the public key.</p>
+            </div>
+          ) : null}
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            <ConnectionFact label="Connection" value={websiteStatus ? humanize(websiteStatus.connection) : "Unavailable"} ready={websiteStatus?.connection === "connected"} />
+            <ConnectionFact label="Realtime" value={websiteStatus ? humanize(websiteStatus.realtime) : "Unavailable"} ready={websiteStatus?.realtime === "connected"} />
+            <ConnectionFact label="Terminal" value={websiteStatus?.terminalName || websiteStatus?.terminalCode || "Not configured"} detail={websiteStatus?.terminalCode || undefined} ready={Boolean(websiteStatus?.configured)} />
+            <ConnectionFact label="Environment" value={websiteStatus?.environment ? websiteStatus.environment.toUpperCase() : "Unknown"} detail={websiteStatus?.environment === "test" ? "TEST orders only" : websiteStatus?.environment === "live" ? "LIVE terminal" : undefined} ready={websiteStatus?.environment === "test"} />
+            <ConnectionFact label="Last heartbeat" value={formatTimestamp(websiteStatus?.lastHeartbeatAt || "")} ready={Boolean(websiteStatus?.lastHeartbeatAt)} />
+            <ConnectionFact label="Last signed sync" value={formatTimestamp(websiteStatus?.lastSyncAt || "")} ready={Boolean(websiteStatus?.lastSyncAt)} />
+            <ConnectionFact label="Last website order" value={websiteStatus?.lastWebsiteOrder?.reference || "None received"} detail={websiteStatus?.lastWebsiteOrder ? formatTimestamp(websiteStatus.lastWebsiteOrder.receivedAt) : undefined} ready={Boolean(websiteStatus?.lastWebsiteOrder)} />
+            <ConnectionFact label="Menu reconciliation" value={websiteStatus?.menuReconciliation.status === "ready" ? "Ready" : `${websiteStatus?.menuReconciliation.issueCount ?? 0} issue(s)`} ready={websiteStatus?.menuReconciliation.status === "ready"} />
+            <ConnectionFact label="Terminal key" value={websiteStatus ? humanize(websiteStatus.terminalKey.status) : "Unknown"} detail={websiteStatus?.terminalKey.expiresAt ? `Expires ${formatTimestamp(websiteStatus.terminalKey.expiresAt)}` : undefined} ready={websiteStatus?.terminalKey.status === "valid"} />
+          </div>
+
+          {websiteStatus?.errors.length ? (
+            <div className="rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950" role="status">
+              <strong>Connection notice</strong>
+              <ul className="mt-1 list-disc space-y-1 pl-5">{websiteStatus.errors.map((message) => <li key={message}>{message}</li>)}</ul>
+            </div>
+          ) : null}
+
+          <div className="flex flex-wrap gap-2">
+            <Button onClick={() => runWebsiteAction("website-test", () => window.yamzo!.websiteConnection.test(), "Website Connection test completed.")} disabled={Boolean(busy)}>{busy === "website-test" ? "Testing..." : "Test Connection"}</Button>
+            <Button variant="secondary" onClick={() => runWebsiteAction("website-reconnect", () => window.yamzo!.websiteConnection.reconnect(), "Website Connection reconnected.")} disabled={Boolean(busy)}>{busy === "website-reconnect" ? "Reconnecting..." : "Reconnect"}</Button>
+            <Button variant="outline" onClick={() => runWebsiteAction("website-disconnect", async () => window.yamzo!.websiteConnection.disconnect(), "Website Connection disconnected. Periodic work remains paused until reconnect.")} disabled={Boolean(busy)}>{busy === "website-disconnect" ? "Disconnecting..." : "Disconnect"}</Button>
+            <Button variant="outline" onClick={() => setWebsiteRotateOpen(true)} disabled={Boolean(busy) || !websiteStatus?.configured}><KeyRound />Rotate Terminal Key</Button>
+            <Button variant="ghost" onClick={viewWebsiteDiagnostics} disabled={Boolean(busy)}>{busy === "website-diagnostics" ? "Loading..." : websiteDiagnostics ? "Hide Diagnostics" : "View Diagnostics"}</Button>
+          </div>
+
+          {websiteDiagnostics && (
+            <div className="grid gap-3 rounded-xl border bg-muted/20 p-4 text-sm">
+              <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                <DiagnosticFact label="Gateway" value={websiteDiagnostics.baseUrl || "Not configured"} />
+                <DiagnosticFact label="Sync cursor" value={websiteDiagnostics.syncCursorPresent ? "Present" : "Not established"} />
+                <DiagnosticFact label="Pending local events" value={String(websiteDiagnostics.pendingLocalEvents)} />
+                <DiagnosticFact label="Failed local events" value={String(websiteDiagnostics.failedLocalEvents)} />
+                <DiagnosticFact label="Awaiting Kitchen KOT" value={String(websiteDiagnostics.pendingInitialKotCount)} />
+                <DiagnosticFact label="Generated" value={formatTimestamp(websiteDiagnostics.generatedAt)} />
+              </div>
+              <p className="text-xs text-muted-foreground">Diagnostics intentionally omit access tokens, private keys, customer data, and Supabase credentials.</p>
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader className="border-b">
@@ -558,8 +702,32 @@ export function IntegrationsAdmin() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <AlertDialog open={websiteRotateOpen} onOpenChange={setWebsiteRotateOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Rotate this terminal key?</AlertDialogTitle>
+            <AlertDialogDescription>A new Windows-protected Ed25519 key will replace the current terminal key, then the signed Website Connection will reconnect. The previous local credential is retained as a recovery backup.</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={() => {
+              setWebsiteRotateOpen(false);
+              void runWebsiteAction("website-rotate", () => window.yamzo!.websiteConnection.rotateKey(), "Terminal key rotated and Website Connection re-established.");
+            }}>Rotate Terminal Key</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
+}
+
+function ConnectionFact({ label, value, detail, ready }: { label: string; value: string; detail?: string; ready: boolean }) {
+  return <div className="rounded-xl border bg-muted/20 p-3"><span className="text-xs text-muted-foreground">{label}</span><strong className="mt-1 flex items-center gap-2 text-sm">{ready && <CheckCircle2 className="size-3.5 text-emerald-700" />}{value}</strong>{detail && detail !== value && <small className="mt-1 block text-muted-foreground">{detail}</small>}</div>;
+}
+
+function DiagnosticFact({ label, value }: { label: string; value: string }) {
+  return <div><span className="block text-xs text-muted-foreground">{label}</span><strong className="break-all text-sm font-medium">{value}</strong></div>;
 }
 
 function IntegrationField({ id, label, helper, children }: { id: string; label: string; helper?: string; children: React.ReactNode }) {

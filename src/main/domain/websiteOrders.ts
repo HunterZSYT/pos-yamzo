@@ -9,10 +9,20 @@ import type {
   WebsiteOrderSnapshot,
   WebsiteOrderStatus,
   WebsiteOrderSummary,
-  WebsiteOutboxEvent
+  WebsiteOutboxEvent,
+  WebsiteTransitionResult,
+  OrderSummary,
+  WebsiteInitialKotState
 } from "../../shared/types.js";
 import { enqueuePrintJob } from "../services/printQueue.js";
 import { getPrinterName } from "../services/settings.js";
+import {
+  addOrderItem,
+  applyDiscount,
+  createOrder,
+  getOrderSummary,
+  sendNewItemsToKitchen
+} from "./orders.js";
 import {
   getActiveWebsiteMenuMappings,
   resolveWebsiteMenuItemId
@@ -178,6 +188,243 @@ export function getWebsiteOrderDetail(db: Database.Database, remoteId: string): 
 }
 
 /**
+ * Imports a cloud-accepted website order into the normal local POS order model.
+ * The website snapshot, menu reconciliation, local order, order items, totals,
+ * and durable remote link commit together or not at all.
+ */
+export function importClaimedWebsiteOrderSnapshot(
+  db: Database.Database,
+  snapshot: WebsiteOrderSnapshot
+): OrderSummary {
+  if (snapshot.status !== "accepted") {
+    throw new Error("Only an accepted website order can enter Open Orders.");
+  }
+  const tx = db.transaction(() => {
+    importWebsiteOrderSnapshots(db, [snapshot]);
+    const order = importAcceptedWebsiteOrder(db, snapshot.remoteId);
+    ensureWebsiteInitialKot(db, snapshot.remoteId);
+    return getOrderSummary(db, order.id);
+  });
+  return tx();
+}
+
+/** Recovery path for a cloud claim that committed before the POS process could
+ * finish its local transaction. Only snapshots already owned by this terminal
+ * are returned by the signed sync endpoint.
+ */
+export function recoverAcceptedWebsiteOrders(db: Database.Database): OrderSummary[] {
+  const rows = db.prepare(
+    `SELECT remote.remote_id
+     FROM website_orders remote
+     LEFT JOIN website_initial_kots initial_kot
+       ON initial_kot.website_order_id = remote.remote_id
+     WHERE remote.status = 'accepted'
+       AND (remote.pos_order_id IS NULL OR initial_kot.website_order_id IS NULL)
+     ORDER BY datetime(remote.remote_created_at), remote.remote_id`
+  ).all() as Array<{ remote_id: string }>;
+  return rows.map((row) => db.transaction(() => {
+    const order = importAcceptedWebsiteOrder(db, row.remote_id);
+    ensureWebsiteInitialKot(db, row.remote_id);
+    return getOrderSummary(db, order.id);
+  })());
+}
+
+function importAcceptedWebsiteOrder(
+  db: Database.Database,
+  remoteId: string
+): OrderSummary {
+  const remote = getWebsiteOrderDetail(db, remoteId);
+  if (remote.status !== "accepted") {
+    throw new Error("Only an accepted website order can enter Open Orders.");
+  }
+  if (remote.posOrderId) return getOrderSummary(db, remote.posOrderId);
+  if (remote.items.some((item) => !item.mapped || item.menuItemId === null)) {
+    throw new Error(
+      `Website order ${remote.orderCode} cannot be accepted until every menu item is reconciled.`
+    );
+  }
+
+  const order = createOrder(db, {
+    source: "website",
+    externalOrderId: remote.orderCode,
+    deliveryFee: remote.deliveryFee,
+    requiresKot: true,
+    isTest: remote.isTest,
+    note: buildWebsiteOrderNote(remote)
+  });
+  for (const item of remote.items) {
+    addOrderItem(db, order.id, {
+      menuItemId: item.menuItemId!,
+      quantity: item.quantity,
+      note: item.note ?? undefined,
+      parcel: true
+    });
+  }
+  applyDiscount(db, order.id, remote.discount);
+
+  const imported = getOrderSummary(db, order.id);
+  if (
+    imported.subtotal !== remote.subtotal
+    || imported.deliveryFee !== remote.deliveryFee
+    || imported.discount !== remote.discount
+    || imported.total !== remote.total
+  ) {
+    throw new Error(`Website order ${remote.orderCode} totals do not match the local POS menu.`);
+  }
+
+  db.prepare(
+    `UPDATE website_orders
+     SET pos_order_id = ?, accepted_at = COALESCE(accepted_at, CURRENT_TIMESTAMP),
+         updated_at = CURRENT_TIMESTAMP
+     WHERE remote_id = ? AND pos_order_id IS NULL`
+  ).run(order.id, remote.remoteId);
+  db.prepare(
+    `INSERT INTO audit_logs (action, entity_type, entity_id, details)
+     VALUES ('website_order_accepted', 'order', ?, ?)`
+  ).run(String(order.id), JSON.stringify({
+    remoteId: remote.remoteId,
+    orderCode: remote.orderCode,
+    remoteVersion: remote.remoteVersion,
+    isTest: remote.isTest
+  }));
+  return getOrderSummary(db, order.id);
+}
+
+export interface WebsiteInitialKotRecord {
+  remoteId: string;
+  orderId: number;
+  printJobId: number;
+  state: WebsiteInitialKotState;
+}
+
+/** Persists the unique initial-KOT identity in the same transaction as the
+ * accepted website order import. Nested better-sqlite3 transactions use a
+ * savepoint, so the ticket, item sent markers, print job, and identity either
+ * all commit or all roll back.
+ */
+export function ensureWebsiteInitialKot(
+  db: Database.Database,
+  remoteId: string
+): WebsiteInitialKotRecord {
+  const cleanId = cleanRemoteId(remoteId);
+  const tx = db.transaction(() => {
+    const remote = db.prepare(
+      "SELECT status, pos_order_id FROM website_orders WHERE remote_id = ?"
+    ).get(cleanId) as { status: WebsiteOrderStatus; pos_order_id: number | null } | undefined;
+    if (!remote || remote.status !== "accepted" || !remote.pos_order_id) {
+      throw new Error("An accepted local website order is required before the initial Kitchen KOT.");
+    }
+    const existing = getWebsiteInitialKot(db, cleanId);
+    if (existing) return existing;
+
+    const printJobId = sendNewItemsToKitchen(db, remote.pos_order_id, true);
+    if (!printJobId) {
+      throw new Error("The website order did not produce an initial Kitchen KOT.");
+    }
+    db.prepare(
+      `INSERT INTO website_initial_kots
+        (website_order_id, pos_order_id, print_job_id, state)
+       VALUES (?, ?, ?, 'queued')`
+    ).run(cleanId, remote.pos_order_id, printJobId);
+    return getWebsiteInitialKot(db, cleanId)!;
+  });
+  return tx();
+}
+
+export function claimWebsiteInitialKotPrint(
+  db: Database.Database,
+  remoteId: string,
+  retry = false
+): WebsiteInitialKotRecord | null {
+  const cleanId = cleanRemoteId(remoteId);
+  const result = db.prepare(
+    `UPDATE website_initial_kots
+     SET state = 'printing', attempts = attempts + 1,
+         claimed_at = CURRENT_TIMESTAMP, last_error = NULL,
+         updated_at = CURRENT_TIMESTAMP
+     WHERE website_order_id = ?
+       AND (
+         state = ?
+         OR (state = 'printing' AND datetime(claimed_at) <= datetime('now', '-2 minutes'))
+       )`
+  ).run(cleanId, retry ? "awaiting_retry" : "queued");
+  return result.changes === 1 ? getWebsiteInitialKot(db, cleanId) : null;
+}
+
+export function finishWebsiteInitialKotPrint(
+  db: Database.Database,
+  printJobId: number,
+  printed: boolean
+): WebsiteInitialKotRecord {
+  const job = db.prepare(
+    "SELECT error_message FROM print_jobs WHERE id = ?"
+  ).get(printJobId) as { error_message: string | null } | undefined;
+  if (!job) throw new Error("Initial Kitchen KOT print job was not found.");
+  db.prepare(
+    `UPDATE website_initial_kots
+     SET state = ?, confirmed_at = CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE NULL END,
+         last_error = ?, updated_at = CURRENT_TIMESTAMP
+     WHERE print_job_id = ? AND state = 'printing'`
+  ).run(
+    printed ? "confirmed" : "awaiting_retry",
+    printed ? 1 : 0,
+    printed ? null : (job.error_message ?? "Kitchen KOT printing failed.").slice(0, 500),
+    printJobId
+  );
+  const result = db.prepare(
+    `SELECT website_order_id FROM website_initial_kots WHERE print_job_id = ?`
+  ).get(printJobId) as { website_order_id: string } | undefined;
+  if (!result) throw new Error("Initial Kitchen KOT identity was not found.");
+  return getWebsiteInitialKot(db, result.website_order_id)!;
+}
+
+export function listPendingWebsiteInitialKots(db: Database.Database): WebsiteInitialKotRecord[] {
+  const rows = db.prepare(
+    `SELECT website_order_id FROM website_initial_kots
+     WHERE state = 'queued'
+        OR (state = 'printing' AND datetime(claimed_at) <= datetime('now', '-2 minutes'))
+     ORDER BY datetime(created_at), website_order_id`
+  ).all() as Array<{ website_order_id: string }>;
+  return rows.map((row) => getWebsiteInitialKot(db, row.website_order_id)!);
+}
+
+function getWebsiteInitialKot(
+  db: Database.Database,
+  remoteId: string
+): WebsiteInitialKotRecord | null {
+  const row = db.prepare(
+    `SELECT website_order_id, pos_order_id, print_job_id, state
+     FROM website_initial_kots WHERE website_order_id = ?`
+  ).get(remoteId) as {
+    website_order_id: string;
+    pos_order_id: number;
+    print_job_id: number;
+    state: WebsiteInitialKotState;
+  } | undefined;
+  return row ? {
+    remoteId: row.website_order_id,
+    orderId: row.pos_order_id,
+    printJobId: row.print_job_id,
+    state: row.state
+  } : null;
+}
+
+function buildWebsiteOrderNote(order: WebsiteOrderDetail): string {
+  const address = [
+    `Sector ${order.address.sector}`,
+    `Road ${order.address.road}`,
+    `House ${order.address.house}`,
+    `Flat ${order.address.flat}`
+  ].join(", ");
+  return [
+    `Website ${order.orderCode}`,
+    `${order.customerName} · ${order.customerPhone}`,
+    address,
+    order.deliveryNote ? `Delivery note: ${order.deliveryNote}` : ""
+  ].filter(Boolean).join("\n");
+}
+
+/**
  * Queues local, printable snapshots only. Status and item data remain owned by
  * Website Admin; no POS order, inventory movement, payment, or remote status
  * event is created here.
@@ -279,6 +526,180 @@ export function markWebsiteOutboxFailed(db: Database.Database, ids: number[], er
   ).run(message, ...cleanIds);
 }
 
+type EffectiveWebsiteLifecycle = {
+  remoteId: string;
+  status: WebsiteOrderStatus;
+  version: number;
+};
+
+function canAdvanceWebsiteStatus(from: WebsiteOrderStatus, to: WebsiteOrderStatus): boolean {
+  if (from === "accepted") return to === "preparing" || to === "cancelled";
+  if (from === "preparing") return to === "ready" || to === "cancelled";
+  if (from === "ready") return to === "out_for_delivery" || to === "delivered" || to === "cancelled";
+  if (from === "out_for_delivery") return to === "delivered" || to === "cancelled";
+  return false;
+}
+
+function getEffectiveWebsiteLifecycle(
+  db: Database.Database,
+  posOrderId: number
+): EffectiveWebsiteLifecycle | null {
+  const row = db.prepare(
+    `SELECT remote_id, status, remote_version
+     FROM website_orders WHERE pos_order_id = ?`
+  ).get(posOrderId) as {
+    remote_id: string;
+    status: WebsiteOrderStatus;
+    remote_version: number;
+  } | undefined;
+  if (!row) return null;
+
+  let status = row.status;
+  let version = row.remote_version;
+  const queued = db.prepare(
+    `SELECT payload_json
+     FROM website_sync_outbox
+     WHERE remote_order_id = ? AND event_type = 'order.transition'
+       AND status IN ('pending', 'failed', 'sending', 'sent')
+     ORDER BY id`
+  ).all(row.remote_id) as Array<{ payload_json: string }>;
+  for (const entry of queued) {
+    const payload = parsePayload(entry.payload_json);
+    const expectedVersion = Number(payload.expectedVersion);
+    const toStatus = String(payload.toStatus ?? "") as WebsiteOrderStatus;
+    if (
+      expectedVersion === version
+      && isWebsiteOrderStatus(toStatus)
+      && canAdvanceWebsiteStatus(status, toStatus)
+    ) {
+      status = toStatus;
+      version += 1;
+    }
+  }
+  return { remoteId: row.remote_id, status, version };
+}
+
+/**
+ * Adds one signed cloud transition to the durable SQLite outbox. Success means
+ * the event is durable, not that the network is currently available.
+ */
+export function queueWebsiteOrderTransitionForPosOrder(
+  db: Database.Database,
+  posOrderId: number,
+  toStatus: WebsiteOrderStatus,
+  note: string
+): boolean {
+  if (!Number.isInteger(posOrderId) || posOrderId < 1) return false;
+  const lifecycle = getEffectiveWebsiteLifecycle(db, posOrderId);
+  if (!lifecycle) return false;
+  if (lifecycle.status === toStatus) return false;
+  if (!canAdvanceWebsiteStatus(lifecycle.status, toStatus)) {
+    throw new Error(`Website order cannot move from ${lifecycle.status} to ${toStatus}.`);
+  }
+  enqueueOutbox(
+    db,
+    lifecycle.remoteId,
+    "order.transition",
+    {
+      toStatus,
+      expectedVersion: lifecycle.version,
+      note: cleanRequired("Website lifecycle note", note, 500)
+    },
+    `${lifecycle.remoteId}:order.transition:${lifecycle.version}:${toStatus}`
+  );
+  return true;
+}
+
+export function queueWebsiteOrderLifecycleForPosOrder(
+  db: Database.Database,
+  posOrderId: number,
+  target: "preparing" | "ready" | "out_for_delivery" | "delivered" | "cancelled",
+  note: string
+): number {
+  let queued = 0;
+  while (true) {
+    const lifecycle = getEffectiveWebsiteLifecycle(db, posOrderId);
+    if (!lifecycle || lifecycle.status === target) return queued;
+    let next: WebsiteOrderStatus;
+    if (target === "cancelled") {
+      next = "cancelled";
+    } else if (lifecycle.status === "accepted") {
+      next = "preparing";
+    } else if (lifecycle.status === "preparing") {
+      next = "ready";
+    } else if (lifecycle.status === "ready") {
+      next = target === "out_for_delivery" ? "out_for_delivery" : "delivered";
+    } else if (lifecycle.status === "out_for_delivery") {
+      next = "delivered";
+    } else {
+      return queued;
+    }
+    queued += queueWebsiteOrderTransitionForPosOrder(db, posOrderId, next, note) ? 1 : 0;
+    if (next === target) return queued;
+  }
+}
+
+/** Rebuilds any cloud lifecycle event that a crash could have interrupted. */
+export function recoverWebsiteOrderLifecycleOutbox(db: Database.Database): number {
+  const rows = db.prepare(
+    `SELECT remote.pos_order_id, local.status AS local_status, initial.state AS initial_kot_state
+     FROM website_orders remote
+     JOIN orders local ON local.id = remote.pos_order_id
+     LEFT JOIN website_initial_kots initial ON initial.website_order_id = remote.remote_id
+     WHERE remote.pos_order_id IS NOT NULL`
+  ).all() as Array<{
+    pos_order_id: number;
+    local_status: "open" | "kitchen_sent" | "settled" | "cancelled";
+    initial_kot_state: WebsiteInitialKotState | null;
+  }>;
+  let queued = 0;
+  for (const row of rows) {
+    try {
+      if (row.local_status === "cancelled") {
+        queued += queueWebsiteOrderLifecycleForPosOrder(
+          db, row.pos_order_id, "cancelled", "Cancelled in Yamzo POS"
+        );
+      } else if (row.local_status === "settled") {
+        queued += queueWebsiteOrderLifecycleForPosOrder(
+          db, row.pos_order_id, "delivered", "Completed in Yamzo POS"
+        );
+      } else if (
+        row.local_status === "kitchen_sent"
+        && row.initial_kot_state === "confirmed"
+      ) {
+        queued += queueWebsiteOrderLifecycleForPosOrder(
+          db, row.pos_order_id, "preparing", "Kitchen KOT confirmed in Yamzo POS"
+        );
+      }
+    } catch {
+      // A newer cloud snapshot may already be terminal. The signed recovery
+      // pull remains authoritative and will reconcile it on the next cycle.
+    }
+  }
+  return queued;
+}
+
+export function applyWebsiteTransitionResults(
+  _db: Database.Database,
+  results: WebsiteTransitionResult[]
+): void {
+  for (const result of results) {
+    if (
+      !Number.isInteger(result.eventId)
+      || result.eventId < 1
+      || !REMOTE_ID_PATTERN.test(result.remoteOrderId)
+      || !isWebsiteOrderStatus(result.status)
+      || !Number.isInteger(result.remoteVersion)
+      || result.remoteVersion < 1
+    ) {
+      throw new Error("The website returned an invalid lifecycle acknowledgement.");
+    }
+  }
+  // Acknowledgements prove delivery but do not replace the canonical signed
+  // snapshot. Sent transition rows remain part of the effective lifecycle
+  // until the next pull advances website_orders and its payload hash together.
+}
+
 export function getWebsiteSyncCursor(db: Database.Database, stream = "orders"): string | null {
   const row = db.prepare("SELECT cursor FROM website_sync_cursors WHERE stream = ?").get(cleanStream(stream)) as { cursor: string | null } | undefined;
   return row?.cursor ?? null;
@@ -346,6 +767,9 @@ function toWebsiteOrderSummary(
   const items = loadedItems ?? (db.prepare(
     "SELECT name, quantity FROM website_order_items WHERE website_order_id = ? ORDER BY sort_order, id"
   ).all(row.remote_id) as Array<{ name: string; quantity: number }>);
+  const initialKot = db.prepare(
+    "SELECT state FROM website_initial_kots WHERE website_order_id = ?"
+  ).get(row.remote_id) as { state: WebsiteInitialKotState } | undefined;
   return {
     remoteId: row.remote_id,
     orderCode: row.order_code,
@@ -360,7 +784,8 @@ function toWebsiteOrderSummary(
     posOrderId: row.pos_order_id,
     receivedAt: row.received_at,
     remoteCreatedAt: row.remote_created_at,
-    updatedAt: row.updated_at
+    updatedAt: row.updated_at,
+    initialKotState: initialKot?.state ?? null
   };
 }
 

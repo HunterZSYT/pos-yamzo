@@ -4,12 +4,19 @@ import type Database from "better-sqlite3";
 import { openMemoryDatabase } from "../src/main/database/connection";
 import {
   enqueueWebsitePrintAck,
+  applyWebsiteTransitionResults,
+  claimWebsiteInitialKotPrint,
+  finishWebsiteInitialKotPrint,
   getWebsiteOrderDetail,
+  importClaimedWebsiteOrderSnapshot,
   importWebsiteOrderSnapshots,
   listPendingWebsiteOutbox,
   listWebsiteOrders,
+  queueWebsiteOrderLifecycleForPosOrder,
   queueWebsiteOrderPrint
 } from "../src/main/domain/websiteOrders";
+import { settleOrder } from "../src/main/domain/orders";
+import { markPrintJobFailed, markPrintJobPrinted } from "../src/main/services/printQueue";
 import { applyWebsiteMenuContract } from "../src/main/domain/websiteMenuContract";
 import { WebsiteOrderSyncService, type WebsiteOrderSyncTransport } from "../src/main/services/websiteOrderSync";
 import { mapSyncedWebsiteOrder } from "../src/main/services/websiteOrderHttpTransport";
@@ -105,6 +112,75 @@ describe("website order mirror", () => {
     expect(db.prepare("SELECT COUNT(*) AS count FROM orders").get()).toEqual({ count: 0 });
   });
 
+  it("transactionally imports an accepted website order into normal Open Orders exactly once", () => {
+    const accepted = snapshot({ status: "accepted", remoteVersion: 2 });
+
+    const first = importClaimedWebsiteOrderSnapshot(db, accepted);
+    const second = importClaimedWebsiteOrderSnapshot(db, accepted);
+
+    expect(second.id).toBe(first.id);
+    expect(first).toMatchObject({
+      source: "website",
+      externalOrderId: accepted.orderCode,
+      status: "kitchen_sent",
+      subtotal: 250,
+      deliveryFee: 25,
+      discount: 0,
+      total: 275,
+      isTest: true,
+      websiteInitialKotState: "queued"
+    });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM orders WHERE source = 'website'").get()).toEqual({ count: 1 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM kitchen_tickets WHERE order_id = ?").get(first.id)).toEqual({ count: 1 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM website_initial_kots WHERE pos_order_id = ?").get(first.id)).toEqual({ count: 1 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM print_jobs WHERE type = 'kot'").get()).toEqual({ count: 1 });
+    expect(getWebsiteOrderDetail(db, accepted.remoteId).posOrderId).toBe(first.id);
+  });
+
+  it("locks workflow after an initial KOT failure and unlocks only after the same job succeeds", () => {
+    const accepted = snapshot({ status: "accepted", remoteVersion: 2 });
+    const order = importClaimedWebsiteOrderSnapshot(db, accepted);
+
+    const firstClaim = claimWebsiteInitialKotPrint(db, accepted.remoteId);
+    expect(firstClaim).toMatchObject({ orderId: order.id, state: "printing" });
+    expect(claimWebsiteInitialKotPrint(db, accepted.remoteId)).toBeNull();
+    markPrintJobFailed(db, firstClaim!.printJobId, "PRINTER_OFFLINE");
+    expect(finishWebsiteInitialKotPrint(db, firstClaim!.printJobId, false)).toMatchObject({
+      state: "awaiting_retry",
+      printJobId: firstClaim!.printJobId
+    });
+    expect(() => settleOrder(db, order.id, "cash")).toThrow(/Awaiting KOT/i);
+
+    const retryClaim = claimWebsiteInitialKotPrint(db, accepted.remoteId, true);
+    expect(retryClaim?.printJobId).toBe(firstClaim!.printJobId);
+    markPrintJobPrinted(db, retryClaim!.printJobId);
+    expect(finishWebsiteInitialKotPrint(db, retryClaim!.printJobId, true)).toMatchObject({
+      state: "confirmed",
+      printJobId: firstClaim!.printJobId
+    });
+    expect(settleOrder(db, order.id, "cash")).toMatchObject({ status: "settled" });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM website_initial_kots").get()).toEqual({ count: 1 });
+  });
+
+  it("rolls back local acceptance when any website item is not reconciled", () => {
+    const accepted = snapshot({
+      status: "accepted",
+      remoteVersion: 2,
+      items: [{
+        remoteItemId: "web-item-unmapped",
+        menuItemPublicId: "menu_item_not_mapped",
+        name: "Unknown item",
+        quantity: 1,
+        unitPrice: 250,
+        note: null
+      }]
+    });
+
+    expect(() => importClaimedWebsiteOrderSnapshot(db, accepted)).toThrow(/reconciled/i);
+    expect(db.prepare("SELECT COUNT(*) AS count FROM orders WHERE source = 'website'").get()).toEqual({ count: 0 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM website_orders WHERE remote_id = ?").get(accepted.remoteId)).toEqual({ count: 0 });
+  });
+
   it("retains synced website order records and refuses direct deletion", () => {
     const order = snapshot();
     importWebsiteOrderSnapshots(db, [order]);
@@ -191,13 +267,84 @@ describe("website order mirror", () => {
     let pullCount = 0;
     const transport: WebsiteOrderSyncTransport = {
       pullOrders: async () => ({ orders: pullCount++ === 0 ? [accepted] : [delivered], nextCursor: "cursor-1" }),
+      acceptOrder: async () => accepted,
       pushEvents: async (events) => ({ acceptedEventIds: events.map((event) => event.id) })
     };
     const service = new WebsiteOrderSyncService(db, transport);
     expect(await service.syncOnce()).toMatchObject({ inserted: 1, pushed: 0, cursor: "cursor-1" });
     expect(await service.syncOnce()).toMatchObject({ updated: 1, pushed: 0, cursor: "cursor-1" });
     expect(getWebsiteOrderDetail(db, accepted.remoteId)).toMatchObject({ status: "delivered", remoteVersion: 2 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM orders WHERE source = 'website'").get()).toEqual({ count: 1 });
     expect(listPendingWebsiteOutbox(db)).toHaveLength(0);
+  });
+
+  it("queues offline lifecycle steps monotonically, de-duplicates them, and applies signed acknowledgements", () => {
+    const accepted = snapshot({
+      remoteId: "web-lifecycle-1",
+      orderCode: "WEB-LIFECYCLE-1",
+      status: "accepted",
+      remoteVersion: 2
+    });
+    const local = importClaimedWebsiteOrderSnapshot(db, accepted);
+
+    expect(queueWebsiteOrderLifecycleForPosOrder(
+      db,
+      local.id,
+      "ready",
+      "Kitchen workflow advanced"
+    )).toBe(2);
+    expect(queueWebsiteOrderLifecycleForPosOrder(
+      db,
+      local.id,
+      "ready",
+      "Duplicate click"
+    )).toBe(0);
+
+    const events = listPendingWebsiteOutbox(db).filter(
+      (event) => event.eventType === "order.transition"
+    );
+    expect(events).toHaveLength(2);
+    expect(events.map((event) => event.payload)).toEqual([
+      { toStatus: "preparing", expectedVersion: 2, note: "Kitchen workflow advanced" },
+      { toStatus: "ready", expectedVersion: 3, note: "Kitchen workflow advanced" }
+    ]);
+    expect(new Set(events.map((event) => event.eventKey)).size).toBe(2);
+
+    applyWebsiteTransitionResults(db, events.map((event, index) => ({
+      eventId: event.id,
+      remoteOrderId: event.remoteOrderId,
+      status: index === 0 ? "preparing" : "ready",
+      remoteVersion: index + 3
+    })));
+    expect(getWebsiteOrderDetail(db, accepted.remoteId)).toMatchObject({
+      status: "accepted",
+      remoteVersion: 2
+    });
+
+    expect(queueWebsiteOrderLifecycleForPosOrder(
+      db,
+      local.id,
+      "cancelled",
+      "Customer cancellation confirmed"
+    )).toBe(1);
+    const cancellation = listPendingWebsiteOutbox(db).at(-1);
+    expect(cancellation?.payload).toEqual({
+      toStatus: "cancelled",
+      expectedVersion: 4,
+      note: "Customer cancellation confirmed"
+    });
+
+    const ready = {
+      ...accepted,
+      status: "ready" as const,
+      remoteVersion: 4,
+      remoteUpdatedAt: "2026-08-05T05:10:00.000Z"
+    };
+    expect(importWebsiteOrderSnapshots(db, [ready])).toMatchObject({ updated: 1 });
+    expect(getWebsiteOrderDetail(db, accepted.remoteId)).toMatchObject({
+      status: "ready",
+      remoteVersion: 4
+    });
   });
 });
 

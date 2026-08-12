@@ -33,6 +33,16 @@ export function migrate(db: Database.Database): void {
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
 
+    CREATE TABLE IF NOT EXISTS managers (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      manager_code TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      pin_hash TEXT NOT NULL,
+      active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
     CREATE TABLE IF NOT EXISTS menu_items (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL UNIQUE,
@@ -61,6 +71,8 @@ export function migrate(db: Database.Database): void {
       order_date TEXT,
       source TEXT NOT NULL,
       table_number TEXT,
+      guest_count INTEGER NOT NULL DEFAULT 1,
+      host_name TEXT NOT NULL DEFAULT 'Cashier',
       status TEXT NOT NULL DEFAULT 'open',
       note TEXT,
       discount INTEGER NOT NULL DEFAULT 0,
@@ -110,6 +122,18 @@ export function migrate(db: Database.Database): void {
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
 
+    CREATE TABLE IF NOT EXISTS order_payment_sessions (
+      order_id INTEGER PRIMARY KEY REFERENCES orders(id) ON DELETE CASCADE,
+      method TEXT NOT NULL,
+      payable_amount INTEGER NOT NULL CHECK(payable_amount >= 0),
+      cash_received INTEGER,
+      change_given INTEGER NOT NULL DEFAULT 0 CHECK(change_given >= 0),
+      reference TEXT,
+      host_name TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
     CREATE TABLE IF NOT EXISTS print_jobs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       type TEXT NOT NULL,
@@ -121,6 +145,73 @@ export function migrate(db: Database.Database): void {
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       printed_at TEXT
     );
+
+    CREATE TABLE IF NOT EXISTS print_job_context (
+      print_job_id INTEGER PRIMARY KEY REFERENCES print_jobs(id) ON DELETE RESTRICT,
+      order_id INTEGER REFERENCES orders(id) ON DELETE RESTRICT,
+      operator TEXT,
+      manager_id INTEGER REFERENCES managers(id) ON DELETE RESTRICT,
+      reason TEXT,
+      related_print_job_id INTEGER REFERENCES print_jobs(id) ON DELETE RESTRICT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS print_attempts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      print_job_id INTEGER NOT NULL REFERENCES print_jobs(id) ON DELETE RESTRICT,
+      attempt_number INTEGER NOT NULL,
+      requested_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      completed_at TEXT,
+      success INTEGER,
+      error_message TEXT,
+      UNIQUE(print_job_id, attempt_number)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_print_attempts_job
+      ON print_attempts(print_job_id, requested_at);
+
+    CREATE TABLE IF NOT EXISTS order_print_requirements (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+      print_job_id INTEGER NOT NULL UNIQUE REFERENCES print_jobs(id) ON DELETE RESTRICT,
+      kind TEXT NOT NULL CHECK(kind IN ('initial_kot', 'addition_kot', 'swap_change', 'void_kot')),
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE INDEX IF NOT EXISTS order_print_requirements_order
+      ON order_print_requirements(order_id, created_at);
+
+    CREATE TABLE IF NOT EXISTS order_bill_prints (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+      print_job_id INTEGER NOT NULL UNIQUE REFERENCES print_jobs(id) ON DELETE RESTRICT,
+      is_original INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE INDEX IF NOT EXISTS order_bill_prints_order
+      ON order_bill_prints(order_id, created_at);
+
+    CREATE TABLE IF NOT EXISTS swap_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE RESTRICT,
+      original_order_item_id INTEGER NOT NULL REFERENCES order_items(id) ON DELETE RESTRICT,
+      replacement_order_item_id INTEGER REFERENCES order_items(id) ON DELETE RESTRICT,
+      original_name TEXT NOT NULL,
+      original_quantity INTEGER NOT NULL,
+      replacement_name TEXT,
+      replacement_quantity INTEGER,
+      manager_id INTEGER NOT NULL REFERENCES managers(id) ON DELETE RESTRICT,
+      manager_name TEXT NOT NULL,
+      operator TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      original_kot_print_job_id INTEGER REFERENCES print_jobs(id) ON DELETE RESTRICT,
+      adjustment_print_job_id INTEGER NOT NULL UNIQUE REFERENCES print_jobs(id) ON DELETE RESTRICT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_swap_events_order_created
+      ON swap_events(order_id, created_at);
 
     CREATE TABLE IF NOT EXISTS settings (
       key TEXT PRIMARY KEY,
@@ -410,6 +501,31 @@ export function migrate(db: Database.Database): void {
   ensureColumn(db, "menu_items", "public_id", "TEXT");
   ensureColumn(db, "orders", "is_test", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn(db, "orders", "delivery_fee", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn(db, "orders", "guest_count", "INTEGER NOT NULL DEFAULT 1");
+  ensureColumn(db, "orders", "host_name", "TEXT NOT NULL DEFAULT 'Cashier'");
+  ensureColumn(db, "orders", "initial_kot_print_job_id", "INTEGER");
+  ensureColumn(db, "orders", "initial_kot_printed_at", "TEXT");
+  ensureColumn(db, "orders", "bill_print_job_id", "INTEGER");
+  ensureColumn(db, "orders", "requires_kot", "INTEGER NOT NULL DEFAULT 0");
+  db.prepare(
+    `UPDATE orders
+     SET initial_kot_printed_at = first_kitchen_sent_at
+     WHERE initial_kot_print_job_id IS NULL
+       AND initial_kot_printed_at IS NULL
+       AND first_kitchen_sent_at IS NOT NULL`
+  ).run();
+  db.prepare(
+    `INSERT OR IGNORE INTO order_print_requirements (order_id, print_job_id, kind)
+     SELECT id, initial_kot_print_job_id, 'initial_kot'
+     FROM orders
+     WHERE requires_kot = 1 AND initial_kot_print_job_id IS NOT NULL`
+  ).run();
+  db.prepare(
+    `INSERT OR IGNORE INTO order_bill_prints (order_id, print_job_id, is_original)
+     SELECT id, bill_print_job_id, 1
+     FROM orders
+     WHERE bill_print_job_id IS NOT NULL`
+  ).run();
   ensureColumn(db, "inventory_physical_counts", "updated_at", "TEXT");
   ensureColumn(db, "inventory_physical_counts", "reduction_delta", "REAL");
   ensureColumn(db, "cost_records", "quantity", "REAL NOT NULL DEFAULT 1");
@@ -540,6 +656,25 @@ function migrateWebsiteOrders(db: Database.Database): void {
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       UNIQUE(website_order_id, remote_item_id)
     );
+
+    -- Exactly-once local identity for the automatic first Kitchen KOT created
+    -- after a website order is claimed and imported into the normal order flow.
+    CREATE TABLE IF NOT EXISTS website_initial_kots (
+      website_order_id TEXT PRIMARY KEY REFERENCES website_orders(remote_id) ON DELETE CASCADE,
+      pos_order_id INTEGER NOT NULL UNIQUE REFERENCES orders(id) ON DELETE CASCADE,
+      print_job_id INTEGER NOT NULL UNIQUE REFERENCES print_jobs(id) ON DELETE RESTRICT,
+      state TEXT NOT NULL DEFAULT 'queued'
+        CHECK(state IN ('queued', 'printing', 'awaiting_retry', 'confirmed')),
+      attempts INTEGER NOT NULL DEFAULT 0 CHECK(attempts >= 0),
+      claimed_at TEXT,
+      confirmed_at TEXT,
+      last_error TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE INDEX IF NOT EXISTS website_initial_kots_state
+      ON website_initial_kots (state, updated_at);
 
     -- A terminal-only print ledger. It lets the POS acknowledge every printed
     -- copy without becoming a source of truth for an order's status or items.
@@ -704,6 +839,14 @@ function seedDefaults(db: Database.Database): void {
   if (userCount.count === 0) {
     const hash = bcrypt.hashSync("1234", 12);
     db.prepare("INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)").run("admin", hash, "admin");
+  }
+
+  const managerCount = db.prepare("SELECT COUNT(*) AS count FROM managers").get() as { count: number };
+  if (managerCount.count === 0) {
+    const pinHash = bcrypt.hashSync("1234", 12);
+    db.prepare(
+      "INSERT INTO managers (manager_code, name, pin_hash, active) VALUES (?, ?, ?, 1)"
+    ).run("MGR-001", "Default Manager", pinHash);
   }
 
   const defaults: Record<string, unknown> = {

@@ -44,6 +44,7 @@ import type {
   PhysicalCountEntry,
   InventorySnapshot,
   InventoryUnit,
+  Manager,
   MenuDataSetting,
   MenuTypeSetting,
   MenuRecipe,
@@ -54,6 +55,7 @@ import type {
   OrderSource,
   OrderSummary,
   PaymentMethod,
+  PaymentMethodSetting,
   PrintJob,
   RestockEntry,
   SalesSummary,
@@ -62,14 +64,16 @@ import type {
 import { demoMenu, demoOrders, demoSummary } from "../data/demo";
 import { IntegrationsAdmin } from "../components/IntegrationsAdmin";
 import { WebsiteCompletedOrdersPanel, WebsiteOrdersScreen } from "../components/WebsiteOrdersScreen";
+import { ManagerAdmin } from "../components/ManagerAdmin";
+import { KitchenKotHistoryScreen, SwappedOrdersScreen } from "../components/OperationsHistoryScreens";
 
-type Screen = "newOrder" | "editOrder" | "openOrders" | "websiteOrders" | "completedOrders" | "cancelledOrders" | "reports" | "menu" | "inventory" | "costs" | "admin";
-type AdminTab = "receipt" | "printer" | "integrations" | "app" | "security" | "activity";
+type Screen = "newOrder" | "editOrder" | "openOrders" | "websiteOrders" | "completedOrders" | "cancelledOrders" | "swappedOrders" | "kitchenKot" | "reports" | "menu" | "inventory" | "costs" | "admin";
+type AdminTab = "receipt" | "printer" | "integrations" | "app" | "managers" | "security" | "activity";
 type DiscountMode = "tk" | "percent";
 type OrderLane = "newOrder" | "openOrders";
 type PrintConfirm = { type: "kitchen" | "bill"; orderId: number; orderNumber: string } | null;
 type NoteEdit = { line: OrderLine; draft: string } | null;
-type ProtectedScreen = "completedOrders" | "cancelledOrders" | "admin";
+type ProtectedScreen = "completedOrders" | "cancelledOrders" | "swappedOrders" | "kitchenKot" | "menu" | "inventory" | "costs" | "admin";
 type MenuFormState = { id: number; name: string; price: string; category: string; available: boolean; trackRecipe: boolean; menuPrices: Record<string, string> };
 type RecipeEditorTarget = { mode: "create" } | { mode: "edit"; recipe: MenuRecipe };
 
@@ -92,6 +96,13 @@ const defaultMenuData: MenuDataSetting[] = [
   { key: "in_house", label: "Store Menu", active: true, externalOrderIdEnabled: false },
   { key: "foodpanda", label: "Foodpanda Menu", active: true, externalOrderIdEnabled: true },
   { key: "foodie", label: "Foodie Menu", active: true, externalOrderIdEnabled: true }
+];
+const defaultPaymentMethods: PaymentMethodSetting[] = [
+  { key: "cash", label: "Cash", active: true },
+  { key: "bkash", label: "bKash", active: true },
+  { key: "nagad", label: "Nagad", active: true },
+  { key: "card", label: "Card", active: true },
+  { key: "other", label: "Other", active: true }
 ];
 
 const cancellationReasons = [
@@ -159,7 +170,7 @@ export function App() {
   const [loggedIn, setLoggedIn] = useState(false);
   const [username, setUsername] = useState("admin");
   const [password, setPassword] = useState("1234");
-  const [screen, setScreen] = useState<Screen>("newOrder");
+  const [screen, setScreen] = useState<Screen>("openOrders");
   const [orderLane, setOrderLane] = useState<OrderLane>("newOrder");
   const [adminTab, setAdminTab] = useState<AdminTab>("receipt");
   const [menu, setMenu] = useState<MenuItem[]>(demoMenu);
@@ -179,11 +190,13 @@ export function App() {
   const [menuCategories, setMenuCategories] = useState<string[]>([]);
   const [menuData, setMenuData] = useState<MenuDataSetting[]>(defaultMenuData);
   const [menuTypes, setMenuTypes] = useState<MenuTypeSetting[]>(defaultMenuTypes);
+  const [paymentMethods, setPaymentMethods] = useState<PaymentMethodSetting[]>(defaultPaymentMethods);
   const [selectedHost, setSelectedHost] = useState("Cashier");
   const [hostDraft, setHostDraft] = useState("");
   const [menuCategoryDraft, setMenuCategoryDraft] = useState("");
   const [source, setSource] = useState<OrderSource>("in_house");
   const [tableNumber, setTableNumber] = useState("");
+  const [guestCount, setGuestCount] = useState(1);
   const [externalOrderId, setExternalOrderId] = useState("");
   const [orderDate, setOrderDate] = useState(dateInputValue(new Date()));
   const [orderNote, setOrderNote] = useState("");
@@ -191,8 +204,8 @@ export function App() {
   const [discountValue, setDiscountValue] = useState("");
   const [finalTotalInput, setFinalTotalInput] = useState("");
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("cash");
-  const [markAsPaid, setMarkAsPaid] = useState(false);
   const [paymentReference, setPaymentReference] = useState("");
+  const [cashReceived, setCashReceived] = useState("");
   const [activeOrder, setActiveOrder] = useState<OrderDetail | null>(null);
   const [externalKitchenEnabled, setExternalKitchenEnabled] = useState(false);
   const [menuForm, setMenuForm] = useState<MenuFormState>({ id: 0, name: "", price: "", category: "", available: true, trackRecipe: true, menuPrices: {} });
@@ -202,6 +215,12 @@ export function App() {
   const [printConfirm, setPrintConfirm] = useState<PrintConfirm>(null);
   const [sessionPrinted, setSessionPrinted] = useState<Record<string, boolean>>({});
   const [noteEdit, setNoteEdit] = useState<NoteEdit>(null);
+  const [swapLine, setSwapLine] = useState<OrderLine | null>(null);
+  const [swapReplacement, setSwapReplacement] = useState<MenuItem | null>(null);
+  const [swapRemoveOnly, setSwapRemoveOnly] = useState(false);
+  const [swapManagerId, setSwapManagerId] = useState("");
+  const [swapPin, setSwapPin] = useState("");
+  const [swapReason, setSwapReason] = useState("");
   const [historyView, setHistoryView] = useState<OrderDetail | null>(null);
   const [reprintMode, setReprintMode] = useState(false);
   const [passwordForm, setPasswordForm] = useState({ current: "", next: "", confirm: "" });
@@ -209,7 +228,9 @@ export function App() {
   const [recipeEdit, setRecipeEdit] = useState<RecipeEditorTarget | null>(null);
   const [priceHistoryItemId, setPriceHistoryItemId] = useState<number | null>(null);
   const [protectedTarget, setProtectedTarget] = useState<ProtectedScreen | null>(null);
-  const [adminPassword, setAdminPassword] = useState("");
+  const [managers, setManagers] = useState<Manager[]>([]);
+  const [protectedManagerId, setProtectedManagerId] = useState("");
+  const [protectedManagerPin, setProtectedManagerPin] = useState("");
   const [protectedAccess, setProtectedAccess] = useState<Partial<Record<ProtectedScreen, number>>>({});
 
   useEffect(() => {
@@ -256,6 +277,25 @@ export function App() {
   const tablesEnabledForSource = selectedMenuType?.tablesEnabled ?? source === "in_house";
   const isExternalOrder = !tablesEnabledForSource && ["foodpanda", "foodie", "other"].includes(source);
   const canPrintKitchen = !isExternalOrder || externalKitchenEnabled;
+  const activePaymentMethods = paymentMethods.filter((method) => method.active);
+  const cashReceivedAmount = Number(cashReceived);
+  const cashPaymentInvalid = paymentMethod === "cash" && (
+    !cashReceived.trim()
+    || !Number.isFinite(cashReceivedAmount)
+    || cashReceivedAmount < payableTotal
+  );
+  const cashChange = paymentMethod === "cash" && Number.isFinite(cashReceivedAmount)
+    ? Math.max(0, cashReceivedAmount - payableTotal)
+    : 0;
+  const nextOrderAction = !activeOrder
+    ? "Add items to start the order"
+    : activeOrder.unresolvedKotCount > 0
+      ? "Print or retry every required Kitchen KOT"
+      : !activeOrder.paid
+        ? "Record payment"
+        : activeOrder.billState !== "printed"
+          ? "Print the original Bill Copy"
+          : "Complete Order";
   const needsDineInTable = tablesEnabledForSource && !tableNumber.trim();
   const failedPrintJobs = printJobs.filter((job) => job.status === "failed" || job.status === "retry");
   const completedOrders = history.filter((order) => order.status === "settled");
@@ -296,7 +336,7 @@ export function App() {
   async function refreshData() {
     if (!window.yamzo) return;
     const today = dateInputValue(new Date());
-    const [menuRows, openRows, historyRows, websiteHistoryRows, sales, jobs, receipt, inventory, inventoryData, printerName, tableCount, hosts, categories, dataSets, types, activity] = await Promise.all([
+    const [menuRows, openRows, historyRows, websiteHistoryRows, sales, jobs, receipt, inventory, inventoryData, printerName, tableCount, hosts, categories, dataSets, types, paymentOptions, managerRows, activity] = await Promise.all([
       window.yamzo.menu.list(),
       window.yamzo.orders.open(),
       window.yamzo.orders.history(),
@@ -312,6 +352,8 @@ export function App() {
       window.yamzo.settings.getMenuCategories(),
       window.yamzo.settings.getMenuData(),
       window.yamzo.settings.getMenuTypes(),
+      window.yamzo.settings.getPaymentMethods(),
+      window.yamzo.managers.list(),
       window.yamzo.audit.list(200)
     ]);
     setMenu(menuRows);
@@ -330,6 +372,11 @@ export function App() {
     setMenuCategories(categories);
     setMenuData(dataSets?.length ? dataSets : defaultMenuData);
     setMenuTypes(types?.length ? types : defaultMenuTypes);
+    setPaymentMethods(paymentOptions?.length ? paymentOptions : defaultPaymentMethods);
+    setManagers(managerRows);
+    setSwapManagerId((current) => managerRows.some((manager) => String(manager.id) === current) ? current : String(managerRows[0]?.id ?? ""));
+    setProtectedManagerId((current) => managerRows.some((manager) => String(manager.id) === current) ? current : String(managerRows[0]?.id ?? ""));
+    setPaymentMethod((current) => paymentOptions?.some((method) => method.active && method.key === current) ? current : paymentOptions?.find((method) => method.active)?.key ?? "cash");
     setSelectedHost((current) => (hosts.includes(current) ? current : hosts[0] ?? "Cashier"));
     window.yamzo.print.listPrinters().then(setPrinters).catch(() => setPrinters([]));
   }
@@ -355,46 +402,43 @@ export function App() {
       setScreen(nextScreen);
       return;
     }
-    setAdminPassword("");
+    setProtectedManagerPin("");
+    setProtectedManagerId(String(managers[0]?.id ?? ""));
     setProtectedTarget(nextScreen);
   }
 
   async function submitAdminPassword() {
     if (!protectedTarget) return;
-    const entered = adminPassword.trim();
-    if (!entered) {
-      setMessage("Enter admin password.");
+    const target = protectedTarget;
+    const managerId = Number(protectedManagerId);
+    if (!managerId || !protectedManagerPin.trim()) {
+      setMessage("Select a manager and enter their PIN.");
       return;
     }
-    if (entered === "336000") {
-      await window.yamzo?.audit.protectedAccess({ panel: protectedTarget, success: true, method: "master_key", actor: username });
-      setProtectedAccess((current) => ({ ...current, [protectedTarget]: Date.now() }));
-      setScreen(protectedTarget);
-      await refreshData();
+    try {
+      const manager = await window.yamzo?.managers.verify(managerId, protectedManagerPin);
+      if (!manager) throw new Error("Manager authorization failed.");
+      await window.yamzo?.audit.protectedAccess({ panel: target, success: true, method: "password", actor: manager.name });
+      setProtectedAccess((current) => ({ ...current, [target]: Date.now() }));
+      setScreen(target);
       setProtectedTarget(null);
-      setAdminPassword("");
+      setProtectedManagerPin("");
       setMessage("");
+    } catch {
+      const manager = managers.find((entry) => entry.id === managerId);
+      await window.yamzo?.audit.protectedAccess({ panel: target, success: false, method: "password", actor: manager?.name ?? username });
+      setMessage("Manager authorization failed.");
+      setProtectedManagerPin("");
       return;
     }
-    const user = await window.yamzo?.auth.login("admin", entered);
-    if (user?.role === "admin") {
-      await window.yamzo?.audit.protectedAccess({ panel: protectedTarget, success: true, method: "password", actor: user.username });
-      setProtectedAccess((current) => ({ ...current, [protectedTarget]: Date.now() }));
-      setScreen(protectedTarget);
-      await refreshData();
-      setProtectedTarget(null);
-      setAdminPassword("");
-      setMessage("");
-      return;
-    }
-    await window.yamzo?.audit.protectedAccess({ panel: protectedTarget, success: false, method: "password", actor: username });
-    setMessage("Admin password was incorrect.");
+    void refreshData().catch(() => setMessage("Protected area opened, but some data could not refresh."));
   }
 
   function resetOrderScreen() {
     setActiveOrder(null);
     setSource(activeMenuTypes[0]?.key ?? "in_house");
     setTableNumber("");
+    setGuestCount(1);
     setExternalOrderId("");
     setOrderDate(dateInputValue(new Date()));
     setOrderNote("");
@@ -402,16 +446,32 @@ export function App() {
     setDiscountValue("");
     setFinalTotalInput("");
     setPaymentMethod("cash");
-    setMarkAsPaid(false);
     setPaymentReference("");
+    setCashReceived("");
     setExternalKitchenEnabled(false);
     setCancelConfirmOpen(false);
     setCancellationReason("");
     setReprintMode(false);
+    setSwapLine(null);
+    setSwapReplacement(null);
+    setSwapRemoveOnly(false);
+    setSwapPin("");
+    setSwapReason("");
     setMessage("");
   }
 
   async function startFreshOrder() {
+    if (window.yamzo) {
+      const currentOpenOrders = await window.yamzo.orders.open();
+      const unfinished = currentOpenOrders.find((order) =>
+        order.initialKotState !== null && order.initialKotState !== "confirmed"
+      );
+      if (unfinished) {
+        await loadOrder(unfinished.id);
+        setMessage("Kitchen KOT required before starting another order.");
+        return;
+      }
+    }
     resetOrderScreen();
     setOrderLane("newOrder");
     setScreen("newOrder");
@@ -423,14 +483,17 @@ export function App() {
     setActiveOrder(detail);
     setSource(detail.source);
     setTableNumber(detail.tableNumber ?? "");
+    setGuestCount(detail.guestCount ?? 1);
+    setSelectedHost(detail.hostName || hostNames[0] || "Cashier");
     setExternalOrderId(detail.externalOrderId ?? "");
     setOrderDate(detail.orderDate ?? dateInputValue(parseSqliteTimestamp(detail.createdAt)));
     setOrderNote(detail.note ?? "");
     setDiscountMode("percent");
     setDiscountValue(detail.discount ? String(detail.discount) : "");
     setFinalTotalInput("");
-    setMarkAsPaid(false);
-    setPaymentReference("");
+    setPaymentMethod(detail.payment?.method ?? activePaymentMethods[0]?.key ?? "cash");
+    setPaymentReference(detail.payment?.reference ?? "");
+    setCashReceived(detail.payment?.cashReceived ? String(detail.payment.cashReceived) : "");
     setReprintMode(false);
     setOrderLane("openOrders");
     setScreen("editOrder");
@@ -444,6 +507,11 @@ export function App() {
       return null;
     }
     if (activeOrder) {
+      if (activeOrder.paid) {
+        const detail = await window.yamzo.orders.detail(activeOrder.id);
+        setActiveOrder(detail);
+        return detail;
+      }
       await saveOrderInfo(activeOrder.id);
       await window.yamzo.orders.discount(activeOrder.id, calculatedDiscount);
       const detail = await window.yamzo.orders.detail(activeOrder.id);
@@ -454,6 +522,9 @@ export function App() {
       source,
       orderDate,
       tableNumber: tablesEnabledForSource ? tableNumber || undefined : undefined,
+      guestCount,
+      hostName: selectedHost,
+      requiresKot: canPrintKitchen,
       note: orderNote || undefined,
       externalOrderId: externalOrderIdEnabled ? externalOrderId : null
     });
@@ -465,7 +536,7 @@ export function App() {
 
   async function saveOrderInfo(orderId = activeOrder?.id) {
     if (!window.yamzo || !orderId) return;
-    await window.yamzo.orders.updateInfo(orderId, { source, tableNumber, note: orderNote, externalOrderId: externalOrderIdEnabled ? externalOrderId : null });
+    await window.yamzo.orders.updateInfo(orderId, { source, tableNumber, guestCount, hostName: selectedHost, note: orderNote, externalOrderId: externalOrderIdEnabled ? externalOrderId : null });
   }
 
   async function changeActiveOrderDate(nextDate: string) {
@@ -519,6 +590,14 @@ export function App() {
     if (!window.yamzo) return;
     if (needsDineInTable) {
       setMessage("Select a table before adding dine-in items.");
+      return;
+    }
+    if (swapLine && activeOrder) {
+      setSwapReplacement(item);
+      setSwapRemoveOnly(false);
+      setSwapPin("");
+      setSwapReason("");
+      setMessage(`Authorize changing ${swapLine.name} to ${item.name}.`);
       return;
     }
     const order = await ensureOrder();
@@ -600,6 +679,15 @@ export function App() {
     if (!canPrintKitchen) return;
     const order = await ensureOrder();
     if (!order || !window.yamzo) return;
+    if (order.initialKotState === "awaiting_retry") {
+      await retryWebsiteKitchenKot(order.id);
+      setActiveOrder(await window.yamzo.orders.detail(order.id));
+      return;
+    }
+    if (order.initialKotState === "queued") {
+      setMessage("Kitchen KOT is already queued. It must print successfully before continuing.");
+      return;
+    }
     if (reprintMode) {
       setPrintConfirm({ type: "kitchen", orderId: order.id, orderNumber: order.orderNumber });
       return;
@@ -621,16 +709,31 @@ export function App() {
   async function billCopy() {
     const order = await ensureOrder();
     if (!order || !window.yamzo) return;
-    if (reprintMode || sessionPrinted[`bill-${order.id}`]) {
+    if (!order.paid) {
+      setMessage("Record a valid payment before printing Bill Copy.");
+      return;
+    }
+    if (order.unresolvedKotCount > 0) {
+      setMessage("Every required Kitchen KOT must print before Bill Copy.");
+      return;
+    }
+    if (order.billState === "failed") {
+      const retried = await window.yamzo.orders.retryBill(order.id);
+      setActiveOrder(retried);
+      setMessage(retried.billState === "printed" ? `Bill Copy printed for ${order.orderNumber}.` : "Bill Copy is still awaiting a successful print.");
+      await refreshData();
+      return;
+    }
+    if (reprintMode || order.billState === "printed" || sessionPrinted[`bill-${order.id}`]) {
       setPrintConfirm({ type: "bill", orderId: order.id, orderNumber: order.orderNumber });
       return;
     }
     await printBillForOrder(order.id, order.orderNumber);
   }
 
-  async function printBillForOrder(orderId: number, orderNumber: string) {
+  async function printBillForOrder(orderId: number, orderNumber: string, reprint = false) {
     if (!window.yamzo) return;
-    const jobId = await window.yamzo.orders.printBill(orderId, buildReceiptPaymentInfo(false));
+    const jobId = await window.yamzo.orders.printBill(orderId, buildReceiptPaymentInfo(), reprint);
     const printed = await window.yamzo.print.printJob(jobId);
     setMessage(printed ? `Bill Copy sent to printer for ${orderNumber}.` : "Bill Copy saved, but printing failed. Check Printer Settings.");
     if (printed) {
@@ -675,30 +778,102 @@ export function App() {
     if (pending.type === "kitchen") {
       await reprintKitchenForOrder(pending.orderId, pending.orderNumber);
     } else {
-      await printBillForOrder(pending.orderId, pending.orderNumber);
+      await printBillForOrder(pending.orderId, pending.orderNumber, true);
     }
   }
 
   async function completeOrder() {
-    if (finalTotalInput && Number(finalTotalInput) > subtotal) {
-      setMessage("Final total cannot be higher than subtotal.");
-      return;
-    }
     const order = await ensureOrder();
     if (!order || !window.yamzo) return;
-    await window.yamzo.orders.settle(order.id, paymentMethod, payableTotal, paymentReference.trim() || undefined, selectedHost);
+    await window.yamzo.orders.completePaid(order.id);
     resetOrderScreen();
+    setScreen("openOrders");
     setMessage(`Order ${order.orderNumber} completed.`);
     await refreshData();
   }
 
-  function buildReceiptPaymentInfo(forcePaid: boolean) {
-    return {
-      paid: forcePaid || markAsPaid,
+  async function advanceWebsiteLifecycle(target: "ready" | "out_for_delivery") {
+    if (!activeOrder || !window.yamzo || activeOrder.source !== "website") return;
+    try {
+      const queued = await window.yamzo.websiteOrders.advanceLifecycle(activeOrder.id, target);
+      setMessage(
+        queued > 0
+          ? `${activeOrder.orderNumber} ${target === "ready" ? "is ready" : "is out for delivery"}. Cloud update queued securely.`
+          : `${activeOrder.orderNumber} already has that lifecycle update queued.`
+      );
+      await refreshData();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Website lifecycle update failed.");
+    }
+  }
+
+  async function authorizeSwap() {
+    if (!window.yamzo || !swapLine || !activeOrder) return;
+    const managerId = Number(swapManagerId);
+    if (!managerId || !swapPin.trim() || swapReason.trim().length < 2) {
+      setMessage("Select a manager, enter the PIN, and provide a reason.");
+      return;
+    }
+    try {
+      const replacement = swapRemoveOnly || !swapReplacement
+        ? null
+        : { menuItemId: swapReplacement.id, quantity: 1 };
+      const result = await window.yamzo.orders.swapItem(swapLine.id, replacement, {
+        managerId,
+        pin: swapPin,
+        reason: swapReason,
+        operator: selectedHost
+      });
+      const adjustmentPrinted = await window.yamzo.print.printJob(result.adjustmentPrintJobId);
+      const originalName = swapLine.name;
+      const replacementName = swapReplacement?.name;
+      setActiveOrder(result.order);
+      setSwapLine(null);
+      setSwapReplacement(null);
+      setSwapRemoveOnly(false);
+      setSwapPin("");
+      setSwapReason("");
+      setMessage(adjustmentPrinted
+        ? `${originalName} ${replacementName ? `changed to ${replacementName}` : "removed"}. Adjustment KOT printed${replacementName ? "; send the replacement with Kitchen Copy" : ""}.`
+        : "Swap saved, but the required adjustment KOT did not print. Retry is required.");
+      await refreshData();
+    } catch (error) {
+      setSwapPin("");
+      setMessage(error instanceof Error ? error.message : "Swap authorization failed.");
+    }
+  }
+
+  async function recordPayment() {
+    const order = await ensureOrder();
+    if (!order || !window.yamzo) return;
+    if (order.unresolvedKotCount > 0) {
+      setMessage("Every required Kitchen KOT must print before payment.");
+      return;
+    }
+    if (paymentMethod === "cash" && cashPaymentInvalid) {
+      setMessage(`Cash Received must be at least ${money(payableTotal)}.`);
+      return;
+    }
+    const updated = await window.yamzo.orders.recordPayment(order.id, {
       method: paymentMethod,
-      amount: payableTotal,
+      cashReceived: paymentMethod === "cash" ? Number(cashReceived) : undefined,
       reference: paymentReference.trim() || undefined,
-      host: selectedHost
+      hostName: selectedHost
+    });
+    setActiveOrder(await window.yamzo.orders.detail(updated.id));
+    setMessage(paymentMethod === "cash"
+      ? `Payment recorded. Change / Vangti: ${money(updated.payment?.changeGiven ?? 0)}.`
+      : `${updated.payment ? labelize(updated.payment.method) : "Payment"} recorded.`);
+    await refreshData();
+  }
+
+  function buildReceiptPaymentInfo() {
+    return {
+      paid: Boolean(activeOrder?.payment),
+      method: activeOrder?.payment?.method ?? paymentMethod,
+      amount: activeOrder?.payment?.amount ?? payableTotal,
+      reference: activeOrder?.payment?.reference ?? (paymentReference.trim() || undefined),
+      host: activeOrder?.payment?.hostName ?? selectedHost
     };
   }
 
@@ -724,9 +899,38 @@ export function App() {
     await refreshData();
   }
 
-  async function markKitchenDelivered(orderId: number) {
+  async function retryWebsiteKitchenKot(orderId: number) {
     if (!window.yamzo) return;
-    await window.yamzo.orders.markKitchenDelivered(orderId);
+    const current = await window.yamzo.orders.detail(orderId);
+    let order: OrderSummary = current;
+    if (current.initialKotState === "awaiting_retry") {
+      order = current.websiteInitialKotState
+        ? await window.yamzo.websiteOrders.retryInitialKotForOrder(orderId)
+        : await window.yamzo.orders.retryInitialKot(orderId);
+    }
+    if (order.failedKotCount > 0) {
+      order = await window.yamzo.orders.retryAdjustmentKots(orderId);
+    }
+    setMessage(order.unresolvedKotCount === 0
+      ? `All required Kitchen KOTs printed for ${order.orderNumber}. Workflow unlocked.`
+      : `Order ${order.orderNumber} still has ${order.unresolvedKotCount} unresolved KOT job${order.unresolvedKotCount === 1 ? "" : "s"}.`);
+    if (activeOrder?.id === orderId) setActiveOrder(await window.yamzo.orders.detail(orderId));
+    await refreshData();
+  }
+
+  async function finishNewOrder() {
+    const order = await ensureOrder();
+    if (!order || !window.yamzo) return;
+    const detail = await window.yamzo.orders.detail(order.id);
+    if (detail.items.filter((item) => item.status === "active").length === 0) {
+      setMessage("Add at least one item before creating the Open Order.");
+      return;
+    }
+    await saveOrderInfo(order.id);
+    setActiveOrder(await window.yamzo.orders.detail(order.id));
+    setOrderLane("openOrders");
+    setScreen("editOrder");
+    setMessage(`${detail.orderNumber} is now an Open Order. Kitchen KOT is required next.`);
     await refreshData();
   }
 
@@ -736,23 +940,9 @@ export function App() {
     await refreshData();
   }
 
-  async function markKitchenBatchDelivered(ticketId: number) {
-    if (!window.yamzo) return;
-    await window.yamzo.orders.markKitchenBatchDelivered(ticketId);
-    await refreshData();
-  }
-
   async function restartKitchenBatchTimer(ticketId: number) {
     if (!window.yamzo) return;
     await window.yamzo.orders.restartKitchenBatchTimer(ticketId);
-    await refreshData();
-  }
-
-  async function markAllRunningDelivered() {
-    if (!window.yamzo) return;
-    const running = openOrders.filter((order) => order.kitchenStartedAt && !order.kitchenCompletedAt);
-    await Promise.all(running.map((order) => window.yamzo!.orders.markKitchenDelivered(order.id)));
-    setMessage(`${running.length} running order${running.length === 1 ? "" : "s"} marked done.`);
     await refreshData();
   }
 
@@ -836,6 +1026,17 @@ export function App() {
     await refreshData();
   }
 
+  async function savePaymentMethods(nextMethods = paymentMethods) {
+    if (!nextMethods.some((method) => method.active)) {
+      setMessage("At least one payment method must stay active.");
+      return;
+    }
+    await window.yamzo?.settings.setPaymentMethods(nextMethods);
+    setPaymentMethods(nextMethods);
+    setMessage("Payment methods saved.");
+    await refreshData();
+  }
+
   async function saveMenuCategories(nextCategories: string[]) {
     const cleaned = Array.from(new Set(nextCategories.map((category) => category.trim()).filter(Boolean)));
     await window.yamzo?.settings.setMenuCategories(cleaned.length ? cleaned : ["Other"]);
@@ -916,15 +1117,25 @@ export function App() {
         <SideNav active={screen === "websiteOrders"} onClick={() => setScreen("websiteOrders")}>Website Orders</SideNav>
         <SideNav active={screen === "completedOrders"} onClick={() => void goProtectedScreen("completedOrders")}>Completed Orders</SideNav>
         <SideNav active={screen === "cancelledOrders"} onClick={() => void goProtectedScreen("cancelledOrders")}>Cancelled Orders</SideNav>
+        <SideNav active={screen === "swappedOrders"} onClick={() => void goProtectedScreen("swappedOrders")}>Swapped Orders</SideNav>
+        <SideNav active={screen === "kitchenKot"} onClick={() => void goProtectedScreen("kitchenKot")}>Kitchen KOT</SideNav>
         <SideNav active={screen === "reports"} onClick={() => setScreen("reports")}>Reports</SideNav>
-        <SideNav active={screen === "menu"} onClick={() => setScreen("menu")}>Menu</SideNav>
-        <SideNav active={screen === "inventory"} onClick={() => setScreen("inventory")}>Inventory</SideNav>
-        <SideNav active={screen === "costs"} onClick={() => setScreen("costs")}>Costs</SideNav>
+        <SideNav active={screen === "menu"} onClick={() => void goProtectedScreen("menu")}>Menu</SideNav>
+        <SideNav active={screen === "inventory"} onClick={() => void goProtectedScreen("inventory")}>Inventory</SideNav>
+        <SideNav active={screen === "costs"} onClick={() => void goProtectedScreen("costs")}>Costs</SideNav>
         <SideNav active={screen === "admin"} onClick={() => void goProtectedScreen("admin")}>Admin</SideNav>
       </aside>
 
+      {(screen === "openOrders" || screen === "newOrder" || screen === "editOrder") && <OrdersScreen title="Open Orders" description="Running orders ready to resume." orders={openOrders} menuTypes={menuTypes} onRefresh={refreshData} onResume={loadOrder} onRetryKot={retryWebsiteKitchenKot} />}
+
       {(screen === "newOrder" || screen === "editOrder") && (
-        <section className="grid h-screen grid-cols-[minmax(340px,1fr)_minmax(220px,260px)_minmax(200px,230px)] gap-4 overflow-hidden p-4 xl:grid-cols-[minmax(420px,1fr)_minmax(280px,320px)_minmax(260px,280px)]">
+        <Dialog open onOpenChange={(open) => { if (!open) setScreen("openOrders"); }}>
+          <DialogContent className="h-[calc(100vh-2rem)] w-[calc(100vw-2rem)] max-w-none overflow-hidden p-0 sm:max-w-none">
+            <DialogHeader className="sr-only">
+              <DialogTitle>{orderLane === "newOrder" ? "New Order" : "Open Order"}</DialogTitle>
+              <DialogDescription>Yamzo order workspace</DialogDescription>
+            </DialogHeader>
+        <section className="grid h-full grid-cols-[minmax(340px,1fr)_minmax(220px,300px)_minmax(230px,300px)] gap-4 overflow-hidden p-4 xl:grid-cols-[minmax(420px,1fr)_minmax(300px,340px)_minmax(280px,320px)]">
           <Card className="min-h-0 overflow-hidden border-amber-200 bg-amber-50/30 py-0">
             <CardHeader className="border-b py-4">
               <div className="flex flex-wrap items-start justify-between gap-3">
@@ -934,7 +1145,7 @@ export function App() {
                 </div>
                 <div className="grid min-w-[190px] gap-2">
                   <Label>Order date</Label>
-                  <DatePicker value={orderDate} onChange={changeActiveOrderDate} label="Order date" />
+                  <DatePicker value={orderDate} onChange={(value) => { if (!activeOrder?.paid) void changeActiveOrderDate(value); }} label="Order date" />
                   {screen === "editOrder" && orderLane === "openOrders" && <Button className="border border-primary/30 shadow-sm" onClick={() => setScreen("openOrders")}>Back to Open Orders</Button>}
                 </div>
               </div>
@@ -944,7 +1155,7 @@ export function App() {
                 <Label className="mb-2 block text-amber-900">Order type</Label>
                 <div className="flex flex-wrap gap-2">
                 {activeMenuTypes.map((item) => (
-                  <Button key={item.key} variant={source === item.key ? "default" : "outline"} size="lg" onClick={() => chooseSource(item.key)}>
+                  <Button key={item.key} disabled={Boolean(activeOrder?.paid)} variant={source === item.key ? "default" : "outline"} size="lg" onClick={() => chooseSource(item.key)}>
                     {item.label}
                   </Button>
                 ))}
@@ -961,21 +1172,22 @@ export function App() {
                       <Button
                         key={table}
                         variant={selected ? "default" : "outline"}
-                        className={!selected && occupied ? "border-emerald-400 bg-emerald-50 text-emerald-950 hover:bg-emerald-100" : ""}
+                        disabled={Boolean(activeOrder?.paid)}
+                        className={`h-14 text-base font-bold ${!selected && occupied ? "border-emerald-500 bg-emerald-100 text-emerald-950 hover:bg-emerald-200" : ""}`}
                         onClick={() => chooseTable(table)}
                       >
                         {table}{occupied ? " *" : ""}
                       </Button>
                     );
                   })}
-                  <Input className="h-9" value={tableNumber} onChange={(event) => setTableNumber(event.target.value)} onBlur={() => saveOrderInfo()} placeholder="Custom table" />
+                  <Input disabled={Boolean(activeOrder?.paid)} className="h-14 text-base font-bold" value={/^Table \d+$/.test(tableNumber) ? "" : tableNumber} onChange={(event) => setTableNumber(event.target.value)} onBlur={() => saveOrderInfo()} placeholder="Custom table" />
                   </div>
                   {needsDineInTable && <p className="mt-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-900">Select a table before choosing menu items.</p>}
                 </div>
               )}
               {isExternalOrder && (
                 <div className="flex items-center gap-2 rounded-lg border bg-muted/40 px-3 py-2">
-                  <Checkbox checked={externalKitchenEnabled} onCheckedChange={(checked) => setExternalKitchenEnabled(Boolean(checked))} />
+                  <Checkbox disabled={Boolean(activeOrder?.paid)} checked={externalKitchenEnabled} onCheckedChange={(checked) => setExternalKitchenEnabled(Boolean(checked))} />
                   <span className="text-sm font-medium">Allow Kitchen Copy for this external order</span>
                 </div>
               )}
@@ -998,7 +1210,7 @@ export function App() {
                           <button
                             key={item.id}
                             className="grid min-h-[96px] rounded-xl border bg-card p-3 text-left shadow-sm transition hover:border-primary/60 hover:bg-muted/30 disabled:cursor-not-allowed disabled:opacity-45"
-                            disabled={!item.available || needsDineInTable}
+                            disabled={!item.available || needsDineInTable || Boolean(activeOrder?.paid)}
                             onClick={() => addMenuItem(item)}
                           >
                             <strong className="line-clamp-2 text-sm leading-snug">{item.name}</strong>
@@ -1021,9 +1233,12 @@ export function App() {
               <div className="grid gap-2">
                 {externalOrderIdEnabled && (
                   <Field label="External order ID">
-                    <Input value={externalOrderId} onChange={(event) => setExternalOrderId(event.target.value)} onBlur={() => saveOrderInfo()} placeholder="Example: Foodpanda order ID" />
+                    <Input disabled={Boolean(activeOrder?.paid)} value={externalOrderId} onChange={(event) => setExternalOrderId(event.target.value)} onBlur={() => saveOrderInfo()} placeholder="Example: Foodpanda order ID" />
                   </Field>
                 )}
+                <Field label="Number of Guests">
+                  <Input disabled={Boolean(activeOrder?.paid)} type="number" min="1" max="99" className="h-12 text-base font-semibold" value={guestCount} onChange={(event) => setGuestCount(Math.min(99, Math.max(1, Number(event.target.value) || 1)))} onBlur={() => saveOrderInfo()} />
+                </Field>
                 <Field label="Host">
                   <SearchableSelect
                     value={selectedHost}
@@ -1033,29 +1248,60 @@ export function App() {
                     searchPlaceholder="Search staff..."
                     emptyText="No staff found."
                     ariaLabel="Order host"
+                    disabled={Boolean(activeOrder?.paid)}
                     className="bg-white"
                   />
                 </Field>
                 <Label>Internal kitchen note</Label>
-                <Textarea className="min-h-16 resize-none" value={orderNote} onChange={(event) => setOrderNote(event.target.value)} onBlur={() => saveOrderInfo()} placeholder="Example: customer said previous calamari was bad" />
+                <Textarea disabled={Boolean(activeOrder?.paid)} className="min-h-16 resize-none" value={orderNote} onChange={(event) => setOrderNote(event.target.value)} onBlur={() => saveOrderInfo()} placeholder="Example: customer said previous calamari was bad" />
               </div>
             </CardHeader>
             <ScrollArea className="min-h-0 p-3">
               <div className="grid gap-2 pr-3">
                 {activeItems.length === 0 && <p className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">No items selected.</p>}
                 {activeItems.map((line) => (
-                  <OrderItemRow key={line.id} line={line} onQty={updateExistingItem} onNote={editItemNote} onParcel={toggleItemParcel} onRemove={removeExistingItem} />
+                  <OrderItemRow key={line.id} line={line} postKot={activeOrder?.initialKotState === "confirmed"} locked={Boolean(activeOrder?.paid)} onQty={updateExistingItem} onNote={editItemNote} onParcel={toggleItemParcel} onRemove={removeExistingItem} onSwap={(item) => { setSwapLine(item); setSwapReplacement(null); setSwapRemoveOnly(false); setSwapPin(""); setSwapReason(""); setSwapManagerId(String(managers[0]?.id ?? "")); setMessage(`Choose a replacement for ${item.name} from the menu, or remove it with manager authorization.`); }} />
                 ))}
               </div>
             </ScrollArea>
           </Card>
 
-          <Card className="grid min-h-0 grid-rows-[auto_1fr] overflow-hidden border-emerald-200 bg-emerald-50/40 py-0">
+          {orderLane === "newOrder" ? (
+          <Card className="grid min-h-0 grid-rows-[auto_1fr] overflow-hidden border-amber-200 bg-amber-50/40 py-0">
             <CardHeader className="border-b py-4">
-              <CardTitle>Payment</CardTitle>
-              <CardDescription>{tableNumber ? tableNumber : formatConfiguredSource(source, menuTypes)}</CardDescription>
+              <CardTitle>Create Open Order</CardTitle>
+              <CardDescription>Review the order, then move it into the restaurant queue.</CardDescription>
             </CardHeader>
             <CardContent className="flex min-h-0 flex-col gap-4 overflow-y-auto p-4">
+              <MoneyRow label="Subtotal" value={subtotal} />
+              <div className="grid gap-2 rounded-xl border bg-white p-3 text-sm">
+                <div className="flex justify-between gap-3"><span className="text-muted-foreground">Type</span><strong>{formatConfiguredSource(source, menuTypes)}</strong></div>
+                {tableNumber && <div className="flex justify-between gap-3"><span className="text-muted-foreground">Table</span><strong>{tableNumber}</strong></div>}
+                <div className="flex justify-between gap-3"><span className="text-muted-foreground">Guests</span><strong>{guestCount}</strong></div>
+                <div className="flex justify-between gap-3"><span className="text-muted-foreground">Host</span><strong>{selectedHost}</strong></div>
+                <div className="flex justify-between gap-3"><span className="text-muted-foreground">Items</span><strong>{activeItems.reduce((sum, item) => sum + item.quantity, 0)}</strong></div>
+              </div>
+              {swapLine && !swapReplacement && !swapRemoveOnly && <div role="status" className="grid gap-2 rounded-lg border border-sky-300 bg-sky-50 px-3 py-2 text-sm font-medium text-sky-950"><span>Select a menu item to replace {swapLine.name}, or authorize removal.</span><Button size="sm" variant="secondary" onClick={() => { setSwapRemoveOnly(true); setSwapPin(""); setSwapReason(""); }}>Remove without replacement</Button></div>}
+              <Button size="lg" className="mt-auto h-14 w-full text-base font-bold" disabled={!activeOrder || activeItems.length === 0 || needsDineInTable} onClick={finishNewOrder}>Create Open Order</Button>
+              <p className="text-xs text-muted-foreground">Payment, Bill Copy, and Complete Order become available only after this order enters Open Orders.</p>
+            </CardContent>
+          </Card>
+          ) : (
+          <Card className="grid min-h-0 grid-rows-[auto_1fr] overflow-hidden border-emerald-200 bg-emerald-50/40 py-0">
+            <CardHeader className="border-b py-4">
+              <CardTitle>Payment & Close</CardTitle>
+              <CardDescription>{tableNumber ? tableNumber : formatConfiguredSource(source, menuTypes)} · Next: {nextOrderAction}</CardDescription>
+            </CardHeader>
+            <CardContent className="flex min-h-0 flex-col gap-4 overflow-y-auto p-4">
+              <div role="status" className="grid grid-cols-2 gap-2 text-xs font-semibold">
+                <div className={`rounded-lg border p-2 ${activeOrder?.unresolvedKotCount === 0 ? "border-emerald-300 bg-emerald-50 text-emerald-900" : "border-amber-300 bg-amber-50 text-amber-950"}`}>1. Kitchen KOT {activeOrder?.unresolvedKotCount === 0 ? "✓" : `(${activeOrder?.unresolvedKotCount ?? 0} pending)`}</div>
+                <div className={`rounded-lg border p-2 ${activeOrder?.paid ? "border-emerald-300 bg-emerald-50 text-emerald-900" : "border-slate-300 bg-white text-slate-700"}`}>2. Payment {activeOrder?.paid ? "✓" : ""}</div>
+                <div className={`rounded-lg border p-2 ${activeOrder?.billState === "printed" ? "border-emerald-300 bg-emerald-50 text-emerald-900" : activeOrder?.billState === "failed" ? "border-amber-300 bg-amber-50 text-amber-950" : "border-slate-300 bg-white text-slate-700"}`}>3. Bill Copy {activeOrder?.billState === "printed" ? "✓" : activeOrder?.billState === "failed" ? "retry" : ""}</div>
+                <div className="rounded-lg border border-slate-300 bg-white p-2 text-slate-700">4. Complete</div>
+              </div>
+              {activeOrder?.paid && (
+                <p className="rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm font-medium text-emerald-950">Payment is recorded. Order items, totals, table, guests, and host are now locked.</p>
+              )}
               <MoneyRow label="Subtotal" value={subtotal} />
               <div className="grid gap-3 rounded-xl border border-emerald-200 bg-white p-3 shadow-sm">
                 <div>
@@ -1063,8 +1309,8 @@ export function App() {
                   <p className="text-xs text-muted-foreground">Percent by default, flat TK when needed.</p>
                 </div>
                 <div className="grid grid-cols-[1fr_92px] gap-2">
-                  <Input type="number" min="0" value={discountValue} onChange={(event) => handleDiscountValue(event.target.value)} onFocus={(event) => event.currentTarget.select()} onBlur={() => activeOrder && window.yamzo?.orders.discount(activeOrder.id, calculatedDiscount)} placeholder="0" />
-                  <Select value={discountMode} onValueChange={(value) => { setDiscountMode(value as DiscountMode); setFinalTotalInput(""); }}>
+                  <Input disabled={Boolean(activeOrder?.paid)} type="number" min="0" value={discountValue} onChange={(event) => handleDiscountValue(event.target.value)} onFocus={(event) => event.currentTarget.select()} onBlur={() => activeOrder && !activeOrder.paid && window.yamzo?.orders.discount(activeOrder.id, calculatedDiscount)} placeholder="0" />
+                  <Select disabled={Boolean(activeOrder?.paid)} value={discountMode} onValueChange={(value) => { setDiscountMode(value as DiscountMode); setFinalTotalInput(""); }}>
                     <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="percent">%</SelectItem>
@@ -1075,33 +1321,46 @@ export function App() {
                 <p className="text-sm text-muted-foreground">Discount amount: {money(calculatedDiscount)}</p>
               </div>
               <div className="grid gap-3 rounded-xl border border-sky-200 bg-white p-3 shadow-sm">
-                <Field label="Manual entry"><Input type="number" min="0" value={finalTotalInput} onChange={(event) => handleFinalTotal(event.target.value)} onFocus={(event) => event.currentTarget.select()} placeholder={String(payableTotal)} /></Field>
-                <div className="rounded-xl border border-emerald-300 bg-emerald-50 p-3"><MoneyRow label="Total" value={payableTotal} strong /></div>
+                <Field label="Manual entry"><Input disabled={Boolean(activeOrder?.paid)} type="number" min="0" value={finalTotalInput} onChange={(event) => handleFinalTotal(event.target.value)} onFocus={(event) => event.currentTarget.select()} placeholder={String(payableTotal)} /></Field>
+                <div className="rounded-xl border border-emerald-300 bg-emerald-50 p-3"><MoneyRow label="Total" value={activeOrder?.payment?.amount ?? payableTotal} strong /></div>
               </div>
               <div className="grid gap-3 rounded-xl border border-emerald-200 bg-white p-3 shadow-sm">
-                <label className="flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-3 text-sm font-medium">
-                  <Checkbox checked={markAsPaid} onCheckedChange={(checked) => setMarkAsPaid(Boolean(checked))} />
-                  Mark as paid
-                </label>
-                <Field label="Payment method">
-                <Select value={paymentMethod} onValueChange={(value) => {
-                  setPaymentMethod(value as PaymentMethod);
-                  if (value === "cash") setPaymentReference("");
-                }}>
-                  <SelectTrigger className="h-12 w-full border-emerald-300 bg-emerald-50 text-base font-semibold"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="cash">Cash</SelectItem>
-                    <SelectItem value="bkash">bKash</SelectItem>
-                    <SelectItem value="nagad">Nagad</SelectItem>
-                    <SelectItem value="card">Card</SelectItem>
-                    <SelectItem value="other">Other</SelectItem>
-                  </SelectContent>
-                </Select>
-                </Field>
-                {paymentMethod !== "cash" && (
-                  <Field label="Customer number / account details">
-                    <Input value={paymentReference} onChange={(event) => setPaymentReference(event.target.value)} placeholder="Example: bKash number or card note" />
-                  </Field>
+                {activeOrder?.payment ? (
+                  <div className="grid gap-2 text-sm">
+                    <div className="flex justify-between gap-3"><span className="text-muted-foreground">Paid with</span><strong>{paymentMethods.find((method) => method.key === activeOrder.payment?.method)?.label ?? labelize(activeOrder.payment.method)}</strong></div>
+                    <MoneyRow label="Amount" value={activeOrder.payment.amount} strong />
+                    {activeOrder.payment.cashReceived !== null && <MoneyRow label="Cash Received" value={activeOrder.payment.cashReceived} />}
+                    {activeOrder.payment.changeGiven !== null && <div className="rounded-xl border-2 border-emerald-400 bg-emerald-50 p-3"><MoneyRow label="Change / Vangti" value={activeOrder.payment.changeGiven} strong /></div>}
+                    {activeOrder.payment.reference && <div className="flex justify-between gap-3"><span className="text-muted-foreground">Reference</span><strong>{activeOrder.payment.reference}</strong></div>}
+                  </div>
+                ) : (
+                  <>
+                    <Field label="Payment method">
+                      <Select value={paymentMethod} onValueChange={(value) => {
+                        setPaymentMethod(value as PaymentMethod);
+                        if (value === "cash") setPaymentReference("");
+                      }}>
+                        <SelectTrigger className="h-12 w-full border-emerald-300 bg-emerald-50 text-base font-semibold"><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          {activePaymentMethods.map((method) => <SelectItem key={method.key} value={method.key}>{method.label}</SelectItem>)}
+                        </SelectContent>
+                      </Select>
+                    </Field>
+                    {paymentMethod === "cash" ? (
+                      <>
+                        <Field label="Cash Received"><Input type="number" min="0" step="1" value={cashReceived} onChange={(event) => setCashReceived(event.target.value)} onFocus={(event) => event.currentTarget.select()} placeholder={String(payableTotal)} /></Field>
+                        <div className={`rounded-xl border-2 p-3 ${cashPaymentInvalid ? "border-amber-400 bg-amber-50 text-amber-950" : "border-emerald-400 bg-emerald-50 text-emerald-950"}`}>
+                          <MoneyRow label="Change / Vangti" value={cashChange} strong />
+                          {cashPaymentInvalid && <p className="mt-1 text-xs font-medium">Cash Received must cover the payable total.</p>}
+                        </div>
+                      </>
+                    ) : (
+                      <Field label="Customer number / account details">
+                        <Input value={paymentReference} onChange={(event) => setPaymentReference(event.target.value)} placeholder="Example: bKash number or card note" />
+                      </Field>
+                    )}
+                    <Button size="lg" className="h-14 w-full text-base font-bold" disabled={!activeOrder || activeOrder.unresolvedKotCount > 0 || cashPaymentInvalid || activeItems.length === 0} onClick={recordPayment}>Record Payment</Button>
+                  </>
                 )}
               </div>
               <label className="flex items-center gap-2 rounded-lg border bg-white px-3 py-2 text-sm">
@@ -1111,13 +1370,28 @@ export function App() {
               <div className="grid gap-3 rounded-xl border bg-white p-3">
                 <p className="text-xs font-medium text-muted-foreground">Print</p>
                 <div className="grid grid-cols-2 gap-2">
-                  <Button size="lg" disabled={!activeOrder || !canPrintKitchen} onClick={kitchenCopy}>Kitchen Copy</Button>
-                  <Button size="lg" variant="secondary" disabled={!activeOrder} onClick={billCopy}>Bill Copy</Button>
+                  <Button size="lg" disabled={!activeOrder || !canPrintKitchen || Boolean(activeOrder.paid)} onClick={activeOrder?.failedKotCount ? () => retryWebsiteKitchenKot(activeOrder.id) : kitchenCopy}>{activeOrder?.failedKotCount ? "Retry KOT" : "Kitchen Copy"}</Button>
+                  <Button size="lg" variant="secondary" disabled={!activeOrder?.paid || activeOrder.unresolvedKotCount > 0} onClick={billCopy}>{activeOrder?.billState === "failed" ? "Retry Bill" : activeOrder?.billState === "printed" ? "Reprint Bill" : "Bill Copy"}</Button>
                 </div>
               </div>
+              {activeOrder?.source === "website" && (
+                <div className="grid gap-3 rounded-xl border border-sky-200 bg-sky-50 p-3">
+                  <p className="text-xs font-bold text-sky-950">Website customer status</p>
+                  <p className="text-xs text-sky-900">Signed updates are stored locally first and retry automatically while offline.</p>
+                  <div className="grid grid-cols-2 gap-2">
+                    <Button size="lg" variant="secondary" disabled={activeOrder.unresolvedKotCount > 0} onClick={() => void advanceWebsiteLifecycle("ready")}>Mark Ready</Button>
+                    <Button size="lg" variant="secondary" disabled={activeOrder.unresolvedKotCount > 0} onClick={() => void advanceWebsiteLifecycle("out_for_delivery")}>Out for Delivery</Button>
+                  </div>
+                </div>
+              )}
               <div className="grid gap-3 rounded-xl border bg-white p-3">
                 <p className="text-xs font-medium text-muted-foreground">Close order</p>
-                <Button size="lg" className="w-full" disabled={!activeOrder || activeItems.length === 0} onClick={completeOrder}>Complete Order</Button>
+                {Boolean(activeOrder?.unresolvedKotCount) && (
+                  <p role="status" className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-950">
+                    {activeOrder?.unresolvedKotCount} required Kitchen KOT {activeOrder?.unresolvedKotCount === 1 ? "is" : "are"} unresolved. Payment, Bill Copy, and completion are locked.
+                  </p>
+                )}
+                <Button size="lg" className="w-full" disabled={!activeOrder?.paid || activeItems.length === 0 || activeOrder.unresolvedKotCount > 0 || activeOrder.billState !== "printed"} onClick={completeOrder}>Complete Order</Button>
                 <Button size="lg" variant="secondary" className="w-full" disabled={!activeOrder} onClick={requestCancelOrder}>Cancel Order</Button>
               </div>
               {!canPrintKitchen && <p className="text-sm text-muted-foreground">Kitchen Copy is off for this external order.</p>}
@@ -1130,13 +1404,17 @@ export function App() {
               </div>
             </CardContent>
           </Card>
+          )}
         </section>
+          </DialogContent>
+        </Dialog>
       )}
 
-      {screen === "openOrders" && <OrdersScreen title="Open Orders" description="Running orders ready to resume." orders={openOrders} menuTypes={menuTypes} onRefresh={refreshData} onResume={loadOrder} onDone={markKitchenDelivered} onRestart={restartKitchenTimer} onBatchDone={markKitchenBatchDelivered} onBatchRestart={restartKitchenBatchTimer} onDoneAll={markAllRunningDelivered} />}
-      {screen === "websiteOrders" && <WebsiteOrdersScreen onMessage={setMessage} />}
+      {screen === "websiteOrders" && <WebsiteOrdersScreen onMessage={setMessage} onAccepted={async () => { await refreshData(); setScreen("openOrders"); }} />}
       {screen === "completedOrders" && <OrdersScreen title="Completed Orders" description="Settled POS orders and delivered website snapshots retained for audit." orders={completedOrders} menuTypes={menuTypes} onRefresh={refreshData} onResume={reopenHistoryOrder} resumeLabel="Edit" onView={viewHistoryOrder} afterList={<WebsiteCompletedOrdersPanel orders={completedWebsiteOrders} onRefresh={refreshData} onMessage={setMessage} />} />}
       {screen === "cancelledOrders" && <OrdersScreen title="Cancelled Orders" description="Cancelled orders are retained permanently for audit." orders={cancelledOrders} menuTypes={menuTypes} onRefresh={refreshData} onView={viewHistoryOrder} />}
+      {screen === "swappedOrders" && <SwappedOrdersScreen />}
+      {screen === "kitchenKot" && <KitchenKotHistoryScreen />}
       {screen === "reports" && <ContentShell title="Reports" description="Sales, order timing, payments, and profit reports."><ReportsPanel summary={summary} inventory={inventorySnapshot} menuTypes={menuTypes} /></ContentShell>}
       {screen === "menu" && (
         <ContentShell title="Menu" description="Manage food, sauce, drink items, and menu categories." action={<Button variant="secondary" onClick={refreshData}>Refresh</Button>}>
@@ -1161,31 +1439,41 @@ export function App() {
               <TabsTrigger value="printer">Printers</TabsTrigger>
               <TabsTrigger value="integrations">Integrations</TabsTrigger>
               <TabsTrigger value="app">App</TabsTrigger>
+              <TabsTrigger value="managers">Managers</TabsTrigger>
               <TabsTrigger value="security">Security</TabsTrigger>
               <TabsTrigger value="activity">Activity</TabsTrigger>
             </TabsList>
             <TabsContent value="receipt"><ReceiptAdmin branding={branding} setBranding={setBranding} chooseReceiptImage={chooseReceiptImage} setMessage={setMessage} /></TabsContent>
             <TabsContent value="printer"><PrinterAdmin selectedPrinter={selectedPrinter} setSelectedPrinter={setSelectedPrinter} printers={printers} failedPrintJobs={failedPrintJobs} refreshData={refreshData} setMessage={setMessage} /></TabsContent>
             <TabsContent value="integrations"><IntegrationsAdmin /></TabsContent>
-            <TabsContent value="app"><AppSettings trackInventory={trackInventory} setTrackInventory={setTrackInventory} saveAppSettings={saveAppSettings} hostNames={hostNames} hostDraft={hostDraft} setHostDraft={setHostDraft} saveHostNames={saveHostNames} /></TabsContent>
+            <TabsContent value="app"><AppSettings trackInventory={trackInventory} setTrackInventory={setTrackInventory} saveAppSettings={saveAppSettings} hostNames={hostNames} hostDraft={hostDraft} setHostDraft={setHostDraft} saveHostNames={saveHostNames} paymentMethods={paymentMethods} setPaymentMethods={setPaymentMethods} savePaymentMethods={savePaymentMethods} /></TabsContent>
+            <TabsContent value="managers"><ManagerAdmin onMessage={setMessage} /></TabsContent>
             <TabsContent value="security"><SecurityAdmin username={username} passwordForm={passwordForm} setPasswordForm={setPasswordForm} setMessage={setMessage} /></TabsContent>
             <TabsContent value="activity"><ActivityLogAdmin logs={activityLogs} refreshData={refreshData} /></TabsContent>
           </Tabs>
         </ContentShell>
       )}
 
-      <AlertDialog open={Boolean(protectedTarget)} onOpenChange={(open) => !open && setProtectedTarget(null)}>
+      <AlertDialog open={Boolean(protectedTarget) && screen !== protectedTarget} onOpenChange={(open) => !open && setProtectedTarget(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Admin password</AlertDialogTitle>
-            <AlertDialogDescription>Enter admin password to continue.</AlertDialogDescription>
+            <AlertDialogTitle>Manager authorization</AlertDialogTitle>
+            <AlertDialogDescription>Select an active manager and enter their PIN to open this protected area.</AlertDialogDescription>
           </AlertDialogHeader>
-          <Field label="Password">
+          <Field label="Authorized By">
+            <Select value={protectedManagerId || "none"} onValueChange={(value) => setProtectedManagerId(value === "none" ? "" : value)}>
+              <SelectTrigger><SelectValue placeholder="Select manager" /></SelectTrigger>
+              <SelectContent><SelectItem value="none">Select manager</SelectItem>{managers.map((manager) => <SelectItem key={manager.id} value={String(manager.id)}>{manager.name} · {manager.managerCode}</SelectItem>)}</SelectContent>
+            </Select>
+          </Field>
+          <Field label="Manager PIN">
             <Input
               autoFocus
               type="password"
-              value={adminPassword}
-              onChange={(event) => setAdminPassword(event.target.value)}
+              inputMode="numeric"
+              autoComplete="off"
+              value={protectedManagerPin}
+              onChange={(event) => setProtectedManagerPin(event.target.value.replace(/\D/g, "").slice(0, 8))}
               onKeyDown={(event) => {
                 if (event.key === "Enter") void submitAdminPassword();
               }}
@@ -1218,6 +1506,29 @@ export function App() {
           <AlertDialogFooter>
             <AlertDialogCancel>Keep Order</AlertDialogCancel>
             <AlertDialogAction disabled={cancellationReason.trim().length < 2} onClick={confirmCancelOrder}>Confirm Cancellation</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={Boolean(swapLine && (swapReplacement || swapRemoveOnly))} onOpenChange={(open) => { if (!open) { setSwapLine(null); setSwapReplacement(null); setSwapRemoveOnly(false); setSwapPin(""); setSwapReason(""); } }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Authorize Swap / Change</AlertDialogTitle>
+            <AlertDialogDescription>
+              {swapLine?.name} → {swapRemoveOnly ? "Remove item" : swapReplacement?.name}. The original Kitchen KOT remains immutable and a required adjustment KOT will be created.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <Field label="Authorized By">
+            <Select value={swapManagerId || "none"} onValueChange={(value) => setSwapManagerId(value === "none" ? "" : value)}>
+              <SelectTrigger><SelectValue placeholder="Select manager" /></SelectTrigger>
+              <SelectContent><SelectItem value="none">Select manager</SelectItem>{managers.map((manager) => <SelectItem key={manager.id} value={String(manager.id)}>{manager.name} · {manager.managerCode}</SelectItem>)}</SelectContent>
+            </Select>
+          </Field>
+          <Field label="Manager PIN"><Input type="password" inputMode="numeric" autoComplete="off" value={swapPin} onChange={(event) => setSwapPin(event.target.value.replace(/\D/g, "").slice(0, 8))} /></Field>
+          <Field label="Reason *"><Textarea value={swapReason} onChange={(event) => setSwapReason(event.target.value)} placeholder="Example: Customer requested a different item" /></Field>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <Button disabled={!swapManagerId || !swapPin || swapReason.trim().length < 2} onClick={authorizeSwap}>Authorize Change</Button>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
@@ -1263,8 +1574,10 @@ export function App() {
           </AlertDialogHeader>
           {historyView && (
             <div className="grid gap-4 text-sm">
-              <div className="grid grid-cols-2 gap-2">
+              <div className="grid grid-cols-4 gap-2">
                 <div className="rounded-lg bg-slate-100 p-3"><span className="block text-xs text-muted-foreground">Items</span><strong>{historyView.itemCount}</strong></div>
+                <div className="rounded-lg bg-sky-50 p-3 text-sky-950"><span className="block text-xs text-sky-700">Guests</span><strong>{historyView.guestCount}</strong></div>
+                <div className="rounded-lg bg-amber-50 p-3 text-amber-950"><span className="block text-xs text-amber-700">Host</span><strong>{historyView.hostName}</strong></div>
                 <div className="rounded-lg bg-emerald-50 p-3 text-emerald-950"><span className="block text-xs text-emerald-700">Total</span><strong>{money(historyView.total)}</strong></div>
               </div>
               <div className="grid gap-1 text-muted-foreground">
@@ -1592,7 +1905,8 @@ function MoneyRow({ label, value, strong = false }: { label: string; value: numb
   return <div className="flex items-center justify-between text-sm"><span>{label}</span><strong className={strong ? "text-xl" : "text-lg"}>{money(value)}</strong></div>;
 }
 
-function OrderItemRow({ line, onQty, onNote, onParcel, onRemove }: { line: OrderLine; onQty: (line: OrderLine, quantity: number) => void; onNote: (line: OrderLine) => void; onParcel: (line: OrderLine, parcel: boolean) => void; onRemove: (line: OrderLine) => void }) {
+function OrderItemRow({ line, postKot, locked, onQty, onNote, onParcel, onRemove, onSwap }: { line: OrderLine; postKot: boolean; locked: boolean; onQty: (line: OrderLine, quantity: number) => void; onNote: (line: OrderLine) => void; onParcel: (line: OrderLine, parcel: boolean) => void; onRemove: (line: OrderLine) => void; onSwap: (line: OrderLine) => void }) {
+  const requiresSwap = postKot && line.kitchenPrinted;
   return (
     <Card size="sm" className="gap-2 py-3">
       <CardContent className="grid gap-3 px-3">
@@ -1601,7 +1915,7 @@ function OrderItemRow({ line, onQty, onNote, onParcel, onRemove }: { line: Order
             <strong className="line-clamp-2 text-sm">{line.name}</strong>
             <div className="mt-1 flex flex-wrap gap-1">
               <Badge className={line.kitchenPrinted ? "border-emerald-300 bg-emerald-100 text-emerald-900" : "border-amber-300 bg-amber-100 text-amber-900"} variant="outline">
-                {line.kitchenPrinted ? "Printed" : "New"}
+                {line.kitchenPrinted ? "Kitchen item" : "New"}
               </Badge>
               {line.parcel && <Badge className="border-sky-300 bg-sky-100 text-sky-900" variant="outline">Parcel</Badge>}
             </div>
@@ -1609,19 +1923,28 @@ function OrderItemRow({ line, onQty, onNote, onParcel, onRemove }: { line: Order
           <strong className="shrink-0 text-sm">{money(line.quantity * line.unitPrice)}</strong>
         </div>
         {line.note && <p className="rounded-md bg-muted px-2 py-1 text-xs text-muted-foreground">{line.note}</p>}
-        <div className="grid grid-cols-[auto_1fr_auto] items-center gap-2">
-          <Button variant="outline" size="icon" onClick={() => onQty(line, line.quantity - 1)}>-</Button>
-          <span className="text-center font-semibold">{line.quantity}</span>
-          <Button variant="outline" size="icon" onClick={() => onQty(line, line.quantity + 1)}>+</Button>
-        </div>
-        <div className="grid grid-cols-2 gap-2">
-          <Button variant="secondary" onClick={() => onNote(line)}>Note</Button>
-          <Button variant="destructive" onClick={() => onRemove(line)}>Remove</Button>
-        </div>
-        <label className="flex items-center gap-2 rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-sm font-medium text-sky-950">
-          <Checkbox checked={line.parcel} onCheckedChange={(checked) => onParcel(line, Boolean(checked))} />
-          Parcel this item
-        </label>
+        {requiresSwap ? (
+          <div className="grid gap-2">
+            <p className="text-xs text-muted-foreground">This item reached the kitchen. Use a traceable replacement instead of Remove.</p>
+            <Button disabled={locked} variant="secondary" className="h-11 font-semibold" onClick={() => onSwap(line)}>Swap / Change</Button>
+          </div>
+        ) : (
+          <>
+            <div className="grid grid-cols-[auto_1fr_auto] items-center gap-2">
+              <Button disabled={locked} variant="outline" size="icon" onClick={() => onQty(line, line.quantity - 1)}>-</Button>
+              <span className="text-center font-semibold">{line.quantity}</span>
+              <Button disabled={locked} variant="outline" size="icon" onClick={() => onQty(line, line.quantity + 1)}>+</Button>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <Button disabled={locked} variant="secondary" onClick={() => onNote(line)}>Note</Button>
+              <Button disabled={locked} variant="destructive" onClick={() => onRemove(line)}>Remove</Button>
+            </div>
+            <label className="flex items-center gap-2 rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-sm font-medium text-sky-950">
+              <Checkbox disabled={locked} checked={line.parcel} onCheckedChange={(checked) => onParcel(line, Boolean(checked))} />
+              Parcel this item
+            </label>
+          </>
+        )}
       </CardContent>
     </Card>
   );
@@ -1648,20 +1971,20 @@ function ContentShell({ title, description, action, children }: { title: string;
   );
 }
 
-function OrdersScreen({ title, description, orders, menuTypes, onRefresh, onResume, resumeLabel = "Resume", onView, onDone, onRestart, onBatchDone, onBatchRestart, onDoneAll, afterList }: { title: string; description: string; orders: OrderSummary[]; menuTypes: MenuTypeSetting[]; onRefresh: () => void; onResume?: (orderId: number) => void; resumeLabel?: string; onView?: (orderId: number) => void; onDone?: (orderId: number) => void; onRestart?: (orderId: number) => void; onBatchDone?: (ticketId: number) => void; onBatchRestart?: (ticketId: number) => void; onDoneAll?: () => void; afterList?: React.ReactNode }) {
+function OrdersScreen({ title, description, orders, menuTypes, onRefresh, onResume, resumeLabel = "Resume", onView, onRetryKot, afterList }: { title: string; description: string; orders: OrderSummary[]; menuTypes: MenuTypeSetting[]; onRefresh: () => void; onResume?: (orderId: number) => void; resumeLabel?: string; onView?: (orderId: number) => void; onRetryKot?: (orderId: number) => void; afterList?: React.ReactNode }) {
   return (
     <ContentShell
       title={title}
       description={description}
-      action={<div className="flex gap-2"><Button variant="secondary" onClick={onRefresh}>Refresh</Button>{onDoneAll && <Button onClick={onDoneAll}>Done All</Button>}</div>}
+      action={<Button variant="secondary" onClick={onRefresh}>Refresh</Button>}
     >
-      <OrderList orders={orders} menuTypes={menuTypes} showResume={Boolean(onResume)} resumeLabel={resumeLabel} onResume={onResume} onView={onView} onDone={onDone} onRestart={onRestart} onBatchDone={onBatchDone} onBatchRestart={onBatchRestart} />
+      <OrderList orders={orders} menuTypes={menuTypes} showResume={Boolean(onResume)} resumeLabel={resumeLabel} onResume={onResume} onView={onView} onRetryKot={onRetryKot} />
       {afterList}
     </ContentShell>
   );
 }
 
-function OrderList({ orders, menuTypes, showResume = false, resumeLabel = "Resume", onResume, onView, onDone, onRestart, onBatchDone, onBatchRestart }: { orders: OrderSummary[]; menuTypes: MenuTypeSetting[]; showResume?: boolean; resumeLabel?: string; onResume?: (orderId: number) => void; onView?: (orderId: number) => void; onDone?: (orderId: number) => void; onRestart?: (orderId: number) => void; onBatchDone?: (ticketId: number) => void; onBatchRestart?: (ticketId: number) => void }) {
+function OrderList({ orders, menuTypes, showResume = false, resumeLabel = "Resume", onResume, onView, onRetryKot }: { orders: OrderSummary[]; menuTypes: MenuTypeSetting[]; showResume?: boolean; resumeLabel?: string; onResume?: (orderId: number) => void; onView?: (orderId: number) => void; onRetryKot?: (orderId: number) => void }) {
   if (orders.length === 0) return <p className="rounded-lg border border-dashed p-6 text-sm text-muted-foreground">No orders found.</p>;
   return (
     <div className="grid grid-cols-[repeat(auto-fill,minmax(300px,1fr))] gap-4">
@@ -1681,14 +2004,31 @@ function OrderList({ orders, menuTypes, showResume = false, resumeLabel = "Resum
             </div>
           </CardHeader>
           <CardContent className="grid gap-3 p-4 text-sm">
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-3 gap-2">
               <div className="rounded-lg bg-slate-100 p-2"><span className="block text-xs text-muted-foreground">Items</span><strong>{order.itemCount}</strong></div>
+              <div className="rounded-lg bg-sky-50 p-2 text-sky-950"><span className="block text-xs text-sky-700">Guests</span><strong>{order.guestCount}</strong></div>
               <div className="rounded-lg bg-emerald-50 p-2 text-emerald-950"><span className="block text-xs text-emerald-700">Total</span><strong>{money(order.total)}</strong></div>
             </div>
+            <div className="flex flex-wrap gap-2">
+              <Badge variant="outline" className={order.unresolvedKotCount === 0 ? "border-emerald-300 bg-emerald-50 text-emerald-800" : "border-amber-300 bg-amber-50 text-amber-900"}>
+                {order.requiredKotCount === 0 ? "KOT not required" : order.unresolvedKotCount === 0 ? `KOT ✓ (${order.requiredKotCount})` : order.failedKotCount > 0 ? `KOT retry (${order.unresolvedKotCount})` : `KOT queued (${order.unresolvedKotCount})`}
+              </Badge>
+              <Badge variant="outline" className={order.paid ? "border-emerald-300 bg-emerald-50 text-emerald-800" : "border-slate-300 bg-slate-50 text-slate-700"}>{order.paid ? "Paid ✓" : "Unpaid"}</Badge>
+              <Badge variant="outline" className={order.billState === "printed" ? "border-emerald-300 bg-emerald-50 text-emerald-800" : "border-slate-300 bg-slate-50 text-slate-700"}>{order.billState === "printed" ? "Bill ✓" : order.billState === "failed" ? "Bill retry" : "No bill"}</Badge>
+            </div>
             <div className="grid gap-1 text-xs text-muted-foreground">
+              <span>Elapsed {elapsedBetween(order.createdAt)}</span>
+              <span>Host {order.hostName}</span>
               <span>Created {formatDate(order.createdAt)}</span>
               <span>Updated {formatDate(order.updatedAt)}</span>
             </div>
+            {order.unresolvedKotCount > 0 && (
+              <div className="rounded-xl border border-amber-300 bg-amber-50 p-3 text-amber-950">
+                <strong>Awaiting KOT</strong>
+                <p className="mt-1 text-xs">{order.unresolvedKotCount} of {order.requiredKotCount} required KOT jobs remain unresolved. Payment, Bill Copy, and completion are locked.</p>
+                {onRetryKot && order.failedKotCount > 0 && <Button className="mt-3" size="sm" onClick={() => onRetryKot(order.id)}>Retry Kitchen KOT</Button>}
+              </div>
+            )}
             <div className="grid gap-2">
               {order.batches.length === 0 && (
                 <div className="rounded-xl border bg-white p-3">
@@ -1697,12 +2037,9 @@ function OrderList({ orders, menuTypes, showResume = false, resumeLabel = "Resum
               )}
               {order.batches.map((batch) => (
                 <div key={batch.id} className="rounded-xl border bg-white p-3">
-                  <div className="grid grid-cols-[1fr_auto_auto] items-center gap-2 text-xs text-muted-foreground">
+                  <div className="grid grid-cols-[1fr_auto] items-center gap-2 text-xs text-muted-foreground">
                     <span>{batch.label}</span>
                     <strong className={batch.completedAt ? "text-emerald-700" : "text-amber-700"}>{elapsedBetween(batch.createdAt, batch.completedAt ?? undefined)}</strong>
-                    {batch.completedAt
-                      ? onBatchRestart && <Button size="sm" variant="secondary" onClick={() => onBatchRestart(batch.id)}>Restart</Button>
-                      : onBatchDone && <Button size="sm" variant="secondary" onClick={() => onBatchDone(batch.id)}>Done</Button>}
                   </div>
                   <p className="mt-2 text-sm font-medium leading-snug">{batch.items.length ? batch.items.join(", ") : "No items"}</p>
                 </div>
@@ -1711,8 +2048,6 @@ function OrderList({ orders, menuTypes, showResume = false, resumeLabel = "Resum
             <div className="grid grid-cols-2 gap-2">
               {showResume && <Button onClick={() => onResume?.(order.id)}>{resumeLabel}</Button>}
               {onView && <Button variant="secondary" onClick={() => onView(order.id)}>View</Button>}
-              {order.kitchenStartedAt && !order.kitchenCompletedAt && onDone && <Button variant="secondary" onClick={() => onDone(order.id)}>Done</Button>}
-              {order.kitchenStartedAt && order.kitchenCompletedAt && onRestart && <Button variant="secondary" onClick={() => onRestart(order.id)}>Restart</Button>}
             </div>
           </CardContent>
         </Card>
@@ -1825,6 +2160,7 @@ function ReportsPanel({ summary, inventory, menuTypes }: { summary: SalesSummary
         <OperationalMetric label="Net sales" value={money(reportSummary.netSales)} detail={`${reportSummary.settledOrders} completed orders`} tone="emerald" />
         <OperationalMetric label="Gross sales" value={money(reportSummary.grossSales)} detail={`Before ${money(reportSummary.discountTotal)} discounts`} />
         <OperationalMetric label="Average order" value={money(reportSummary.averageOrderValue)} detail="Per completed order" />
+        <OperationalMetric label="Dine-in guests" value={String(reportSummary.dineInGuests)} detail={`${reportSummary.averageGuestsPerDineInOrder || 0} average guests per dine-in order`} />
         <OperationalMetric label="Platform commission" value={money(reportSummary.commissionTotal)} detail={`${money(netAfterCommission)} after commission`} tone="amber" />
         <OperationalMetric label="Recorded costs" value={money(costTotal)} detail={`${reportSummary.costRecordCount} cost records`} tone="amber" />
         <OperationalMetric label="Estimated operating profit" value={money(operationalProfit)} detail={`${money(rawCostTotal)} recipe cost included`} tone={operationalProfit >= 0 ? "emerald" : "red"} />
@@ -4790,7 +5126,10 @@ function AppSettings({
   hostNames,
   hostDraft,
   setHostDraft,
-  saveHostNames
+  saveHostNames,
+  paymentMethods,
+  setPaymentMethods,
+  savePaymentMethods
 }: {
   trackInventory: boolean;
   setTrackInventory: (value: boolean) => void;
@@ -4799,6 +5138,9 @@ function AppSettings({
   hostDraft: string;
   setHostDraft: (value: string) => void;
   saveHostNames: (hostNames: string[]) => void;
+  paymentMethods: PaymentMethodSetting[];
+  setPaymentMethods: React.Dispatch<React.SetStateAction<PaymentMethodSetting[]>>;
+  savePaymentMethods: (methods?: PaymentMethodSetting[]) => void;
 }) {
   return (
     <div className="grid max-w-2xl gap-3 pt-4">
@@ -4809,6 +5151,29 @@ function AppSettings({
             <span className="grid gap-1"><strong>Track Inventory</strong><small className="text-muted-foreground">Completed orders reduce stock using recipe or direct-item links configured in Menu.</small></span>
           </label>
           <Button onClick={saveAppSettings}>Save App Settings</Button>
+        </CardContent>
+      </Card>
+      <Card>
+        <CardHeader>
+          <CardTitle>Payment Methods</CardTitle>
+          <CardDescription>Choose which methods appear at checkout and customize their staff-facing labels.</CardDescription>
+        </CardHeader>
+        <CardContent className="grid gap-3">
+          {paymentMethods.map((method, index) => (
+            <div className="grid grid-cols-[auto_1fr] items-center gap-3 rounded-lg border bg-white p-3" key={method.key}>
+              <Checkbox
+                aria-label={`Enable ${method.label}`}
+                checked={method.active}
+                onCheckedChange={(checked) => setPaymentMethods((current) => current.map((entry, entryIndex) => entryIndex === index ? { ...entry, active: Boolean(checked) } : entry))}
+              />
+              <Input
+                aria-label={`${method.key} payment label`}
+                value={method.label}
+                onChange={(event) => setPaymentMethods((current) => current.map((entry, entryIndex) => entryIndex === index ? { ...entry, label: event.target.value } : entry))}
+              />
+            </div>
+          ))}
+          <Button onClick={() => savePaymentMethods()}>Save Payment Methods</Button>
         </CardContent>
       </Card>
       <Card>

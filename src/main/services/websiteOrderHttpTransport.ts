@@ -6,10 +6,17 @@ import {
 } from "node:crypto";
 import type Database from "better-sqlite3";
 import type {
+  OrderSummary,
+  WebsiteConnectionSettings,
   WebsiteOrderSnapshot,
   WebsiteOrderStatus,
-  WebsiteOutboxEvent
+  WebsiteOutboxEvent,
+  WebsiteTransitionResult,
+  WebsiteRealtimeSession
 } from "../../shared/types.js";
+import { importClaimedWebsiteOrderSnapshot } from "../domain/websiteOrders.js";
+import { getSetting } from "./settings.js";
+import { printWebsiteInitialKot } from "./websiteInitialKot.js";
 import {
   WebsiteOrderSyncService,
   type WebsiteOrderPullResult,
@@ -25,6 +32,8 @@ const TERMINAL_CODE_PATTERN = /^[A-Z0-9][A-Z0-9_-]{2,31}$/;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const WEBSITE_PUBLIC_ID_PATTERN = /^[a-z][a-z0-9_]{2,79}$/;
 const SYNC_CURSOR_PATTERN = /^[A-Za-z0-9_-]{1,200}$/;
+const PUBLIC_KEY_PATTERN = /^[A-Za-z0-9_-]{59}$/;
+const FINGERPRINT_PATTERN = /^[a-f0-9]{64}$/;
 
 export interface WebsiteOrderHttpConfig {
   baseUrl: string;
@@ -99,8 +108,56 @@ export class WebsiteOrderHttpTransport implements WebsiteOrderSyncTransport {
     };
   }
 
-  async pushEvents(events: WebsiteOutboxEvent[]): Promise<{ acceptedEventIds: number[] }> {
+  async acceptOrder(remoteId: string, expectedVersion: number): Promise<WebsiteOrderSnapshot> {
+    if (!UUID_PATTERN.test(remoteId) || !Number.isInteger(expectedVersion) || expectedVersion < 1) {
+      throw new Error("The website order acceptance request is invalid.");
+    }
+    const result = await this.sendJson("/api/pos/orders/claim", {
+      orderId: remoteId,
+      expectedVersion
+    });
+    if (!isRecord(result) || !("order" in result)) {
+      throw new Error("The website returned an invalid accepted-order response.");
+    }
+    const order = mapSyncedWebsiteOrder(result.order);
+    if (
+      order.remoteId !== remoteId
+      || order.status !== "accepted"
+      || order.remoteVersion < expectedVersion
+    ) {
+      throw new Error("The website returned an invalid accepted-order response.");
+    }
+    return order;
+  }
+
+  async requestRealtimeSession(): Promise<WebsiteRealtimeSession> {
+    const result = await this.sendJson("/api/pos/realtime/token", {});
+    if (!isRecord(result) || !("realtime" in result)) {
+      throw new Error("The website returned an invalid Realtime session.");
+    }
+    return mapRealtimeSession(result.realtime, this.terminalCode, this.now());
+  }
+
+  async rotateTerminalKey(publicKey: string, expectedFingerprint: string): Promise<void> {
+    if (!PUBLIC_KEY_PATTERN.test(publicKey) || !FINGERPRINT_PATTERN.test(expectedFingerprint)) {
+      throw new Error("The replacement terminal public key is invalid.");
+    }
+    const result = await this.sendJson("/api/pos/terminal/rotate", { publicKey });
+    if (
+      !isRecord(result)
+      || result.terminalCode !== this.terminalCode
+      || result.publicKeyFingerprint !== expectedFingerprint
+    ) {
+      throw new Error("The website returned an invalid terminal-key rotation response.");
+    }
+  }
+
+  async pushEvents(events: WebsiteOutboxEvent[]): Promise<{
+    acceptedEventIds: number[];
+    transitions: WebsiteTransitionResult[];
+  }> {
     const acceptedEventIds: number[] = [];
+    const transitions: WebsiteTransitionResult[] = [];
     for (const event of events) {
       if (!UUID_PATTERN.test(event.eventKey) || !UUID_PATTERN.test(event.remoteOrderId)) {
         throw new Error("A local website sync event has an invalid durable identity.");
@@ -113,10 +170,38 @@ export class WebsiteOrderHttpTransport implements WebsiteOrderSyncTransport {
           orderId: event.remoteOrderId,
           ...print
         });
+      } else if (event.eventType === "order.transition") {
+        const transition = orderTransitionPayload(event);
+        const response = await this.sendJson("/api/pos/orders/transition", {
+          eventKey: event.eventKey,
+          orderId: event.remoteOrderId,
+          toStatus: transition.toStatus,
+          expectedVersion: transition.expectedVersion,
+          note: transition.note
+        });
+        if (!isRecord(response) || response.accepted !== true || !isRecord(response.result)) {
+          throw new Error("The website returned an invalid lifecycle response.");
+        }
+        const result = response.result;
+        const remoteVersion = Number(result.version);
+        if (
+          result.order_id !== event.remoteOrderId
+          || result.event_key !== event.eventKey
+          || result.status !== transition.toStatus
+          || !Number.isInteger(remoteVersion)
+          || remoteVersion !== transition.expectedVersion + 1
+        ) {
+          throw new Error("The website returned an invalid lifecycle response.");
+        }
+        transitions.push({
+          eventId: event.id,
+          remoteOrderId: event.remoteOrderId,
+          status: transition.toStatus,
+          remoteVersion
+        });
       } else if (event.eventType.startsWith("order.")) {
-        // Older POS builds could enqueue a status transition. Website Admin is
-        // now authoritative, so retire a stale local event without sending it
-        // back to the server or allowing it to block print acknowledgements.
+        // Retire only obsolete pre-Gate-4 event kinds so an upgraded terminal
+        // cannot let a legacy row block current signed transitions.
         acceptedEventIds.push(event.id);
         continue;
       } else {
@@ -124,7 +209,7 @@ export class WebsiteOrderHttpTransport implements WebsiteOrderSyncTransport {
       }
       acceptedEventIds.push(event.id);
     }
-    return { acceptedEventIds };
+    return { acceptedEventIds, transitions };
   }
 
   private async sendJson(pathname: string, payload: Record<string, unknown>): Promise<unknown> {
@@ -178,12 +263,86 @@ export class WebsiteOrderHttpTransport implements WebsiteOrderSyncTransport {
   }
 }
 
+function orderTransitionPayload(event: WebsiteOutboxEvent): {
+  toStatus: WebsiteOrderStatus;
+  expectedVersion: number;
+  note: string;
+} {
+  const toStatus = String(event.payload.toStatus ?? "");
+  const expectedVersion = Number(event.payload.expectedVersion);
+  const note = String(event.payload.note ?? "").trim();
+  if (
+    !["preparing", "ready", "out_for_delivery", "delivered", "cancelled"].includes(toStatus)
+    || !Number.isInteger(expectedVersion)
+    || expectedVersion < 1
+    || note.length < 1
+    || note.length > 500
+  ) {
+    throw new Error("A local website lifecycle event is invalid.");
+  }
+  return {
+    toStatus: toStatus as WebsiteOrderStatus,
+    expectedVersion,
+    note
+  };
+}
+
+function mapRealtimeSession(
+  value: unknown,
+  expectedTerminalCode: string,
+  now: number
+): WebsiteRealtimeSession {
+  if (!isRecord(value) || !isRecord(value.terminal)) {
+    throw new Error("The website returned an invalid Realtime session.");
+  }
+  const terminalId = requireUuid(value.terminal.id, "Realtime terminal ID");
+  const terminalCode = requireText(value.terminal.code, "Realtime terminal code", 32);
+  const supabaseUrl = requireText(value.supabaseUrl, "Realtime URL", 500);
+  const publishableKey = requireText(value.publishableKey, "Realtime publishable key", 2_000);
+  const accessToken = requireText(value.accessToken, "Realtime access token", 8_000);
+  const expiresAt = requireTimestamp(value.expiresAt, "Realtime session expiry");
+  const topic = requireText(value.topic, "Realtime topic", 160);
+  if (
+    terminalCode !== expectedTerminalCode
+    || topic !== `pos-order-wake:${terminalId}`
+    || value.event !== "pending_order_may_exist"
+    || !/^https:\/\/[A-Za-z0-9.-]+(?::\d+)?\/?$/.test(supabaseUrl)
+    || !/^[A-Za-z0-9._-]{20,2000}$/.test(publishableKey)
+    || !/^[A-Za-z0-9._-]{20,8000}$/.test(accessToken)
+    || Date.parse(expiresAt) <= now + 60_000
+  ) {
+    throw new Error("The website returned an invalid Realtime session.");
+  }
+  return {
+    supabaseUrl,
+    publishableKey,
+    accessToken,
+    expiresAt,
+    topic,
+    event: "pending_order_may_exist",
+    terminal: {
+      id: terminalId,
+      code: terminalCode,
+      name: requireText(value.terminal.name, "Realtime terminal name", 100),
+      mode: requireOneOf(value.terminal.mode, ["test", "live"] as const, "Realtime terminal mode"),
+      lastHeartbeatAt: requireNullableTimestamp(value.terminal.lastHeartbeatAt, "Realtime heartbeat"),
+      keyRotatedAt: requireTimestamp(value.terminal.keyRotatedAt, "Terminal key rotation"),
+      keyExpiresAt: requireNullableTimestamp(value.terminal.keyExpiresAt, "Terminal key expiry")
+    }
+  };
+}
+
 export function loadWebsiteOrderHttpConfig(
   environment: NodeJS.ProcessEnv,
-  loadTerminalPrivateKey: (terminalCode: string) => KeyObject
+  loadTerminalPrivateKey: (terminalCode: string) => KeyObject,
+  persisted: WebsiteConnectionSettings | null = null
 ): WebsiteOrderHttpConfig | null {
-  const baseUrl = environment.YAMZO_WEBSITE_API_URL?.trim() ?? "";
-  const terminalCode = environment.YAMZO_POS_TERMINAL_CODE?.trim() ?? "";
+  const baseUrl = environment.YAMZO_WEBSITE_API_URL?.trim()
+    || persisted?.baseUrl.trim()
+    || "";
+  const terminalCode = environment.YAMZO_POS_TERMINAL_CODE?.trim()
+    || persisted?.terminalCode.trim()
+    || "";
   const configuredCount = [baseUrl, terminalCode].filter(Boolean).length;
   if (configuredCount === 0) return null;
   if (configuredCount !== 2) {
@@ -193,9 +352,11 @@ export function loadWebsiteOrderHttpConfig(
     baseUrl,
     terminalCode,
     terminalPrivateKey: loadTerminalPrivateKey(terminalCode),
-    includeTestOrders: ["1", "true", "yes"].includes(
-      environment.YAMZO_POS_INCLUDE_TEST_ORDERS?.trim().toLowerCase() ?? ""
-    )
+    includeTestOrders: environment.YAMZO_POS_INCLUDE_TEST_ORDERS === undefined
+      ? Boolean(persisted?.includeTestOrders)
+      : ["1", "true", "yes"].includes(
+          environment.YAMZO_POS_INCLUDE_TEST_ORDERS.trim().toLowerCase()
+        )
   };
   validateConfig(config);
   return config;
@@ -210,7 +371,8 @@ export function startWebsiteOrderSyncScheduler(
   try {
     config = loadWebsiteOrderHttpConfig(
       process.env,
-      dependencies.loadTerminalPrivateKey
+      dependencies.loadTerminalPrivateKey,
+      getSetting<WebsiteConnectionSettings | null>(db, "websiteConnection", null)
     );
   } catch (error) {
     console.error(
@@ -247,6 +409,26 @@ export function startWebsiteOrderSyncScheduler(
     stopped = true;
     clearInterval(timer);
   };
+}
+
+export async function acceptWebsiteOrderFromGateway(
+  db: Database.Database,
+  dependencies: WebsiteOrderSchedulerDependencies,
+  remoteId: string,
+  expectedVersion: number
+): Promise<OrderSummary> {
+  const config = loadWebsiteOrderHttpConfig(
+    process.env,
+    dependencies.loadTerminalPrivateKey,
+    getSetting<WebsiteConnectionSettings | null>(db, "websiteConnection", null)
+  );
+  if (!config) {
+    throw new Error("Yamzo Website Connection is not configured.");
+  }
+  const accepted = await new WebsiteOrderHttpTransport(config)
+    .acceptOrder(remoteId, expectedVersion);
+  importClaimedWebsiteOrderSnapshot(db, accepted);
+  return (await printWebsiteInitialKot(db, accepted.remoteId)).order;
 }
 
 export function buildSignedRequestHeaders(

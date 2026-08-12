@@ -6,11 +6,13 @@ import { openDatabase } from "./database/connection.js";
 import { getDatabasePath } from "./paths.js";
 import { registerIpc } from "./ipc.js";
 import { startDailyEmailScheduler } from "./services/email.js";
-import { startWebsiteOrderSyncScheduler } from "./services/websiteOrderHttpTransport.js";
+import { acceptWebsiteOrderFromGateway } from "./services/websiteOrderHttpTransport.js";
+import { WebsiteOrderConnectionManager } from "./services/websiteOrderConnection.js";
 import {
   loadWebsiteTerminalIdentity,
   parseWebsiteTerminalProvisioningCommand,
   provisionWebsiteTerminalIdentity,
+  restorePreviousWebsiteTerminalIdentity,
   type WebsiteTerminalCredentialProtector
 } from "./services/websiteTerminalCredentials.js";
 
@@ -18,7 +20,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 let mainWindow: BrowserWindow | null = null;
 let stopDailyEmailScheduler: (() => void) | null = null;
-let stopWebsiteOrderSyncScheduler: (() => void) | null = null;
+let websiteOrderConnectionManager: WebsiteOrderConnectionManager | null = null;
 
 const websiteTerminalCredentialProtector: WebsiteTerminalCredentialProtector = {
   isEncryptionAvailable: () => safeStorage.isEncryptionAvailable(),
@@ -154,16 +156,58 @@ app.whenReady()
     }
 
     const db = openDatabase(getDatabasePath());
-    registerIpc(db);
-    stopDailyEmailScheduler = startDailyEmailScheduler(db);
-    stopWebsiteOrderSyncScheduler = startWebsiteOrderSyncScheduler(db, {
-      loadTerminalPrivateKey: (terminalCode) => loadWebsiteTerminalIdentity({
+    const websiteOrderDependencies = {
+      loadTerminalPrivateKey: (terminalCode: string) => loadWebsiteTerminalIdentity({
         terminalCode,
         userDataPath: app.getPath("userData"),
         protector: websiteTerminalCredentialProtector
-      }).privateKey
+      }).privateKey,
+      rotateTerminalIdentity: (terminalCode: string) => provisionWebsiteTerminalIdentity({
+        terminalCode,
+        userDataPath: app.getPath("userData"),
+        protector: websiteTerminalCredentialProtector,
+        rotate: true
+      }),
+      provisionTerminalIdentity: (terminalCode: string) => provisionWebsiteTerminalIdentity({
+        terminalCode,
+        userDataPath: app.getPath("userData"),
+        protector: websiteTerminalCredentialProtector,
+        rotate: false
+      }),
+      restorePreviousTerminalIdentity: (terminalCode: string, backupPath: string) => {
+        restorePreviousWebsiteTerminalIdentity({
+          terminalCode,
+          userDataPath: app.getPath("userData"),
+          protector: websiteTerminalCredentialProtector,
+          previousCredentialBackupPath: backupPath
+        });
+      }
+    };
+    websiteOrderConnectionManager = new WebsiteOrderConnectionManager(db, {
+      ...websiteOrderDependencies,
+      onStatusChanged: (status) => {
+        for (const window of BrowserWindow.getAllWindows()) {
+          window.webContents.send("websiteConnection:statusChanged", status);
+        }
+      },
+      onOrdersChanged: () => {
+        for (const window of BrowserWindow.getAllWindows()) {
+          window.webContents.send("websiteOrders:changed");
+        }
+      }
     });
+    registerIpc(db, {
+      acceptWebsiteOrder: (remoteId, expectedVersion) => acceptWebsiteOrderFromGateway(
+        db,
+        websiteOrderDependencies,
+        remoteId,
+        expectedVersion
+      ),
+      websiteConnection: websiteOrderConnectionManager
+    });
+    stopDailyEmailScheduler = startDailyEmailScheduler(db);
     await createWindow();
+    websiteOrderConnectionManager.start();
   })
   .catch(logStartupError);
 
@@ -176,8 +220,8 @@ app.on("window-all-closed", () => {
 app.on("before-quit", () => {
   stopDailyEmailScheduler?.();
   stopDailyEmailScheduler = null;
-  stopWebsiteOrderSyncScheduler?.();
-  stopWebsiteOrderSyncScheduler = null;
+  websiteOrderConnectionManager?.stop();
+  websiteOrderConnectionManager = null;
 });
 
 app.on("activate", () => {

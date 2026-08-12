@@ -7,6 +7,7 @@ import {
   loadWebsiteTerminalIdentity,
   parseWebsiteTerminalProvisioningCommand,
   provisionWebsiteTerminalIdentity,
+  restorePreviousWebsiteTerminalIdentity,
   type WebsiteTerminalCredentialProtector
 } from "../src/main/services/websiteTerminalCredentials";
 
@@ -137,6 +138,42 @@ describe("website terminal credential provisioning", () => {
       userDataPath,
       protector
     })).toThrow(/integrity check/i);
+  });
+
+  it("restores the protected previous key when remote rotation is not accepted", () => {
+    const userDataPath = temporaryDirectory();
+    const protector = opaqueProtector();
+    const first = provisionWebsiteTerminalIdentity({
+      terminalCode: "YAMZO_UTTARA_01",
+      userDataPath,
+      protector,
+      now: () => new Date("2026-08-08T10:00:00.000Z")
+    });
+    const rotated = provisionWebsiteTerminalIdentity({
+      terminalCode: "YAMZO_UTTARA_01",
+      userDataPath,
+      protector,
+      rotate: true,
+      now: () => new Date("2026-08-09T10:00:00.000Z")
+    });
+
+    const restored = restorePreviousWebsiteTerminalIdentity({
+      terminalCode: "YAMZO_UTTARA_01",
+      userDataPath,
+      protector,
+      previousCredentialBackupPath: rotated.previousCredentialBackupPath!,
+      now: () => new Date("2026-08-09T10:01:00.000Z")
+    });
+
+    expect(restored.identity.registration.publicKeyFingerprint).toBe(
+      first.identity.registration.publicKeyFingerprint
+    );
+    expect(fs.existsSync(restored.displacedCredentialPath)).toBe(true);
+    expect(loadWebsiteTerminalIdentity({
+      terminalCode: "YAMZO_UTTARA_01",
+      userDataPath,
+      protector
+    }).registration.publicKeyFingerprint).toBe(first.identity.registration.publicKeyFingerprint);
   });
 
   it("parses only one bounded packaged provisioning command", () => {

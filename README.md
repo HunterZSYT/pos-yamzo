@@ -144,6 +144,28 @@ printed, or applied to inventory.
 
 Before a schema upgrade, the app creates a transactionally consistent SQLite backup under the local `backups` folder. It keeps the five newest automatic migration backups and aborts the migration if a recovery copy cannot be created.
 
+## Store Installation and Rollback
+
+Build the Windows installer with `npm run dist`. Packaging retains any existing
+installer under the ignored `release-history` folder before creating the new
+release. The release folder includes the NSIS installer, a SHA-256 checksum,
+and `INSTALL-AND-ROLLBACK.txt`.
+
+For a store upgrade, close Yamzo POS, verify the installer checksum, run the
+installer, and launch normally. Do not delete `%APPDATA%\\yamzo-pos`: application
+upgrades preserve SQLite, orders, inventory, printer settings, Google tokens,
+local assets, and the DPAPI-protected Website terminal identity.
+
+This release is not Authenticode-signed unless `Get-AuthenticodeSignature`
+reports `Valid` for the exact installer. An unsigned build may show an Unknown
+publisher warning; use the supplied SHA-256 checksum to verify the copied file.
+
+For rollback, keep Yamzo POS closed, preserve the current AppData and automatic
+database backups, reinstall the retained previous installer, and restore a
+matching pre-migration SQLite backup only if the database itself must be rolled
+back. Keep Public Live Ordering off until login, orders, inventory, printer,
+Website Connection, and diagnostics are healthy.
+
 ## Git Safety
 
 Do not commit:

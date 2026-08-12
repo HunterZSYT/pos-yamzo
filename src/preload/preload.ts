@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron";
-import type { BrandingSettings, EmailSettingsInput, GoogleOAuthClientInput, GoogleSheetsSettingsInput, HistoricalScope, MenuDataSetting, MenuItemInput, MenuTypeSetting, OrderItemInput, OrderSource, PaymentMethod, PhysicalCountInput, PhysicalCountUpdateInput, ReceiptPaymentInfo, RecipeSaveInput, RestockEntryInput, RestockEntryUpdateInput, SalesSummary, WebsiteOrderDetail, WebsiteOrderPrintBatch, WebsiteOrderPrintKind, WebsiteOrderStatus, WebsiteOrderSummary } from "../shared/types.js";
+import type { BrandingSettings, EmailSettingsInput, GoogleOAuthClientInput, GoogleSheetsSettingsInput, HistoricalScope, HistoryRange, Manager, ManagerAuthorization, ManagerInput, MenuDataSetting, MenuItemInput, MenuTypeSetting, OrderDetail, OrderItemInput, OrderSource, OrderSummary, PaymentMethod, PaymentMethodSetting, PhysicalCountInput, PhysicalCountUpdateInput, ReceiptPaymentInfo, RecipeSaveInput, RestockEntryInput, RestockEntryUpdateInput, SalesSummary, WebsiteConnectionDiagnostics, WebsiteConnectionStatus, WebsiteOrderDetail, WebsiteOrderPrintBatch, WebsiteOrderPrintKind, WebsiteOrderStatus, WebsiteOrderSummary } from "../shared/types.js";
 
 const api = {
   auth: {
@@ -65,36 +65,76 @@ const api = {
     deleteItem: (id: number) => ipcRenderer.invoke("menu:deleteItem", id)
   },
   orders: {
-    create: (input: { source: OrderSource; tableNumber?: string; note?: string; externalOrderId?: string | null; orderDate?: string }) => ipcRenderer.invoke("orders:create", input),
+    create: (input: { source: OrderSource; tableNumber?: string; guestCount?: number; hostName?: string; requiresKot?: boolean; note?: string; externalOrderId?: string | null; orderDate?: string }): Promise<OrderSummary> => ipcRenderer.invoke("orders:create", input),
     addItem: (orderId: number, input: OrderItemInput) => ipcRenderer.invoke("orders:addItem", orderId, input),
     sendKitchen: (orderId: number, allowExternal?: boolean) => ipcRenderer.invoke("orders:sendKitchen", orderId, allowExternal),
     discount: (orderId: number, discount: number) => ipcRenderer.invoke("orders:discount", orderId, discount),
     updateNote: (orderId: number, note: string) => ipcRenderer.invoke("orders:updateNote", orderId, note),
-    updateInfo: (orderId: number, input: { source: OrderSource; tableNumber?: string | null; note?: string | null; externalOrderId?: string | null }) =>
+    updateInfo: (orderId: number, input: { source: OrderSource; tableNumber?: string | null; guestCount?: number; hostName?: string | null; note?: string | null; externalOrderId?: string | null }) =>
       ipcRenderer.invoke("orders:updateInfo", orderId, input),
     updateDate: (orderId: number, orderDate: string) => ipcRenderer.invoke("orders:updateDate", orderId, orderDate),
     updateItem: (orderItemId: number, input: { quantity: number; note?: string | null; parcel?: boolean }) => ipcRenderer.invoke("orders:updateItem", orderItemId, input),
     removeItem: (orderItemId: number, reason?: string) => ipcRenderer.invoke("orders:removeItem", orderItemId, reason),
-    settle: (orderId: number, method: PaymentMethod, amount?: number, reference?: string, host?: string) => ipcRenderer.invoke("orders:settle", orderId, method, amount, reference, host),
+    swapItem: (orderItemId: number, replacement: OrderItemInput | null, authorization: ManagerAuthorization): Promise<{ order: OrderDetail; voidPrintJobId: number; adjustmentPrintJobId: number }> => ipcRenderer.invoke("orders:swapItem", orderItemId, replacement, authorization),
+    recordPayment: (orderId: number, input: { method: PaymentMethod; cashReceived?: number; reference?: string; hostName?: string }): Promise<OrderSummary> => ipcRenderer.invoke("orders:recordPayment", orderId, input),
+    completePaid: (orderId: number): Promise<OrderSummary> => ipcRenderer.invoke("orders:completePaid", orderId),
     cancel: (orderId: number, reason?: string) => ipcRenderer.invoke("orders:cancel", orderId, reason),
     reopen: (orderId: number) => ipcRenderer.invoke("orders:reopen", orderId),
-    markKitchenDelivered: (orderId: number) => ipcRenderer.invoke("orders:markKitchenDelivered", orderId),
     restartKitchenTimer: (orderId: number) => ipcRenderer.invoke("orders:restartKitchenTimer", orderId),
-    markKitchenBatchDelivered: (ticketId: number) => ipcRenderer.invoke("orders:markKitchenBatchDelivered", ticketId),
     restartKitchenBatchTimer: (ticketId: number) => ipcRenderer.invoke("orders:restartKitchenBatchTimer", ticketId),
-    detail: (orderId: number) => ipcRenderer.invoke("orders:detail", orderId),
-    open: () => ipcRenderer.invoke("orders:open"),
-    history: () => ipcRenderer.invoke("orders:history"),
+    detail: (orderId: number): Promise<OrderDetail> => ipcRenderer.invoke("orders:detail", orderId),
+    open: (): Promise<OrderSummary[]> => ipcRenderer.invoke("orders:open"),
+    history: (): Promise<OrderSummary[]> => ipcRenderer.invoke("orders:history"),
+    retryInitialKot: (orderId: number): Promise<OrderDetail> => ipcRenderer.invoke("orders:retryInitialKot", orderId),
+    retryAdjustmentKots: (orderId: number): Promise<OrderDetail> => ipcRenderer.invoke("orders:retryAdjustmentKots", orderId),
     reprintKitchen: (orderId: number) => ipcRenderer.invoke("orders:reprintKitchen", orderId),
     reprintReceipt: (orderId: number) => ipcRenderer.invoke("orders:reprintReceipt", orderId),
-    printBill: (orderId: number, paymentInfo?: ReceiptPaymentInfo) => ipcRenderer.invoke("orders:printBill", orderId, paymentInfo),
+    printBill: (orderId: number, paymentInfo?: ReceiptPaymentInfo, reprint?: boolean) => ipcRenderer.invoke("orders:printBill", orderId, paymentInfo, reprint),
+    retryBill: (orderId: number): Promise<OrderDetail> => ipcRenderer.invoke("orders:retryBill", orderId),
     printAudit: (orderId: number) => ipcRenderer.invoke("orders:printAudit", orderId)
+  },
+  managers: {
+    list: (includeInactive?: boolean): Promise<Manager[]> => ipcRenderer.invoke("managers:list", includeInactive),
+    save: (input: ManagerInput): Promise<Manager> => ipcRenderer.invoke("managers:save", input),
+    verify: (managerId: number, pin: string): Promise<Manager> => ipcRenderer.invoke("managers:verify", managerId, pin)
+  },
+  operations: {
+    kotHistory: (range?: HistoryRange) => ipcRenderer.invoke("operations:kotHistory", range),
+    swapHistory: (range?: HistoryRange) => ipcRenderer.invoke("operations:swapHistory", range)
   },
   websiteOrders: {
     list: (statuses?: WebsiteOrderStatus[]): Promise<WebsiteOrderSummary[]> => ipcRenderer.invoke("websiteOrders:list", statuses),
     detail: (remoteId: string): Promise<WebsiteOrderDetail> => ipcRenderer.invoke("websiteOrders:detail", remoteId),
+    accept: (remoteId: string, expectedVersion: number): Promise<OrderSummary> =>
+      ipcRenderer.invoke("websiteOrders:accept", remoteId, expectedVersion),
     queuePrint: (remoteId: string, kind?: WebsiteOrderPrintKind | "both"): Promise<WebsiteOrderPrintBatch> =>
-      ipcRenderer.invoke("websiteOrders:queuePrint", remoteId, kind)
+      ipcRenderer.invoke("websiteOrders:queuePrint", remoteId, kind),
+    retryInitialKot: (remoteId: string): Promise<OrderSummary> =>
+      ipcRenderer.invoke("websiteOrders:retryInitialKot", remoteId),
+    retryInitialKotForOrder: (orderId: number): Promise<OrderSummary> =>
+      ipcRenderer.invoke("websiteOrders:retryInitialKotForOrder", orderId),
+    advanceLifecycle: (orderId: number, target: "ready" | "out_for_delivery"): Promise<number> =>
+      ipcRenderer.invoke("websiteOrders:advanceLifecycle", orderId, target),
+    onChanged: (listener: () => void) => {
+      const handler = () => listener();
+      ipcRenderer.on("websiteOrders:changed", handler);
+      return () => ipcRenderer.removeListener("websiteOrders:changed", handler);
+    }
+  },
+  websiteConnection: {
+    status: (): Promise<WebsiteConnectionStatus | null> => ipcRenderer.invoke("websiteConnection:status"),
+    diagnostics: (): Promise<WebsiteConnectionDiagnostics | null> => ipcRenderer.invoke("websiteConnection:diagnostics"),
+    test: (): Promise<WebsiteConnectionStatus> => ipcRenderer.invoke("websiteConnection:test"),
+    reconnect: (): Promise<WebsiteConnectionStatus> => ipcRenderer.invoke("websiteConnection:reconnect"),
+    register: (baseUrl: string, registrationCode: string): Promise<WebsiteConnectionStatus> =>
+      ipcRenderer.invoke("websiteConnection:register", baseUrl, registrationCode),
+    disconnect: (): Promise<WebsiteConnectionStatus> => ipcRenderer.invoke("websiteConnection:disconnect"),
+    rotateKey: (): Promise<WebsiteConnectionStatus> => ipcRenderer.invoke("websiteConnection:rotateKey"),
+    onStatusChanged: (listener: (status: WebsiteConnectionStatus) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, status: WebsiteConnectionStatus) => listener(status);
+      ipcRenderer.on("websiteConnection:statusChanged", handler);
+      return () => ipcRenderer.removeListener("websiteConnection:statusChanged", handler);
+    }
   },
   print: {
     listJobs: (status?: string) => ipcRenderer.invoke("print:listJobs", status),
@@ -118,6 +158,8 @@ const api = {
     setTotalTables: (totalTables: number) => ipcRenderer.invoke("settings:setTotalTables", totalTables),
     getHostNames: () => ipcRenderer.invoke("settings:getHostNames"),
     setHostNames: (hostNames: string[]) => ipcRenderer.invoke("settings:setHostNames", hostNames),
+    getPaymentMethods: (): Promise<PaymentMethodSetting[]> => ipcRenderer.invoke("settings:getPaymentMethods"),
+    setPaymentMethods: (methods: PaymentMethodSetting[]) => ipcRenderer.invoke("settings:setPaymentMethods", methods),
     getMenuCategories: () => ipcRenderer.invoke("settings:getMenuCategories"),
     setMenuCategories: (categories: string[]) => ipcRenderer.invoke("settings:setMenuCategories", categories),
     getMenuData: () => ipcRenderer.invoke("settings:getMenuData"),

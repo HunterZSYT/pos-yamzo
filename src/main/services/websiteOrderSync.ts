@@ -1,8 +1,15 @@
 import type Database from "better-sqlite3";
-import type { WebsiteOrderSnapshot, WebsiteOutboxEvent } from "../../shared/types.js";
+import type {
+  WebsiteOrderSnapshot,
+  WebsiteOutboxEvent,
+  WebsiteTransitionResult
+} from "../../shared/types.js";
 import {
+  applyWebsiteTransitionResults,
   getWebsiteSyncCursor,
   importWebsiteOrderSnapshots,
+  recoverAcceptedWebsiteOrders,
+  recoverWebsiteOrderLifecycleOutbox,
   listPendingWebsiteOutbox,
   markWebsiteOutboxFailed,
   markWebsiteOutboxSent,
@@ -21,7 +28,11 @@ export interface WebsiteOrderPullResult {
  */
 export interface WebsiteOrderSyncTransport {
   pullOrders(cursor: string | null, limit: number): Promise<WebsiteOrderPullResult>;
-  pushEvents(events: WebsiteOutboxEvent[]): Promise<{ acceptedEventIds: number[] }>;
+  acceptOrder(remoteId: string, expectedVersion: number): Promise<WebsiteOrderSnapshot>;
+  pushEvents(events: WebsiteOutboxEvent[]): Promise<{
+    acceptedEventIds: number[];
+    transitions?: WebsiteTransitionResult[];
+  }>;
 }
 
 export interface WebsiteOrderSyncResult extends WebsiteOrderImportResult {
@@ -39,6 +50,8 @@ export class WebsiteOrderSyncService {
     const cursor = getWebsiteSyncCursor(this.db);
     const pulled = await this.transport.pullOrders(cursor, 50);
     const imported = importWebsiteOrderSnapshots(this.db, pulled.orders);
+    recoverAcceptedWebsiteOrders(this.db);
+    recoverWebsiteOrderLifecycleOutbox(this.db);
     setWebsiteSyncCursor(this.db, pulled.nextCursor);
 
     const events = listPendingWebsiteOutbox(this.db, 50);
@@ -47,6 +60,7 @@ export class WebsiteOrderSyncService {
       const pushed = await this.transport.pushEvents(events);
       const eventIds = new Set(events.map((event) => event.id));
       const accepted = Array.from(new Set(pushed.acceptedEventIds)).filter((id) => eventIds.has(id));
+      applyWebsiteTransitionResults(this.db, pushed.transitions ?? []);
       markWebsiteOutboxSent(this.db, accepted);
       const rejected = events.map((event) => event.id).filter((id) => !accepted.includes(id));
       if (rejected.length > 0) markWebsiteOutboxFailed(this.db, rejected, "Remote sync did not acknowledge the event.");

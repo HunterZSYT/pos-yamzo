@@ -1,0 +1,459 @@
+- generic [ref=e2]:
+  - banner [ref=e3]:
+    - generic [ref=e4]:
+      - link [ref=e5] [cursor=pointer]:
+        - /url: /
+        - img "Yamzo Uttara" [ref=e6]
+        - generic [ref=e7]:
+          - paragraph [ref=e8]: Yamzo Uttara
+          - paragraph [ref=e9]: Taste the fun
+      - navigation "Primary navigation" [ref=e10]:
+        - link "Menu" [ref=e11] [cursor=pointer]:
+          - /url: "#menu"
+        - link "Track order" [ref=e12] [cursor=pointer]:
+          - /url: /order-status
+      - generic [ref=e13]:
+        - button "Switch to Bangla" [ref=e14] [cursor=pointer]:
+          - generic [ref=e15]: বাংলা
+        - link "Sign in" [ref=e16] [cursor=pointer]:
+          - /url: /login?next=/
+  - main [ref=e17]:
+    - generic [ref=e20]:
+      - generic [ref=e21]:
+        - paragraph [ref=e22]: Made fresh in Uttara
+        - heading "Seafood cravings, sorted." [level=1] [ref=e27]
+        - paragraph [ref=e28]: Yamzo favourites, direct prices, and live kitchen updates—delivered across Uttara.
+        - generic [ref=e29]:
+          - link "Explore the menu" [ref=e30] [cursor=pointer]:
+            - /url: "#menu"
+          - link "Check an order" [ref=e31] [cursor=pointer]:
+            - /url: /order-status
+      - generic [ref=e32]:
+        - link "Google rating 4.8 4.8 out of 5 stars 32 reviews Google Maps · supplied snapshot" [ref=e33] [cursor=pointer]:
+          - /url: https://www.google.com/search?q=Yamzo+Uttara+reviews
+          - generic [ref=e34]:
+            - generic [ref=e35]:
+              - paragraph [ref=e36]: Google rating
+              - paragraph [ref=e37]: "4.8"
+            - generic [ref=e38]:
+              - generic "4.8 out of 5 stars" [ref=e39]
+              - paragraph [ref=e50]: 32 reviews
+          - paragraph [ref=e51]:
+            - generic [ref=e52]: Google Maps · supplied snapshot
+        - generic [ref=e55]:
+          - paragraph [ref=e60]: Uttara delivery
+          - paragraph [ref=e65]: Online ordering is currently in test mode.
+    - region "Service assurances" [ref=e66]:
+      - generic [ref=e67]:
+        - generic [ref=e72]:
+          - paragraph [ref=e73]: Direct menu prices
+          - paragraph [ref=e74]: No marketplace markup
+        - generic [ref=e82]:
+          - paragraph [ref=e83]: Kitchen-connected
+          - paragraph [ref=e84]: Live preparation updates
+        - generic [ref=e90]:
+          - paragraph [ref=e91]: Made for Uttara
+          - paragraph [ref=e92]: Focused local delivery
+    - region [ref=e93]:
+      - generic [ref=e94]:
+        - generic [ref=e95]:
+          - paragraph [ref=e96]: Explore Yamzo
+          - heading "Explore the menu" [level=2] [ref=e97]
+        - link "Full menu" [ref=e98] [cursor=pointer]:
+          - /url: "#menu"
+      - navigation "Menu categories" [ref=e101]:
+        - link "Seafood" [ref=e102] [cursor=pointer]:
+          - /url: "#menu"
+        - link "Fish & Chips" [ref=e103] [cursor=pointer]:
+          - /url: "#menu"
+        - link "Momo" [ref=e104] [cursor=pointer]:
+          - /url: "#menu"
+        - link "Pasta & Chow Mein" [ref=e105] [cursor=pointer]:
+          - /url: "#menu"
+        - link "Soup" [ref=e106] [cursor=pointer]:
+          - /url: "#menu"
+        - link "Chicken" [ref=e107] [cursor=pointer]:
+          - /url: "#menu"
+        - link "Rice & Sides" [ref=e108] [cursor=pointer]:
+          - /url: "#menu"
+        - link "Shingara" [ref=e109] [cursor=pointer]:
+          - /url: "#menu"
+        - link "Sauces" [ref=e110] [cursor=pointer]:
+          - /url: "#menu"
+      - article [ref=e112]:
+        - button "Seafood Rice Bowl, BDT 390" [ref=e113] [cursor=pointer]:
+          - generic [ref=e114]:
+            - img "Seafood rice bowl with crab, prawn, squid and dory" [ref=e115]
+            - generic [ref=e116]: Popular
+          - generic [ref=e120]:
+            - heading "Seafood Rice Bowl" [level=3] [ref=e121]
+            - paragraph [ref=e122]: Rice with half a crab, 2 prawns, 2 squid pieces and 2–3 dory pieces.
+            - paragraph [ref=e124]: BDT 390
+    - region [ref=e125]:
+      - generic [ref=e126]:
+        - generic [ref=e127]:
+          - generic [ref=e128]:
+            - paragraph [ref=e129]: Everything Yamzo
+            - heading "Made for Uttara" [level=2] [ref=e130]
+            - paragraph [ref=e131]: Freshly prepared by Yamzo Uttara.
+          - searchbox "Search the menu" [ref=e136]
+        - navigation "Menu categories" [ref=e137]:
+          - button "All" [pressed] [ref=e138] [cursor=pointer]
+          - button "Seafood" [ref=e139] [cursor=pointer]
+          - button "Fish & Chips" [ref=e140] [cursor=pointer]
+          - button "Momo" [ref=e141] [cursor=pointer]
+          - button "Pasta & Chow Mein" [ref=e142] [cursor=pointer]
+          - button "Soup" [ref=e143] [cursor=pointer]
+          - button "Chicken" [ref=e144] [cursor=pointer]
+          - button "Rice & Sides" [ref=e145] [cursor=pointer]
+          - button "Shingara" [ref=e146] [cursor=pointer]
+          - button "Sauces" [ref=e147] [cursor=pointer]
+        - paragraph [ref=e148]: 46 items
+        - generic [ref=e149]:
+          - generic [ref=e151]:
+            - article [ref=e152]:
+              - button "Fried Calamari, BDT 290" [ref=e153] [cursor=pointer]:
+                - img "Fried calamari with tartar sauce and lime" [ref=e155]
+                - generic [ref=e158]:
+                  - heading "Fried Calamari" [level=3] [ref=e159]
+                  - paragraph [ref=e160]: Imported squid, crispy outside and tender inside, served with tartar sauce.
+                  - paragraph [ref=e162]: BDT 290
+            - article [ref=e163]:
+              - button "Grill Calamari, BDT 320" [ref=e164] [cursor=pointer]:
+                - img "Grilled calamari with lemon" [ref=e166]
+                - generic [ref=e169]:
+                  - heading "Grill Calamari" [level=3] [ref=e170]
+                  - paragraph [ref=e171]: Imported squid with Cajun spice and garlic lemon butter sauce.
+                  - paragraph [ref=e173]: BDT 320
+            - article [ref=e174]:
+              - button "Golden Fish Finger, BDT 195" [ref=e175] [cursor=pointer]:
+                - img "Golden fried fish fingers with tartar sauce" [ref=e177]
+                - generic [ref=e180]:
+                  - heading "Golden Fish Finger" [level=3] [ref=e181]
+                  - paragraph [ref=e182]: Fried imported dory fish served with tartar sauce.
+                  - paragraph [ref=e184]: BDT 195
+            - article [ref=e185]:
+              - button "Fish Nugget, BDT 190" [ref=e186] [cursor=pointer]:
+                - img "Crispy fish nuggets with tartar sauce" [ref=e188]
+                - generic [ref=e191]:
+                  - heading "Fish Nugget" [level=3] [ref=e192]
+                  - paragraph [ref=e193]: Crispy imported dory fish nuggets served with tartar sauce.
+                  - paragraph [ref=e195]: BDT 190
+            - article [ref=e196]:
+              - button "Octopus Fry, BDT 295" [ref=e197] [cursor=pointer]:
+                - img "Yamzo octopus specials" [ref=e199]
+                - generic [ref=e202]:
+                  - heading "Octopus Fry" [level=3] [ref=e203]
+                  - paragraph [ref=e204]: Sea-fresh octopus fried and served with chili sauce.
+                  - paragraph [ref=e206]: BDT 295
+            - article [ref=e207]:
+              - button "BBQ Octopus Masala, BDT 355" [ref=e208] [cursor=pointer]:
+                - img "Yamzo octopus specials" [ref=e210]
+                - generic [ref=e213]:
+                  - heading "BBQ Octopus Masala" [level=3] [ref=e214]
+                  - paragraph [ref=e215]: Sea-fresh octopus cooked with smoky BBQ masala and chili sauce.
+                  - paragraph [ref=e217]: BDT 355
+            - article [ref=e218]:
+              - button "Signature Octopus Masala, BDT 395" [ref=e219] [cursor=pointer]:
+                - img "Yamzo octopus specials" [ref=e221]
+                - generic [ref=e224]:
+                  - heading "Signature Octopus Masala" [level=3] [ref=e225]
+                  - paragraph [ref=e226]: Yamzo house octopus masala made with sea-fresh octopus.
+                  - paragraph [ref=e228]: BDT 395
+            - article [ref=e229]:
+              - button "Crispy Prawn, BDT 295" [ref=e230] [cursor=pointer]:
+                - img "Crispy prawns with dipping sauce" [ref=e232]
+                - generic [ref=e235]:
+                  - heading "Crispy Prawn" [level=3] [ref=e236]
+                  - paragraph [ref=e237]: Queen-size crispy prawns with a choice of included sauce.
+                  - paragraph [ref=e239]: BDT 295
+            - article [ref=e240]:
+              - button "Hot Fry Crab, BDT 195" [ref=e241] [cursor=pointer]:
+                - img "Hot fried whole crab" [ref=e243]
+                - generic [ref=e246]:
+                  - heading "Hot Fry Crab" [level=3] [ref=e247]
+                  - paragraph [ref=e248]: Exotic Blue Sun Crab served with tomato or chili ketchup.
+                  - paragraph [ref=e250]: BDT 195
+            - article [ref=e251]:
+              - button "Loitta Fry, BDT 175" [ref=e252] [cursor=pointer]:
+                - img "Crispy loitta fry with lemon" [ref=e254]
+                - generic [ref=e257]:
+                  - heading "Loitta Fry" [level=3] [ref=e258]
+                  - paragraph [ref=e259]: Crispy fried deshi sea loitta served with ketchup.
+                  - paragraph [ref=e261]: BDT 175
+            - article [ref=e262]:
+              - button "Spicy Crab Masala, BDT 225" [ref=e263] [cursor=pointer]:
+                - img "Yamzo crab masala specials" [ref=e265]
+                - generic [ref=e268]:
+                  - heading "Spicy Crab Masala" [level=3] [ref=e269]
+                  - paragraph [ref=e270]: Exotic Blue Sun Crab cooked in spicy masala.
+                  - paragraph [ref=e272]: BDT 225
+            - article [ref=e273]:
+              - button "Signature Crab Masala, BDT 265" [ref=e274] [cursor=pointer]:
+                - img "Yamzo crab masala specials" [ref=e276]
+                - generic [ref=e279]:
+                  - heading "Signature Crab Masala" [level=3] [ref=e280]
+                  - paragraph [ref=e281]: Yamzo house crab masala made with Exotic Blue Sun Crab.
+                  - paragraph [ref=e283]: BDT 265
+            - article [ref=e284]:
+              - button "Danish Fish and Chips, BDT 375" [ref=e285] [cursor=pointer]:
+                - img "Danish fish and chips with tartar sauce" [ref=e287]
+                - generic [ref=e290]:
+                  - heading "Danish Fish and Chips" [level=3] [ref=e291]
+                  - paragraph [ref=e292]: Crispy fish and chips with mozzarella, served with tartar sauce.
+                  - paragraph [ref=e294]: BDT 375
+            - article [ref=e295]:
+              - button "Swiss Fish and Chips, BDT 355" [ref=e296] [cursor=pointer]:
+                - img "Swiss fish and chips with tartar sauce" [ref=e298]
+                - generic [ref=e301]:
+                  - heading "Swiss Fish and Chips" [level=3] [ref=e302]
+                  - paragraph [ref=e303]: Crispy fish and chips with oregano and mozzarella, served with tartar sauce.
+                  - paragraph [ref=e305]: BDT 355
+            - article [ref=e306]:
+              - button "Bengali Fish and Chips, BDT 335" [ref=e307] [cursor=pointer]:
+                - img "Bengali fish and chips with tartar sauce" [ref=e309]
+                - generic [ref=e312]:
+                  - heading "Bengali Fish and Chips" [level=3] [ref=e313]
+                  - paragraph [ref=e314]: Crispy fish and chips seasoned with Bengali spice, served with tartar sauce.
+                  - paragraph [ref=e316]: BDT 335
+            - article [ref=e317]:
+              - button "Best Fish and Chips, BDT 320" [ref=e318] [cursor=pointer]:
+                - img "Yamzo best fish and chips with tartar sauce" [ref=e320]
+                - generic [ref=e323]:
+                  - heading "Best Fish and Chips" [level=3] [ref=e324]
+                  - paragraph [ref=e325]: Fluffy, crispy, no-spice fish and chips served with tartar sauce.
+                  - paragraph [ref=e327]: BDT 320
+            - article [ref=e328]:
+              - button "Chicken Momo, BDT 195" [ref=e329] [cursor=pointer]:
+                - img "Round chicken momo in a bamboo steamer" [ref=e331]
+                - generic [ref=e334]:
+                  - heading "Chicken Momo" [level=3] [ref=e335]
+                  - paragraph [ref=e336]: Homemade momo skin with chicken filling and in-house sauce.
+                  - paragraph [ref=e338]: BDT 195
+            - article [ref=e339]:
+              - button "Chicken Cheese Momo, BDT 245" [ref=e340] [cursor=pointer]:
+                - img "Round chicken and cheese momo in a bamboo steamer" [ref=e342]
+                - generic [ref=e345]:
+                  - heading "Chicken Cheese Momo" [level=3] [ref=e346]
+                  - paragraph [ref=e347]: Homemade momo skin with chicken-cheese filling and in-house sauce.
+                  - paragraph [ref=e349]: BDT 245
+            - article [ref=e350]:
+              - button "Naga Chicken Momo, BDT 210" [ref=e351] [cursor=pointer]:
+                - img "Crescent-shaped momo in a bamboo steamer" [ref=e353]
+                - generic [ref=e356]:
+                  - heading "Naga Chicken Momo" [level=3] [ref=e357]
+                  - paragraph [ref=e358]: Homemade momo skin with chicken-naga filling and in-house sauce.
+                  - paragraph [ref=e360]: BDT 210
+            - article [ref=e361]:
+              - button "Twin Flavor Momo, BDT 295" [ref=e362] [cursor=pointer]:
+                - img "Crescent-shaped twin flavor momo in a bamboo steamer" [ref=e364]
+                - generic [ref=e367]:
+                  - heading "Twin Flavor Momo" [level=3] [ref=e368]
+                  - paragraph [ref=e369]: Chicken and prawn filling wrapped in homemade momo skin, served with in-house sauce.
+                  - paragraph [ref=e371]: BDT 295
+            - article [ref=e372]:
+              - button "Dumpling with Chili Soup, BDT 345" [ref=e373] [cursor=pointer]:
+                - img "Chicken momo served in chili soup" [ref=e375]
+                - generic [ref=e378]:
+                  - heading "Dumpling with Chili Soup" [level=3] [ref=e379]
+                  - paragraph [ref=e380]: Chinese-style chili soup with chicken momo and in-house sauce.
+                  - paragraph [ref=e382]: BDT 345
+            - article [ref=e383]:
+              - button "Seafood Chilli Pasta, BDT 439" [ref=e384] [cursor=pointer]:
+                - img "Seafood chilli pasta with crab, prawn and calamari" [ref=e386]
+                - generic [ref=e389]:
+                  - heading "Seafood Chilli Pasta" [level=3] [ref=e390]
+                  - paragraph [ref=e391]: Pasta with 2 octopus rings, 2–3 dory cubes, 2 prawns and half a crab.
+                  - paragraph [ref=e393]: BDT 439
+            - article [ref=e394]:
+              - button "White Cream Pasta, BDT 399" [ref=e395] [cursor=pointer]:
+                - img "Penne pasta in creamy white sauce" [ref=e397]
+                - generic [ref=e400]:
+                  - heading "White Cream Pasta" [level=3] [ref=e401]
+                  - paragraph [ref=e402]: Chicken pasta with a rich, creamy white sauce.
+                  - paragraph [ref=e404]: BDT 399
+            - article [ref=e405]:
+              - button "Chicken Chow Mein, BDT 185" [ref=e406] [cursor=pointer]:
+                - img "Chicken chow mein with mixed vegetables" [ref=e408]
+                - generic [ref=e411]:
+                  - heading "Chicken Chow Mein" [level=3] [ref=e412]
+                  - paragraph [ref=e413]: Chow mein with 6–8 pieces of finger-cut chicken, mixed vegetables and tomato sauce.
+                  - paragraph [ref=e415]: BDT 185
+            - article [ref=e416]:
+              - button "Signature Seafood Soup, BDT 280" [ref=e417] [cursor=pointer]:
+                - img "Clear seafood soup with prawn, crab and calamari" [ref=e419]
+                - generic [ref=e422]:
+                  - heading "Signature Seafood Soup" [level=3] [ref=e423]
+                  - paragraph [ref=e424]: Clear soup with squid, prawn, crab and dory.
+                  - paragraph [ref=e426]: BDT 280
+            - article [ref=e427]:
+              - button "Thai Thick Soup, BDT 189" [ref=e428] [cursor=pointer]:
+                - img "Thai thick soup with chicken, prawn and mushroom" [ref=e430]
+                - generic [ref=e433]:
+                  - heading "Thai Thick Soup" [level=3] [ref=e434]
+                  - paragraph [ref=e435]: Thick Thai-style soup with chicken, prawn and mushroom.
+                  - paragraph [ref=e437]: BDT 189
+            - article [ref=e438]:
+              - button "Cream of Mushroom Soup, BDT 255" [ref=e439] [cursor=pointer]:
+                - img "Cream of mushroom soup" [ref=e441]
+                - generic [ref=e444]:
+                  - heading "Cream of Mushroom Soup" [level=3] [ref=e445]
+                  - paragraph [ref=e446]: Cream soup with shiitake and button mushrooms and fresh thyme.
+                  - paragraph [ref=e448]: BDT 255
+            - article [ref=e449]:
+              - button "Chicken Nanban, BDT 230" [ref=e450] [cursor=pointer]:
+                - img "Crispy chicken nanban with tartar sauce" [ref=e452]
+                - generic [ref=e455]:
+                  - heading "Chicken Nanban" [level=3] [ref=e456]
+                  - paragraph [ref=e457]: Boneless Thai chicken with egg and spice, served with tartar sauce.
+                  - paragraph [ref=e459]: BDT 230
+            - article [ref=e460]:
+              - button "Chicken Popcorn, BDT 190" [ref=e461] [cursor=pointer]:
+                - img "Crispy chicken popcorn with ketchup" [ref=e463]
+                - generic [ref=e466]:
+                  - heading "Chicken Popcorn" [level=3] [ref=e467]
+                  - paragraph [ref=e468]: Crunchy popcorn-cut chicken served with tomato ketchup.
+                  - paragraph [ref=e470]: BDT 190
+            - article [ref=e471]:
+              - button "Chicken Tempura, BDT 210" [ref=e472] [cursor=pointer]:
+                - img "Chicken tempura with lemon and ketchup" [ref=e474]
+                - generic [ref=e477]:
+                  - heading "Chicken Tempura" [level=3] [ref=e478]
+                  - paragraph [ref=e479]: Finger-cut chicken fried tempura-style, served with tomato ketchup.
+                  - paragraph [ref=e481]: BDT 210
+            - article [ref=e482]:
+              - button "Chicken Katsu with Fries, BDT 290" [ref=e483] [cursor=pointer]:
+                - img "Sliced chicken katsu with fries and tartar sauce" [ref=e485]
+                - generic [ref=e488]:
+                  - heading "Chicken Katsu with Fries" [level=3] [ref=e489]
+                  - paragraph [ref=e490]: Crispy chicken katsu with fries and tartar sauce.
+                  - paragraph [ref=e492]: BDT 290
+            - article [ref=e493]:
+              - button "Garlic Mushroom, BDT 290" [ref=e494] [cursor=pointer]:
+                - img "Garlic button mushrooms" [ref=e496]
+                - generic [ref=e499]:
+                  - heading "Garlic Mushroom" [level=3] [ref=e500]
+                  - paragraph [ref=e501]: Button mushrooms tossed with chopped garlic and in-house spice.
+                  - paragraph [ref=e503]: BDT 290
+            - article [ref=e504]:
+              - button "Seafood Rice Bowl, BDT 390" [ref=e505] [cursor=pointer]:
+                - generic [ref=e506]:
+                  - img "Seafood rice bowl with crab, prawn, squid and dory" [ref=e507]
+                  - generic [ref=e508]: Popular
+                - generic [ref=e512]:
+                  - heading "Seafood Rice Bowl" [level=3] [ref=e513]
+                  - paragraph [ref=e514]: Rice with half a crab, 2 prawns, 2 squid pieces and 2–3 dory pieces.
+                  - paragraph [ref=e516]: BDT 390
+            - article [ref=e517]:
+              - button "Garlic Chicken Fried Rice, BDT 270" [ref=e518] [cursor=pointer]:
+                - img "Garlic chicken fried rice" [ref=e520]
+                - generic [ref=e523]:
+                  - heading "Garlic Chicken Fried Rice" [level=3] [ref=e524]
+                  - paragraph [ref=e525]: Garlic chicken fried rice.
+                  - paragraph [ref=e527]: BDT 270
+            - article [ref=e528]:
+              - button "Fried Rice Meal, BDT 190" [ref=e529] [cursor=pointer]:
+                - generic [ref=e538]:
+                  - heading "Fried Rice Meal" [level=3] [ref=e539]
+                  - paragraph [ref=e540]: Fried rice meal with chicken, vegetables and salad.
+                  - paragraph [ref=e542]: BDT 190
+            - article [ref=e543]:
+              - button "Masala French Fries, BDT 120" [ref=e544] [cursor=pointer]:
+                - img "French fries tossed in Yamzo masala" [ref=e546]
+                - generic [ref=e549]:
+                  - heading "Masala French Fries" [level=3] [ref=e550]
+                  - paragraph [ref=e551]: Crispy French fries tossed in Yamzo masala.
+                  - paragraph [ref=e553]: BDT 120
+            - article [ref=e554]:
+              - button "Naga Shingara, BDT 60" [ref=e555] [cursor=pointer]:
+                - img "Assorted Yamzo shingara" [ref=e557]
+                - generic [ref=e560]:
+                  - heading "Naga Shingara" [level=3] [ref=e561]
+                  - paragraph [ref=e562]: Crispy shingara filled with fiery naga flavor.
+                  - paragraph [ref=e564]: From BDT 60
+            - article [ref=e565]:
+              - button "Chicken Shingara, BDT 90" [ref=e566] [cursor=pointer]:
+                - img "Assorted Yamzo shingara" [ref=e568]
+                - generic [ref=e571]:
+                  - heading "Chicken Shingara" [level=3] [ref=e572]
+                  - paragraph [ref=e573]: Crispy shingara with savory chicken filling.
+                  - paragraph [ref=e575]: From BDT 90
+            - article [ref=e576]:
+              - button "Mutton Liver Shingara, BDT 120" [ref=e577] [cursor=pointer]:
+                - img "Assorted Yamzo shingara" [ref=e579]
+                - generic [ref=e582]:
+                  - heading "Mutton Liver Shingara" [level=3] [ref=e583]
+                  - paragraph [ref=e584]: Crispy shingara filled with rich mutton liver stuffing.
+                  - paragraph [ref=e586]: From BDT 120
+            - article [ref=e587]:
+              - button "Shingara Combo Pack, BDT 160" [ref=e588] [cursor=pointer]:
+                - img "Assorted Yamzo shingara" [ref=e590]
+                - generic [ref=e593]:
+                  - heading "Shingara Combo Pack" [level=3] [ref=e594]
+                  - paragraph [ref=e595]: 3 naga, 3 chicken and 3 mutton liver shingara.
+                  - paragraph [ref=e597]: From BDT 160
+            - article [ref=e598]:
+              - button "Tartar Sauce, BDT 10" [ref=e599] [cursor=pointer]:
+                - generic [ref=e608]:
+                  - heading "Tartar Sauce" [level=3] [ref=e609]
+                  - paragraph [ref=e610]: Extra tartar sauce.
+                  - paragraph [ref=e612]: BDT 10
+            - article [ref=e613]:
+              - button "Spicy Mango Sauce, BDT 20" [ref=e614] [cursor=pointer]:
+                - generic [ref=e623]:
+                  - heading "Spicy Mango Sauce" [level=3] [ref=e624]
+                  - paragraph [ref=e625]: Extra spicy mango sauce.
+                  - paragraph [ref=e627]: BDT 20
+            - article [ref=e628]:
+              - button "Chili Ketchup, BDT 10" [ref=e629] [cursor=pointer]:
+                - generic [ref=e638]:
+                  - heading "Chili Ketchup" [level=3] [ref=e639]
+                  - paragraph [ref=e640]: Extra chili ketchup.
+                  - paragraph [ref=e642]: BDT 10
+            - article [ref=e643]:
+              - button "Green Sauce, BDT 10" [ref=e644] [cursor=pointer]:
+                - generic [ref=e653]:
+                  - heading "Green Sauce" [level=3] [ref=e654]
+                  - paragraph [ref=e655]: Extra green sauce.
+                  - paragraph [ref=e657]: BDT 10
+            - article [ref=e658]:
+              - button "Chili Oil, BDT 10" [ref=e659] [cursor=pointer]:
+                - generic [ref=e668]:
+                  - heading "Chili Oil" [level=3] [ref=e669]
+                  - paragraph [ref=e670]: Extra chili oil.
+                  - paragraph [ref=e672]: BDT 10
+            - article [ref=e673]:
+              - button "Lemon Butter, BDT 20" [ref=e674] [cursor=pointer]:
+                - generic [ref=e683]:
+                  - heading "Lemon Butter" [level=3] [ref=e684]
+                  - paragraph [ref=e685]: Extra lemon butter sauce.
+                  - paragraph [ref=e687]: BDT 20
+          - complementary "Your order" [ref=e688]:
+            - generic [ref=e690]:
+              - paragraph [ref=e691]: Your order
+              - paragraph [ref=e692]: 0 items
+            - generic [ref=e699]:
+              - paragraph [ref=e704]: Your next favourite is waiting.
+              - paragraph [ref=e705]: Choose something from the menu to start your order.
+    - generic [ref=e707]:
+      - generic [ref=e708]:
+        - paragraph [ref=e709]: Your order, in view
+        - heading "From accepted to ready—follow every kitchen update." [level=2] [ref=e710]
+      - link "Track order" [ref=e711] [cursor=pointer]:
+        - /url: /order-status
+  - contentinfo [ref=e712]:
+    - generic [ref=e713]:
+      - generic [ref=e715]:
+        - paragraph [ref=e716]: Yamzo Uttara
+        - paragraph [ref=e717]: House 80, Road 20, Sector 11, Uttara
+      - generic [ref=e718]:
+        - link "01761-737584" [ref=e719] [cursor=pointer]:
+          - /url: tel:+8801761737584
+        - link "Account" [ref=e720] [cursor=pointer]:
+          - /url: /login?next=/
+        - link "Order status" [ref=e721] [cursor=pointer]:
+          - /url: /order-status
+        - link "Privacy" [ref=e722] [cursor=pointer]:
+          - /url: /privacy
+        - link "Terms" [ref=e723] [cursor=pointer]:
+          - /url: /terms

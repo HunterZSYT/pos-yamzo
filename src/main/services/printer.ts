@@ -5,7 +5,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { getPrintJob, markPrintJobFailed, markPrintJobPrinted, markPrintJobRetry } from "./printQueue.js";
+import { beginPrintAttempt, finishPrintAttempt, getPrintJob, markPrintJobFailed, markPrintJobPrinted, markPrintJobRetry } from "./printQueue.js";
 import { enqueueWebsitePrintAck } from "../domain/websiteOrders.js";
 
 const execFileAsync = promisify(execFile);
@@ -38,13 +38,17 @@ export async function listWindowsPrinters(): Promise<PrinterInfo[]> {
 
 export async function printJob(db: Database.Database, id: number): Promise<boolean> {
   const job = getPrintJob(db, id);
+  const attemptId = beginPrintAttempt(db, id);
   try {
     await printPlainText(job.content, job.printer ?? undefined);
     markPrintJobPrinted(db, id);
+    finishPrintAttempt(db, attemptId, true);
     enqueueWebsitePrintAck(db, id, true);
     return true;
   } catch (error) {
-    markPrintJobFailed(db, id, error instanceof Error ? error.message : String(error));
+    const message = error instanceof Error ? error.message : String(error);
+    markPrintJobFailed(db, id, message);
+    finishPrintAttempt(db, attemptId, false, message);
     enqueueWebsitePrintAck(db, id, false);
     return false;
   }

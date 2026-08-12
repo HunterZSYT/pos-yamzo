@@ -1,18 +1,24 @@
 import { dialog, ipcMain, shell } from "electron";
 import type Database from "better-sqlite3";
+import type {
+  OrderSummary,
+  WebsiteConnectionDiagnostics,
+  WebsiteConnectionStatus
+} from "../shared/types.js";
 import { login, changePassword } from "./domain/auth.js";
+import { listManagers, saveManager, verifyManagerPin } from "./domain/managers.js";
 import {
   addOrderItem,
   applyDiscount,
   cancelOrder,
+  completePaidOrder,
   createOrder,
   getOrderDetail,
   listOpenOrders,
   listOrderHistory,
-  markKitchenBatchDelivered,
-  markKitchenDelivered,
   printAuditCopy,
   printBillCopy,
+  recordOrderPayment,
   reprintKitchenCopy,
   reprintReceipt,
   restartKitchenBatchTimer,
@@ -20,7 +26,7 @@ import {
   reopenOrder,
   removeOrderItem,
   sendNewItemsToKitchen,
-  settleOrder,
+  swapOrderItem,
   updateOrderInfo,
   updateOrderDate,
   updateOrderItem,
@@ -30,6 +36,7 @@ import { getSalesSummary } from "./domain/reports.js";
 import {
   getWebsiteOrderDetail,
   listWebsiteOrders,
+  queueWebsiteOrderLifecycleForPosOrder,
   queueWebsiteOrderPrint
 } from "./domain/websiteOrders.js";
 import {
@@ -73,6 +80,7 @@ import {
   getMenuCategories,
   getMenuData,
   getMenuTypes,
+  getPaymentMethods,
   getPrinterName,
   getTotalTables,
   setBrandingSettings,
@@ -81,13 +89,16 @@ import {
   setMenuCategories,
   setMenuData,
   setMenuTypes,
+  setPaymentMethods,
   setPrinterName,
   setTotalTables
 } from "./services/settings.js";
 import { enqueuePrintJob, listPrintJobs } from "./services/printQueue.js";
 import { listWindowsPrinters, printJob, retryPrintJob } from "./services/printer.js";
+import { printWebsiteInitialKot, retryWebsiteInitialKotForOrder } from "./services/websiteInitialKot.js";
 import { buildDailySalesEmail, clearGmailAuth, getEmailSettings, saveEmailSettings, sendDailySalesEmail } from "./services/email.js";
 import { listActivityLogs, recordActivity, recordProtectedPanelAccess } from "./services/audit.js";
+import { listKotHistory, listSwapHistory } from "./services/operationsHistory.js";
 import {
   connectGoogleSheets,
   disconnectGoogle,
@@ -102,7 +113,20 @@ import {
   syncGoogleSheets
 } from "./services/googleSheets.js";
 
-export function registerIpc(db: Database.Database): void {
+export interface IpcDependencies {
+  acceptWebsiteOrder?: (remoteId: string, expectedVersion: number) => Promise<OrderSummary>;
+  websiteConnection?: {
+    getStatus(): WebsiteConnectionStatus;
+    getDiagnostics(): WebsiteConnectionDiagnostics;
+    testConnection(): Promise<WebsiteConnectionStatus>;
+    reconnect(): Promise<WebsiteConnectionStatus>;
+    registerTerminal(baseUrl: string, registrationCode: string): Promise<WebsiteConnectionStatus>;
+    disconnect(): WebsiteConnectionStatus;
+    rotateTerminalKey(): Promise<WebsiteConnectionStatus>;
+  };
+}
+
+export function registerIpc(db: Database.Database, dependencies: IpcDependencies = {}): void {
   const queueSheetsWithoutBlockingPos = (): void => {
     try {
       queueGoogleSheetsSync(db);
@@ -124,6 +148,15 @@ export function registerIpc(db: Database.Database): void {
   });
   ipcMain.handle("audit:list", (_event, limit?: number) => listActivityLogs(db, limit));
   ipcMain.handle("audit:protectedAccess", (_event, input) => recordProtectedPanelAccess(db, input));
+  ipcMain.handle("managers:list", (_event, includeInactive?: boolean) => listManagers(db, includeInactive));
+  ipcMain.handle("managers:save", (_event, input) => {
+    const manager = saveManager(db, input);
+    recordActivity(db, "manager_saved", { managerId: manager.id, managerCode: manager.managerCode, active: manager.active }, manager.name);
+    return manager;
+  });
+  ipcMain.handle("managers:verify", (_event, managerId: number, pin: string) => verifyManagerPin(db, managerId, pin));
+  ipcMain.handle("operations:kotHistory", (_event, range) => listKotHistory(db, range));
+  ipcMain.handle("operations:swapHistory", (_event, range) => listSwapHistory(db, range));
   ipcMain.handle("inventory:snapshot", () => listInventorySnapshot(db));
   ipcMain.handle("inventory:previewBackfill", (_event, input) => previewInventoryBackfill(db, input));
   ipcMain.handle("inventory:applyBackfill", (_event, input) => applyInventoryBackfill(db, input));
@@ -214,23 +247,92 @@ export function registerIpc(db: Database.Database): void {
   ipcMain.handle("orders:updateDate", (_event, orderId: number, orderDate: string) => withSheetSync(() => updateOrderDate(db, orderId, orderDate)));
   ipcMain.handle("orders:updateItem", (_event, orderItemId: number, input) => withSheetSync(() => updateOrderItem(db, orderItemId, input)));
   ipcMain.handle("orders:removeItem", (_event, orderItemId: number, reason?: string) => withSheetSync(() => removeOrderItem(db, orderItemId, reason)));
-  ipcMain.handle("orders:settle", (_event, orderId: number, method, amount?: number, reference?: string, host?: string) => withSheetSync(() => settleOrder(db, orderId, method, amount, reference, host)));
+  ipcMain.handle("orders:swapItem", (_event, orderItemId: number, replacement, authorization) => withSheetSync(() => swapOrderItem(db, orderItemId, replacement, authorization)));
+  ipcMain.handle("orders:recordPayment", (_event, orderId: number, input) => withSheetSync(() => recordOrderPayment(db, orderId, input)));
+  ipcMain.handle("orders:completePaid", (_event, orderId: number) => withSheetSync(() => completePaidOrder(db, orderId)));
   ipcMain.handle("orders:cancel", (_event, orderId: number, reason?: string) => withSheetSync(() => cancelOrder(db, orderId, reason)));
   ipcMain.handle("orders:reopen", (_event, orderId: number) => withSheetSync(() => reopenOrder(db, orderId)));
-  ipcMain.handle("orders:markKitchenDelivered", (_event, orderId: number) => withSheetSync(() => markKitchenDelivered(db, orderId)));
   ipcMain.handle("orders:restartKitchenTimer", (_event, orderId: number) => withSheetSync(() => restartKitchenTimer(db, orderId)));
-  ipcMain.handle("orders:markKitchenBatchDelivered", (_event, ticketId: number) => withSheetSync(() => markKitchenBatchDelivered(db, ticketId)));
   ipcMain.handle("orders:restartKitchenBatchTimer", (_event, ticketId: number) => withSheetSync(() => restartKitchenBatchTimer(db, ticketId)));
   ipcMain.handle("orders:detail", (_event, orderId: number) => getOrderDetail(db, orderId));
   ipcMain.handle("orders:open", () => listOpenOrders(db));
   ipcMain.handle("orders:history", () => listOrderHistory(db));
+  ipcMain.handle("orders:retryInitialKot", async (_event, orderId: number) => {
+    const order = getOrderDetail(db, orderId);
+    if (!order.initialKotPrintJobId) throw new Error("Initial Kitchen KOT has not been queued.");
+    await retryPrintJob(db, order.initialKotPrintJobId);
+    return getOrderDetail(db, orderId);
+  });
+  ipcMain.handle("orders:retryAdjustmentKots", async (_event, orderId: number) => {
+    const jobs = db.prepare(
+      `SELECT opr.print_job_id
+       FROM order_print_requirements opr
+       JOIN print_jobs pj ON pj.id = opr.print_job_id
+       WHERE opr.order_id = ? AND opr.kind <> 'initial_kot' AND pj.status IN ('failed', 'retry')
+       ORDER BY opr.id`
+    ).all(orderId) as Array<{ print_job_id: number }>;
+    for (const job of jobs) await retryPrintJob(db, job.print_job_id);
+    return getOrderDetail(db, orderId);
+  });
   ipcMain.handle("orders:reprintKitchen", (_event, orderId: number) => reprintKitchenCopy(db, orderId));
   ipcMain.handle("orders:reprintReceipt", (_event, orderId: number) => reprintReceipt(db, orderId));
-  ipcMain.handle("orders:printBill", (_event, orderId: number, paymentInfo) => printBillCopy(db, orderId, paymentInfo));
+  ipcMain.handle("orders:printBill", (_event, orderId: number, paymentInfo, reprint?: boolean) => printBillCopy(db, orderId, paymentInfo, reprint));
+  ipcMain.handle("orders:retryBill", async (_event, orderId: number) => {
+    const order = getOrderDetail(db, orderId);
+    if (order.billState === "not_printed") throw new Error("Bill Copy has not been queued.");
+    const row = db.prepare("SELECT bill_print_job_id FROM orders WHERE id = ?").get(orderId) as { bill_print_job_id: number | null } | undefined;
+    if (!row?.bill_print_job_id) throw new Error("Bill Copy has not been queued.");
+    await retryPrintJob(db, row.bill_print_job_id);
+    return getOrderDetail(db, orderId);
+  });
   ipcMain.handle("orders:printAudit", (_event, orderId: number) => printAuditCopy(db, orderId));
   ipcMain.handle("websiteOrders:list", (_event, statuses) => listWebsiteOrders(db, statuses));
   ipcMain.handle("websiteOrders:detail", (_event, remoteId: string) => getWebsiteOrderDetail(db, remoteId));
+  ipcMain.handle("websiteOrders:accept", (_event, remoteId: string, expectedVersion: number) => {
+    if (!dependencies.acceptWebsiteOrder) {
+      throw new Error("Website order acceptance is unavailable in this build.");
+    }
+    return dependencies.acceptWebsiteOrder(remoteId, expectedVersion);
+  });
   ipcMain.handle("websiteOrders:queuePrint", (_event, remoteId: string, kind) => queueWebsiteOrderPrint(db, remoteId, kind));
+  ipcMain.handle(
+    "websiteOrders:advanceLifecycle",
+    (_event, orderId: number, target: "ready" | "out_for_delivery") =>
+      queueWebsiteOrderLifecycleForPosOrder(
+        db,
+        orderId,
+        target,
+        target === "ready" ? "Marked ready in Yamzo POS" : "Dispatched from Yamzo POS"
+      )
+  );
+  ipcMain.handle("websiteOrders:retryInitialKot", async (_event, remoteId: string) =>
+    (await printWebsiteInitialKot(db, remoteId, true)).order
+  );
+  ipcMain.handle("websiteOrders:retryInitialKotForOrder", async (_event, orderId: number) =>
+    (await retryWebsiteInitialKotForOrder(db, orderId)).order
+  );
+  ipcMain.handle("websiteConnection:status", () => dependencies.websiteConnection?.getStatus() ?? null);
+  ipcMain.handle("websiteConnection:diagnostics", () => dependencies.websiteConnection?.getDiagnostics() ?? null);
+  ipcMain.handle("websiteConnection:test", () => {
+    if (!dependencies.websiteConnection) throw new Error("Yamzo Website Connection is unavailable in this build.");
+    return dependencies.websiteConnection.testConnection();
+  });
+  ipcMain.handle("websiteConnection:reconnect", () => {
+    if (!dependencies.websiteConnection) throw new Error("Yamzo Website Connection is unavailable in this build.");
+    return dependencies.websiteConnection.reconnect();
+  });
+  ipcMain.handle("websiteConnection:register", (_event, baseUrl: string, registrationCode: string) => {
+    if (!dependencies.websiteConnection) throw new Error("Yamzo Website Connection is unavailable in this build.");
+    return dependencies.websiteConnection.registerTerminal(baseUrl, registrationCode);
+  });
+  ipcMain.handle("websiteConnection:disconnect", () => {
+    if (!dependencies.websiteConnection) throw new Error("Yamzo Website Connection is unavailable in this build.");
+    return dependencies.websiteConnection.disconnect();
+  });
+  ipcMain.handle("websiteConnection:rotateKey", () => {
+    if (!dependencies.websiteConnection) throw new Error("Yamzo Website Connection is unavailable in this build.");
+    return dependencies.websiteConnection.rotateTerminalKey();
+  });
   ipcMain.handle("print:listJobs", (_event, status?: string) => listPrintJobs(db, status));
   ipcMain.handle("print:listPrinters", () => listWindowsPrinters());
   ipcMain.handle("print:printJob", (_event, id: number) => printJob(db, id));
@@ -293,6 +395,11 @@ export function registerIpc(db: Database.Database): void {
   ipcMain.handle("settings:setMenuTypes", (_event, menuTypes) => {
     setMenuTypes(db, menuTypes);
     recordActivity(db, "menu_types_updated", { count: menuTypes.length }, "admin");
+  });
+  ipcMain.handle("settings:getPaymentMethods", () => getPaymentMethods(db));
+  ipcMain.handle("settings:setPaymentMethods", (_event, methods) => {
+    setPaymentMethods(db, methods);
+    recordActivity(db, "payment_methods_updated", { count: methods.length }, "admin");
   });
   ipcMain.handle("settings:getGoogleSheets", () => getGoogleSheetsSettings(db));
   ipcMain.handle("settings:saveGoogleOAuthClient", (_event, input) => {

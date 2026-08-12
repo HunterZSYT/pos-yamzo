@@ -18,6 +18,8 @@ export const demoSummary: SalesSummary = {
   totalOrders: 0,
   openOrders: 0,
   settledOrders: 0,
+  dineInGuests: 0,
+  averageGuestsPerDineInOrder: 0,
   discountTotal: 0,
   voidTotal: 0,
   commissionTotal: 0,

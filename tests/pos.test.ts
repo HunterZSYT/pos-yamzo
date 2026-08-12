@@ -1,11 +1,12 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type Database from "better-sqlite3";
-import { openMemoryDatabase } from "../src/main/database/connection";
+import { openDatabase, openMemoryDatabase } from "../src/main/database/connection";
 import { login, changePassword } from "../src/main/domain/auth";
 import {
   addOrderItem,
   applyDiscount,
   cancelOrder,
+  completePaidOrder,
   createOrder,
   getOrderDetail,
   listOpenOrders,
@@ -14,16 +15,19 @@ import {
   printAuditCopy,
   printBillCopy,
   reopenOrder,
+  recordOrderPayment,
   removeOrderItem,
   restartKitchenTimer,
   sendNewItemsToKitchen,
   settleOrder,
+  swapOrderItem,
   updateOrderInfo,
   updateOrderItem,
   updateOrderNote
 } from "../src/main/domain/orders";
 import { reprintKitchenCopy, reprintReceipt, voidOrderItem } from "../src/main/domain/orders";
 import { getSalesSummary } from "../src/main/domain/reports";
+import { listManagers, saveManager, verifyManagerPin } from "../src/main/domain/managers";
 import {
   addCostRecord,
   addPhysicalCount,
@@ -43,10 +47,11 @@ import {
   updatePhysicalCount
 } from "../src/main/domain/inventory";
 import { archiveMenuItem, deleteMenuItem, importMenuCsv, listMenuItems, parsePrice, saveMenuItem } from "../src/main/services/menuImport";
-import { getBrandingSettings, getHostNames, getMenuData, getTotalTables, setBrandingSettings, setHostNames, setInventoryTracking, getSetting, setMenuData, setMenuTypes, setPrinterName, setTotalTables } from "../src/main/services/settings";
+import { getBrandingSettings, getHostNames, getMenuData, getTotalTables, setBrandingSettings, setHostNames, setInventoryTracking, getSetting, setMenuData, setMenuTypes, setPaymentMethods, setPrinterName, setTotalTables } from "../src/main/services/settings";
 import { buildDailySalesEmail, clearGmailAuth, getEmailSettings, saveEmailSettings } from "../src/main/services/email";
 import { renderReceiptHtml } from "../src/main/services/printer";
-import { getPrintJob, listPrintJobs, markPrintJobFailed, markPrintJobRetry } from "../src/main/services/printQueue";
+import { beginPrintAttempt, finishPrintAttempt, getPrintJob, listPrintJobs, markPrintJobFailed, markPrintJobPrinted, markPrintJobRetry } from "../src/main/services/printQueue";
+import { listKotHistory, listSwapHistory } from "../src/main/services/operationsHistory";
 import { buildAuditCopy, buildKitchenTicket, buildReceipt } from "../src/main/services/receipts";
 import { listActivityLogs, recordProtectedPanelAccess } from "../src/main/services/audit";
 import fs from "node:fs";
@@ -74,6 +79,25 @@ describe("Yamzo POS core", () => {
     expect(login(database, "admin", "9876")?.username).toBe("admin");
     expect(changePassword(database, "admin", "336000", "1234")).toBe(true);
     expect(login(database, "admin", "1234")?.username).toBe("admin");
+  }, 10000);
+
+  it("stores individual manager PIN hashes and rejects disabled managers", () => {
+    const database = freshDb();
+    const manager = saveManager(database, {
+      managerCode: "MGR-002",
+      name: "Shift Manager",
+      pin: "5678",
+      active: true
+    });
+    const stored = database.prepare("SELECT pin_hash FROM managers WHERE id = ?").get(manager.id) as { pin_hash: string };
+    expect(stored.pin_hash).not.toBe("5678");
+    expect(verifyManagerPin(database, manager.id, "5678")).toMatchObject({ name: "Shift Manager", active: true });
+    expect(() => verifyManagerPin(database, manager.id, "1111")).toThrow(/authorization failed/i);
+
+    saveManager(database, { id: manager.id, managerCode: manager.managerCode, name: manager.name, active: false });
+    expect(listManagers(database).some((entry) => entry.id === manager.id)).toBe(false);
+    expect(listManagers(database, true).find((entry) => entry.id === manager.id)?.active).toBe(false);
+    expect(() => verifyManagerPin(database, manager.id, "5678")).toThrow(/authorization failed/i);
   }, 10000);
 
   it("imports menu CSV rows and parses TK prices", () => {
@@ -524,5 +548,150 @@ describe("Yamzo POS core", () => {
     clearGmailAuth(database);
     expect(getEmailSettings(database)).not.toHaveProperty("tokenPath");
     expect(renderReceiptHtml("<script>alert(1)</script>")).toContain("&lt;script&gt;");
+  });
+
+  it("persists guests and enforces KOT, payment, Bill Copy, and completion in sequence", () => {
+    const database = freshDb();
+    const momo = saveMenuItem(database, { name: "Gate Momo", price: 195, category: "Momo", available: true });
+    const replacement = saveMenuItem(database, { name: "Gate Pasta", price: 395, category: "Pasta", available: true });
+    const order = createOrder(database, {
+      source: "in_house",
+      tableNumber: "Table 4",
+      guestCount: 5,
+      hostName: "Nadia",
+      requiresKot: true
+    });
+    const itemId = addOrderItem(database, order.id, { menuItemId: momo.id, quantity: 1, note: "Less spicy" });
+    expect(getOrderDetail(database, order.id)).toMatchObject({ guestCount: 5, hostName: "Nadia", initialKotState: "required" });
+
+    const printJobId = sendNewItemsToKitchen(database, order.id)!;
+    expect(getOrderDetail(database, order.id).initialKotState).toBe("queued");
+    expect(() => settleOrder(database, order.id, "cash")).toThrow(/KOT must print successfully/i);
+
+    markPrintJobFailed(database, printJobId, "No receipt printer selected.");
+    expect(getOrderDetail(database, order.id).initialKotState).toBe("awaiting_retry");
+    updateOrderItem(database, itemId, { quantity: 2, note: "No chilli", parcel: true });
+    expect(getPrintJob(database, printJobId).content).toContain("2 x");
+    expect(getPrintJob(database, printJobId).content).toContain("No chilli");
+
+    markPrintJobPrinted(database, printJobId);
+    expect(getOrderDetail(database, order.id).initialKotState).toBe("confirmed");
+    expect(() => removeOrderItem(database, itemId)).toThrow(/Swap \/ Change/i);
+    const originalKot = getPrintJob(database, printJobId).content;
+    const manager = listManagers(database)[0];
+    const managerAuthorization = {
+      managerId: manager.id,
+      pin: "1234",
+      reason: "Customer requested pasta",
+      operator: "Nadia"
+    };
+    expect(() => swapOrderItem(database, itemId, { menuItemId: replacement.id, quantity: 1 }, {
+      ...managerAuthorization,
+      pin: "9999"
+    })).toThrow(/authorization failed/i);
+    expect(getOrderDetail(database, order.id).items.find((orderItem) => orderItem.id === itemId)?.status).toBe("active");
+
+    const swapped = swapOrderItem(database, itemId, { menuItemId: replacement.id, quantity: 1 }, managerAuthorization);
+    expect(getPrintJob(database, swapped.voidPrintJobId).type).toBe("void_kot");
+    expect(getPrintJob(database, printJobId).content).toBe(originalKot);
+    expect(swapped.order.items.filter((item) => item.status === "active")).toHaveLength(1);
+    expect(swapped.order.items.find((item) => item.status === "active")?.menuItemId).toBe(replacement.id);
+    expect(listSwapHistory(database)[0]).toMatchObject({
+      orderId: order.id,
+      originalName: "Gate Momo",
+      replacementName: "Gate Pasta",
+      managerName: manager.name,
+      operator: "Nadia",
+      reason: "Customer requested pasta",
+      adjustmentPrintJobId: swapped.adjustmentPrintJobId,
+      successfulPrintCount: 0
+    });
+
+    expect(getOrderDetail(database, order.id)).toMatchObject({ requiredKotCount: 2, unresolvedKotCount: 1, failedKotCount: 0 });
+    expect(() => recordOrderPayment(database, order.id, { method: "cash", cashReceived: 500, hostName: "Nadia" })).toThrow(/every required Kitchen KOT/i);
+    const additionJobId = sendNewItemsToKitchen(database, order.id)!;
+    expect(getPrintJob(database, additionJobId).type).toBe("addition_kot");
+    expect(getOrderDetail(database, order.id)).toMatchObject({ requiredKotCount: 3, unresolvedKotCount: 2 });
+    const adjustmentAttemptId = beginPrintAttempt(database, swapped.adjustmentPrintJobId);
+    finishPrintAttempt(database, adjustmentAttemptId, true);
+    markPrintJobPrinted(database, swapped.voidPrintJobId);
+    markPrintJobPrinted(database, additionJobId);
+    expect(getOrderDetail(database, order.id).unresolvedKotCount).toBe(0);
+    expect(listSwapHistory(database)[0].successfulPrintCount).toBe(1);
+    expect(listKotHistory(database).find((entry) => entry.printJobId === swapped.adjustmentPrintJobId)).toMatchObject({
+      attemptCount: 1,
+      successfulPrintCount: 1,
+      managerName: manager.name,
+      reason: "Customer requested pasta"
+    });
+    expect(() => printBillCopy(database, order.id)).toThrow(/Record payment/i);
+    expect(() => recordOrderPayment(database, order.id, { method: "cash", cashReceived: 300, hostName: "Nadia" })).toThrow(/less than the payable/i);
+
+    const paid = recordOrderPayment(database, order.id, { method: "cash", cashReceived: 500, hostName: "Nadia" });
+    expect(paid.payment).toMatchObject({ method: "cash", amount: 395, cashReceived: 500, changeGiven: 105, hostName: "Nadia" });
+    expect(() => recordOrderPayment(database, order.id, { method: "cash", cashReceived: 600, hostName: "Nadia" })).toThrow(/already recorded/i);
+    recordOrderPayment(database, order.id, { method: "cash", cashReceived: 500, hostName: "Nadia" });
+    expect(database.prepare("SELECT COUNT(*) AS count FROM payments WHERE order_id = ?").get(order.id)).toMatchObject({ count: 1 });
+
+    const billJobId = printBillCopy(database, order.id);
+    const bill = getPrintJob(database, billJobId).content;
+    expect(bill).toContain("GUESTS: 5");
+    expect(bill).toContain("HOST: Nadia");
+    expect(() => completePaidOrder(database, order.id)).toThrow(/Bill Copy must print successfully/i);
+    markPrintJobFailed(database, billJobId, "No printer on this QA PC.");
+    expect(printBillCopy(database, order.id)).toBe(billJobId);
+    markPrintJobPrinted(database, billJobId);
+    const completed = completePaidOrder(database, order.id);
+    expect(completed.status).toBe("settled");
+    expect(completePaidOrder(database, order.id).status).toBe("settled");
+    const reprintBillId = printBillCopy(database, order.id, undefined, true);
+    expect(reprintBillId).not.toBe(billJobId);
+    expect(database.prepare("SELECT COUNT(*) AS count FROM payments WHERE order_id = ?").get(order.id)).toMatchObject({ count: 1 });
+    expect(getSalesSummary(database)).toMatchObject({ dineInGuests: 5, averageGuestsPerDineInOrder: 5 });
+
+    const takeaway = createOrder(database, { source: "takeaway", guestCount: 2, hostName: "Nadia", requiresKot: true });
+    addOrderItem(database, takeaway.id, { menuItemId: momo.id, quantity: 1 });
+    expect(getOrderDetail(database, takeaway.id)).toMatchObject({ tableNumber: null, guestCount: 2, initialKotState: "required" });
+  });
+
+  it("persists a non-cash payment and Bill prerequisite across a database restart", () => {
+    const tempDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "yamzo-gate3b-"));
+    const databasePath = path.join(tempDirectory, "yamzo.sqlite3");
+    try {
+      db = openDatabase(databasePath);
+      const menuItem = saveMenuItem(db, { name: "Restart Momo", price: 245, category: "Momo", available: true });
+      const order = createOrder(db, { source: "takeaway", guestCount: 2, hostName: "Rafi", requiresKot: true });
+      addOrderItem(db, order.id, { menuItemId: menuItem.id, quantity: 1 });
+      const kotJobId = sendNewItemsToKitchen(db, order.id)!;
+      markPrintJobPrinted(db, kotJobId);
+      setPaymentMethods(db, [
+        { key: "cash", label: "Cash", active: false },
+        { key: "bkash", label: "bKash Merchant", active: true },
+        { key: "nagad", label: "Nagad", active: false },
+        { key: "card", label: "Card", active: false },
+        { key: "other", label: "Other", active: false }
+      ]);
+      expect(() => recordOrderPayment(db!, order.id, { method: "cash", cashReceived: 245, hostName: "Rafi" })).toThrow(/active payment method/i);
+      const paid = recordOrderPayment(db, order.id, { method: "bkash", reference: "01700000000", hostName: "Rafi" });
+      expect(paid.payment).toMatchObject({ method: "bkash", amount: 245, reference: "01700000000", changeGiven: 0 });
+      const billJobId = printBillCopy(db, order.id);
+      markPrintJobPrinted(db, billJobId);
+      db.close();
+      db = null;
+
+      const reopenedDb = openDatabase(databasePath);
+      db = reopenedDb;
+      expect(getOrderDetail(reopenedDb, order.id)).toMatchObject({
+        paid: true,
+        unresolvedKotCount: 0,
+        billState: "printed",
+        payment: { method: "bkash", amount: 245, reference: "01700000000" }
+      });
+      expect(completePaidOrder(reopenedDb, order.id).status).toBe("settled");
+    } finally {
+      db?.close();
+      db = null;
+      fs.rmSync(tempDirectory, { recursive: true, force: true });
+    }
   });
 });
