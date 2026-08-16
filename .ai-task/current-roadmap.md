@@ -1,24 +1,28 @@
-# Yamzo order retention and operator UX release
+# Yamzo critical store checkout release — 2026-08-16
 
-## Scope
+## Outcome
 
-- Disable deletion of every order type across the Website admin/API/database and Yamzo POS.
-- Preserve cancellation as the terminal operator action.
-- Do not change deletion flows for restocks, inventory, costs, or other non-order records.
-- Make cancellation reasoned and auditable in the Website admin workspace.
-- Rebuild the affected admin, authentication, and account surfaces from the local shadcn/Radix component layer, with loading and responsive states.
-- Keep each admin destination as a dedicated route and make the storefront filter/search panel become sticky only after it reaches the header while scrolling.
-- Publish verified source changes to the existing GitHub repositories; do not deploy or apply a new database migration without a separate production go-ahead.
+Ship a verified GitHub update that enforces occupied-table locking, explicit whole-order table transfer, mandatory automatic KOT for every local order type, distinct audited post-KOT Swap and Cancel actions, the required unpaid-bill-before-payment checkout sequence, paid-slip auto-print, manager-authorized payment redo, immutable completed orders, and two-line receipt address formatting.
 
 ## Execution packets
 
-- [x] Discovery: map Website and POS order mutation surfaces and check repository state.
-- [x] Website: remove UI/API delete pathways and add database-level enforcement.
-- [x] POS: remove order delete pathways while retaining cancellation.
-- [ ] Website UX: responsive shadcn operator, auth, account, and sticky menu-search updates.
-- [ ] Integration: verify cancellation remains possible and no delete surface remains.
-- [ ] Release: inspect scoped diffs, run checks, commit, and push the two repositories.
+- [x] Recovery: confirm clean `main`, remote/auth state, prior Gate 3/6 ledgers, screenshots, and current SQLite/Electron architecture.
+- [x] Domain and schema: map and implement enforceable order, table, KOT, adjustment, payment-redo, completion, and audit invariants using additive local SQLite upgrades only.
+- [x] Renderer: expose locked occupied tables, explicit Change Table, mandatory KOT states, distinct Swap/Cancel controls, and the five-stage checkout UI.
+- [x] Receipts: make unpaid Bill Copy precede payment, auto-queue a Paid Slip on Record Payment, include paid/discount/change summary, and constrain the address to two lines.
+- [x] Automated verification: add regression coverage, then run TypeScript, tests, build, package, and packaged smoke.
+- [x] Rendered verification: use a disposable `YAMZO_APP_DATA_DIR`; confirm packaged login/new audit navigation in Electron/CDP, with checkout state transitions proven through transport-bypassed automated tests.
+- [ ] Release: inspect the exact diff, commit on a `codex/` release branch, push, merge to `main`, push `main`, and verify local/remote parity.
 
-## Single-risk item
+## Safety gates
 
-Database enforcement is an additive migration and will be committed but not applied to production during this task unless explicitly requested.
+- Do not connect to or mutate a production database; this task uses only the app's local SQLite schema and disposable QA data.
+- Do not enable Public Live Ordering or route LIVE traffic to this PC.
+- Do not print secrets, credentials, PIN hashes, or environment values.
+- Physical Xprinter output is not claimable on this PC; verify print-job content and transport-bypassed state, leaving paper/cut verification for the store PC.
+- Stop after two failed verification attempts on the same path and record the next diagnostic.
+
+## Single-risk items
+
+- Existing store SQLite data must upgrade additively without losing orders or print/audit history.
+- GitHub `main` is the update surface requested by the user; only merge after all local release gates pass.

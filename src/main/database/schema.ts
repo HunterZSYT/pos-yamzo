@@ -3,7 +3,7 @@ import bcrypt from "bcryptjs";
 import { randomUUID } from "node:crypto";
 
 const BRANDING_DEFAULTS_VERSION = 2;
-export const DATABASE_SCHEMA_VERSION = 8;
+export const DATABASE_SCHEMA_VERSION = 9;
 
 const defaultBranding = {
   restaurantName: "Yamzo",
@@ -506,7 +506,15 @@ export function migrate(db: Database.Database): void {
   ensureColumn(db, "orders", "initial_kot_print_job_id", "INTEGER");
   ensureColumn(db, "orders", "initial_kot_printed_at", "TEXT");
   ensureColumn(db, "orders", "bill_print_job_id", "INTEGER");
+  ensureColumn(db, "orders", "paid_slip_print_job_id", "INTEGER");
   ensureColumn(db, "orders", "requires_kot", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn(db, "swap_events", "event_kind", "TEXT NOT NULL DEFAULT 'swap'");
+  db.prepare(
+    "UPDATE swap_events SET event_kind = 'cancel' WHERE replacement_order_item_id IS NULL"
+  ).run();
+  db.prepare(
+    "UPDATE orders SET requires_kot = 1 WHERE status IN ('open', 'kitchen_sent')"
+  ).run();
   db.prepare(
     `UPDATE orders
      SET initial_kot_printed_at = first_kitchen_sent_at

@@ -6,12 +6,14 @@ import {
   applyDiscount,
   cancelOrder,
   createOrder,
+  getOrderDetail,
   markKitchenBatchDelivered,
   sendNewItemsToKitchen,
   settleOrder,
   updateOrderDate,
   voidOrderItem
 } from "../src/main/domain/orders";
+import { markPrintJobPrinted } from "../src/main/services/printQueue";
 import { getSalesSummary } from "../src/main/domain/reports";
 import { addCostRecord, addRestockEntry, listInventorySnapshot, saveMenuRecipe } from "../src/main/domain/inventory";
 import { getMenuTypes, setMenuTypes } from "../src/main/services/settings";
@@ -31,6 +33,13 @@ function freshDb(): Database.Database {
 
 function addMenuItem(database: Database.Database, name: string, price: number): number {
   return Number(database.prepare("INSERT INTO menu_items (name, price) VALUES (?, ?)").run(name, price).lastInsertRowid);
+}
+
+function settleWithKot(database: Database.Database, orderId: number, paymentMethod: PaymentMethod) {
+  const detail = getOrderDetail(database, orderId);
+  const jobId = detail.initialKotPrintJobId ?? sendNewItemsToKitchen(database, orderId);
+  if (jobId) markPrintJobPrinted(database, jobId);
+  return settleOrder(database, orderId, paymentMethod);
 }
 
 afterEach(() => {
@@ -65,34 +74,13 @@ describe("orders and reports release behavior", () => {
       orderDate: "2026-06-03"
     });
     addOrderItem(database, settledOrder.id, { menuItemId, quantity: 1 });
-    const settledCreatedAt = settleOrder(database, settledOrder.id, "other").createdAt;
-    const correctedSettled = updateOrderDate(database, settledOrder.id, "2026-06-01");
-    expect(correctedSettled).toMatchObject({
-      status: "settled",
-      orderDate: "2026-06-01",
-      orderNumber: "yamzo-2026-jun-01-115",
-      externalOrderId: "FP-UNCHANGED-42",
-      createdAt: settledCreatedAt
-    });
+    settleWithKot(database, settledOrder.id, "other");
+    expect(() => updateOrderDate(database, settledOrder.id, "2026-06-01")).toThrow(/closed/i);
 
     const cancelledOrder = createOrder(database, { source: "parcel", orderDate: "2026-06-04" });
     expect(() => cancelOrder(database, cancelledOrder.id)).toThrow("cancellation reason");
     cancelOrder(database, cancelledOrder.id, "Date correction");
-    expect(updateOrderDate(database, cancelledOrder.id, "2026-06-01")).toMatchObject({
-      status: "cancelled",
-      orderDate: "2026-06-01",
-      orderNumber: "yamzo-2026-jun-01-116"
-    });
-
-    const audit = database
-      .prepare("SELECT details FROM audit_logs WHERE action = 'update_order_date' AND entity_id = ?")
-      .get(String(settledOrder.id)) as { details: string };
-    expect(JSON.parse(audit.details)).toEqual({
-      reason: "Manager date correction",
-      before: { orderDate: "2026-06-03", orderNumber: "yamzo-2026-jun-03-111" },
-      after: { orderDate: "2026-06-01", orderNumber: "yamzo-2026-jun-01-115" },
-      externalOrderId: "FP-UNCHANGED-42"
-    });
+    expect(() => updateOrderDate(database, cancelledOrder.id, "2026-06-01")).toThrow(/closed/i);
     expect(() => updateOrderDate(database, first.id, "2026-02-30")).toThrow("invalid");
 
     const beforeCreate = new Date();
@@ -108,7 +96,7 @@ describe("orders and reports release behavior", () => {
     const secondMenuItemId = addMenuItem(database, "Timer Item Two", 150);
     const order = createOrder(database, { source: "in_house", tableNumber: "T1", orderDate: "2026-07-01" });
     addOrderItem(database, order.id, { menuItemId: firstMenuItemId, quantity: 1 });
-    sendNewItemsToKitchen(database, order.id);
+    markPrintJobPrinted(database, sendNewItemsToKitchen(database, order.id)!);
     const firstTicket = database.prepare("SELECT id FROM kitchen_tickets WHERE order_id = ? ORDER BY id LIMIT 1").get(order.id) as { id: number };
     const completedFirstBatch = markKitchenBatchDelivered(database, firstTicket.id).batches[0].completedAt;
     addOrderItem(database, order.id, { menuItemId: secondMenuItemId, quantity: 1 });
@@ -122,13 +110,13 @@ describe("orders and reports release behavior", () => {
         SELECT RAISE(ABORT, 'forced settlement failure');
       END;
     `);
-    expect(() => settleOrder(database, order.id, "cash")).toThrow("forced settlement failure");
+    expect(() => settleWithKot(database, order.id, "cash")).toThrow("forced settlement failure");
     expect(database.prepare("SELECT COUNT(*) AS count FROM payments WHERE order_id = ?").get(order.id)).toMatchObject({ count: 0 });
     expect(database.prepare("SELECT COUNT(*) AS count FROM order_cost_snapshots WHERE order_id = ?").get(order.id)).toMatchObject({ count: 0 });
     expect(database.prepare("SELECT COUNT(*) AS count FROM kitchen_tickets WHERE order_id = ? AND completed_at IS NULL").get(order.id)).toMatchObject({ count: 1 });
     database.exec("DROP TRIGGER fail_settlement_for_atomicity");
 
-    const settled = settleOrder(database, order.id, "cash");
+    const settled = settleWithKot(database, order.id, "cash");
     expect(settled.status).toBe("settled");
     expect(settled.kitchenCompletedAt).toBeTruthy();
     expect(settled.batches.every((batch) => batch.completedAt)).toBe(true);
@@ -155,7 +143,7 @@ describe("orders and reports release behavior", () => {
       const order = createOrder(database, { source, orderDate });
       addOrderItem(database, order.id, { menuItemId: saleItemId, quantity });
       if (discount) applyDiscount(database, order.id, discount);
-      settleOrder(database, order.id, paymentMethod);
+      settleWithKot(database, order.id, paymentMethod);
       return order.id;
     }
 
@@ -165,7 +153,7 @@ describe("orders and reports release behavior", () => {
     const voidedLineId = addOrderItem(database, foodpandaOrder.id, { menuItemId: voidItemId, quantity: 1 });
     voidOrderItem(database, voidedLineId, "Customer correction");
     applyDiscount(database, foodpandaOrder.id, 30);
-    settleOrder(database, foodpandaOrder.id, "other");
+    settleWithKot(database, foodpandaOrder.id, "other");
     completeSale("parcel", "2026-07-03", 1, 0, "cash");
     createOrder(database, { source: "parcel", orderDate: "2026-07-02" });
     createOrder(database, { source: "parcel", orderDate: "2026-07-10" });
@@ -242,7 +230,7 @@ describe("orders and reports release behavior", () => {
     });
     const order = createOrder(database, { source: "parcel", orderDate: "2026-07-01" });
     addOrderItem(database, order.id, { menuItemId, quantity: 1 });
-    settleOrder(database, order.id, "cash");
+    settleWithKot(database, order.id, "cash");
 
     const costCategory = database.prepare("SELECT id FROM cost_categories ORDER BY id LIMIT 1").get() as { id: number };
     addCostRecord(database, { categoryId: costCategory.id, costName: "July 1 utility", amount: 50, costDate: "2026-07-01" });
@@ -260,32 +248,22 @@ describe("orders and reports release behavior", () => {
       rawMaterialUsage: [{ inventoryItemId: ingredientId, itemName: "Operational Chicken", quantityBase: 100, unitLabel: "g", rawCost: 100 }]
     });
 
-    updateOrderDate(database, order.id, "2026-07-02");
-    expect(getSalesSummary(database, { startDate: "2026-07-01", endDate: "2026-07-01" })).toMatchObject({
+    expect(() => updateOrderDate(database, order.id, "2026-07-02")).toThrow(/closed/i);
+    expect(getSalesSummary(database, { startDate: "2026-07-01", endDate: "2026-07-01" })).toMatchObject({ totalOrders: 1, rawMaterialCost: 100 });
+    expect(getSalesSummary(database, { startDate: "2026-07-02", endDate: "2026-07-02" })).toMatchObject({
       totalOrders: 0,
       rawMaterialCost: 0,
-      recordedCostTotal: 50,
-      costRecordCount: 1,
-      inventoryRestockSpend: 1250,
-      inventoryRestockCount: 126,
-      inventoryPhysicalCountCount: 2,
-      operatingProfit: -50,
-      rawMaterialUsage: []
-    });
-    expect(getSalesSummary(database, { startDate: "2026-07-02", endDate: "2026-07-02" })).toMatchObject({
-      totalOrders: 1,
-      rawMaterialCost: 100,
       recordedCostTotal: 70,
       costRecordCount: 1,
       inventoryRestockSpend: 7,
       inventoryRestockCount: 1,
       inventoryPhysicalCountCount: 1,
-      operatingProfit: 130,
-      rawMaterialUsage: [{ inventoryItemId: ingredientId, quantityBase: 100, rawCost: 100 }]
+      operatingProfit: -70,
+      rawMaterialUsage: []
     });
 
     database.prepare("UPDATE order_item_cost_snapshots SET details_json = 'not-json' WHERE order_id = ?").run(order.id);
-    const malformed = getSalesSummary(database, { startDate: "2026-07-02", endDate: "2026-07-02" });
+    const malformed = getSalesSummary(database, { startDate: "2026-07-01", endDate: "2026-07-01" });
     expect(malformed.rawMaterialCost).toBe(100);
     expect(malformed.rawMaterialUsage).toEqual([]);
   });

@@ -10,7 +10,9 @@ import { listManagers, saveManager, verifyManagerPin } from "./domain/managers.j
 import {
   addOrderItem,
   applyDiscount,
+  cancelOrderItem,
   cancelOrder,
+  changeOrderTable,
   completePaidOrder,
   createOrder,
   getOrderDetail,
@@ -19,6 +21,7 @@ import {
   printAuditCopy,
   printBillCopy,
   recordOrderPayment,
+  redoOrderPayment,
   reprintKitchenCopy,
   reprintReceipt,
   restartKitchenBatchTimer,
@@ -98,7 +101,7 @@ import { listWindowsPrinters, printJob, retryPrintJob } from "./services/printer
 import { printWebsiteInitialKot, retryWebsiteInitialKotForOrder } from "./services/websiteInitialKot.js";
 import { buildDailySalesEmail, clearGmailAuth, getEmailSettings, saveEmailSettings, sendDailySalesEmail } from "./services/email.js";
 import { listActivityLogs, recordActivity, recordProtectedPanelAccess } from "./services/audit.js";
-import { listKotHistory, listSwapHistory } from "./services/operationsHistory.js";
+import { listCancelledKotHistory, listKotHistory, listSwapHistory } from "./services/operationsHistory.js";
 import {
   connectGoogleSheets,
   disconnectGoogle,
@@ -157,6 +160,7 @@ export function registerIpc(db: Database.Database, dependencies: IpcDependencies
   ipcMain.handle("managers:verify", (_event, managerId: number, pin: string) => verifyManagerPin(db, managerId, pin));
   ipcMain.handle("operations:kotHistory", (_event, range) => listKotHistory(db, range));
   ipcMain.handle("operations:swapHistory", (_event, range) => listSwapHistory(db, range));
+  ipcMain.handle("operations:cancelledKotHistory", (_event, range) => listCancelledKotHistory(db, range));
   ipcMain.handle("inventory:snapshot", () => listInventorySnapshot(db));
   ipcMain.handle("inventory:previewBackfill", (_event, input) => previewInventoryBackfill(db, input));
   ipcMain.handle("inventory:applyBackfill", (_event, input) => applyInventoryBackfill(db, input));
@@ -240,15 +244,18 @@ export function registerIpc(db: Database.Database, dependencies: IpcDependencies
   });
   ipcMain.handle("orders:create", (_event, input) => withSheetSync(() => createOrder(db, input)));
   ipcMain.handle("orders:addItem", (_event, orderId: number, input) => withSheetSync(() => addOrderItem(db, orderId, input)));
-  ipcMain.handle("orders:sendKitchen", (_event, orderId: number, allowExternal?: boolean) => withSheetSync(() => sendNewItemsToKitchen(db, orderId, allowExternal)));
+  ipcMain.handle("orders:sendKitchen", (_event, orderId: number) => withSheetSync(() => sendNewItemsToKitchen(db, orderId)));
   ipcMain.handle("orders:discount", (_event, orderId: number, discount: number) => withSheetSync(() => applyDiscount(db, orderId, discount)));
   ipcMain.handle("orders:updateNote", (_event, orderId: number, note: string) => withSheetSync(() => updateOrderNote(db, orderId, note)));
   ipcMain.handle("orders:updateInfo", (_event, orderId: number, input) => withSheetSync(() => updateOrderInfo(db, orderId, input)));
+  ipcMain.handle("orders:changeTable", (_event, orderId: number, tableNumber: string) => withSheetSync(() => changeOrderTable(db, orderId, tableNumber)));
   ipcMain.handle("orders:updateDate", (_event, orderId: number, orderDate: string) => withSheetSync(() => updateOrderDate(db, orderId, orderDate)));
   ipcMain.handle("orders:updateItem", (_event, orderItemId: number, input) => withSheetSync(() => updateOrderItem(db, orderItemId, input)));
   ipcMain.handle("orders:removeItem", (_event, orderItemId: number, reason?: string) => withSheetSync(() => removeOrderItem(db, orderItemId, reason)));
   ipcMain.handle("orders:swapItem", (_event, orderItemId: number, replacement, authorization) => withSheetSync(() => swapOrderItem(db, orderItemId, replacement, authorization)));
+  ipcMain.handle("orders:cancelItem", (_event, orderItemId: number, authorization) => withSheetSync(() => cancelOrderItem(db, orderItemId, authorization)));
   ipcMain.handle("orders:recordPayment", (_event, orderId: number, input) => withSheetSync(() => recordOrderPayment(db, orderId, input)));
+  ipcMain.handle("orders:redoPayment", (_event, orderId: number, authorization) => withSheetSync(() => redoOrderPayment(db, orderId, authorization)));
   ipcMain.handle("orders:completePaid", (_event, orderId: number) => withSheetSync(() => completePaidOrder(db, orderId)));
   ipcMain.handle("orders:cancel", (_event, orderId: number, reason?: string) => withSheetSync(() => cancelOrder(db, orderId, reason)));
   ipcMain.handle("orders:reopen", (_event, orderId: number) => withSheetSync(() => reopenOrder(db, orderId)));
@@ -283,6 +290,12 @@ export function registerIpc(db: Database.Database, dependencies: IpcDependencies
     const row = db.prepare("SELECT bill_print_job_id FROM orders WHERE id = ?").get(orderId) as { bill_print_job_id: number | null } | undefined;
     if (!row?.bill_print_job_id) throw new Error("Bill Copy has not been queued.");
     await retryPrintJob(db, row.bill_print_job_id);
+    return getOrderDetail(db, orderId);
+  });
+  ipcMain.handle("orders:retryPaidSlip", async (_event, orderId: number) => {
+    const row = db.prepare("SELECT paid_slip_print_job_id FROM orders WHERE id = ?").get(orderId) as { paid_slip_print_job_id: number | null } | undefined;
+    if (!row?.paid_slip_print_job_id) throw new Error("Paid Slip has not been queued.");
+    await retryPrintJob(db, row.paid_slip_print_job_id);
     return getOrderDetail(db, orderId);
   });
   ipcMain.handle("orders:printAudit", (_event, orderId: number) => printAuditCopy(db, orderId));

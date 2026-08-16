@@ -168,17 +168,14 @@ function configuredSourceLabel(db: Database.Database, value: string): string {
 }
 
 function splitAddress(address: string): string[] {
-  const normalized = address.trim();
+  const normalized = address.trim().replace(/\s*,\s*/g, ", ").replace(/\s+/g, " ");
   if (!normalized) {
     return [];
   }
-  if (normalized.includes(",")) {
-    return normalized.split(",").map((part) => part.trim()).filter(Boolean);
-  }
-  if (normalized.includes("Uttara")) {
-    return normalized.replace(" Uttara", ", Uttara").split(",").map((part) => part.trim()).filter(Boolean);
-  }
-  return wrapReceiptText(normalized, 34);
+  const lines = wrapReceiptText(normalized, 34).map((line) => line.trim());
+  if (lines.length <= 2) return lines;
+  const second = lines.slice(1).join(" ");
+  return [lines[0], second.length <= 34 ? second : `${second.slice(0, 31).trimEnd()}...`];
 }
 
 function renderReceiptItem(item: { name: string; quantity: number; unit_price: number; note: string | null; parcel: number }): string[] {
@@ -203,6 +200,12 @@ function renderPaymentLines(payments: Array<{ method: string; amount: number }>,
     const method = formatSourceLabel(paymentInfo.method);
     const paidAmount = typeof paymentInfo.amount === "number" ? formatTk(paymentInfo.amount) : "Paid";
     const lines = [leftRightReceiptLine(`PAYMENT: ${method}`, paidAmount)];
+    if (typeof paymentInfo.cashReceived === "number") {
+      lines.push(leftRightReceiptLine("CASH RECEIVED:", formatTk(paymentInfo.cashReceived)));
+    }
+    if (typeof paymentInfo.changeGiven === "number") {
+      lines.push(leftRightReceiptLine("CHANGE:", formatTk(paymentInfo.changeGiven)));
+    }
     if (paymentInfo.reference?.trim()) {
       lines.push(receiptTextLine(`DETAILS: ${paymentInfo.reference.trim()}`));
     }

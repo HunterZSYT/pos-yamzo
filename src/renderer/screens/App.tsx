@@ -65,15 +65,15 @@ import { demoMenu, demoOrders, demoSummary } from "../data/demo";
 import { IntegrationsAdmin } from "../components/IntegrationsAdmin";
 import { WebsiteCompletedOrdersPanel, WebsiteOrdersScreen } from "../components/WebsiteOrdersScreen";
 import { ManagerAdmin } from "../components/ManagerAdmin";
-import { KitchenKotHistoryScreen, SwappedOrdersScreen } from "../components/OperationsHistoryScreens";
+import { CancelledKotsScreen, KitchenKotHistoryScreen, SwappedOrdersScreen } from "../components/OperationsHistoryScreens";
 
-type Screen = "newOrder" | "editOrder" | "openOrders" | "websiteOrders" | "completedOrders" | "cancelledOrders" | "swappedOrders" | "kitchenKot" | "reports" | "menu" | "inventory" | "costs" | "admin";
+type Screen = "newOrder" | "editOrder" | "openOrders" | "websiteOrders" | "completedOrders" | "cancelledOrders" | "swappedOrders" | "cancelledKots" | "kitchenKot" | "reports" | "menu" | "inventory" | "costs" | "admin";
 type AdminTab = "receipt" | "printer" | "integrations" | "app" | "managers" | "security" | "activity";
 type DiscountMode = "tk" | "percent";
 type OrderLane = "newOrder" | "openOrders";
 type PrintConfirm = { type: "kitchen" | "bill"; orderId: number; orderNumber: string } | null;
 type NoteEdit = { line: OrderLine; draft: string } | null;
-type ProtectedScreen = "completedOrders" | "cancelledOrders" | "swappedOrders" | "kitchenKot" | "menu" | "inventory" | "costs" | "admin";
+type ProtectedScreen = "completedOrders" | "cancelledOrders" | "swappedOrders" | "cancelledKots" | "kitchenKot" | "menu" | "inventory" | "costs" | "admin";
 type MenuFormState = { id: number; name: string; price: string; category: string; available: boolean; trackRecipe: boolean; menuPrices: Record<string, string> };
 type RecipeEditorTarget = { mode: "create" } | { mode: "edit"; recipe: MenuRecipe };
 
@@ -207,7 +207,7 @@ export function App() {
   const [paymentReference, setPaymentReference] = useState("");
   const [cashReceived, setCashReceived] = useState("");
   const [activeOrder, setActiveOrder] = useState<OrderDetail | null>(null);
-  const [externalKitchenEnabled, setExternalKitchenEnabled] = useState(false);
+  const [tableChangeMode, setTableChangeMode] = useState(false);
   const [menuForm, setMenuForm] = useState<MenuFormState>({ id: 0, name: "", price: "", category: "", available: true, trackRecipe: true, menuPrices: {} });
   const [message, setMessage] = useState("");
   const [cancelConfirmOpen, setCancelConfirmOpen] = useState(false);
@@ -221,8 +221,11 @@ export function App() {
   const [swapManagerId, setSwapManagerId] = useState("");
   const [swapPin, setSwapPin] = useState("");
   const [swapReason, setSwapReason] = useState("");
+  const [redoPaymentOpen, setRedoPaymentOpen] = useState(false);
+  const [redoManagerId, setRedoManagerId] = useState("");
+  const [redoPin, setRedoPin] = useState("");
+  const [redoReason, setRedoReason] = useState("");
   const [historyView, setHistoryView] = useState<OrderDetail | null>(null);
-  const [reprintMode, setReprintMode] = useState(false);
   const [passwordForm, setPasswordForm] = useState({ current: "", next: "", confirm: "" });
   const [menuSearch, setMenuSearch] = useState("");
   const [recipeEdit, setRecipeEdit] = useState<RecipeEditorTarget | null>(null);
@@ -275,8 +278,6 @@ export function App() {
   const selectedMenuDataForSource = menuData.find((entry) => entry.key === selectedMenuType?.menuDataKey);
   const externalOrderIdEnabled = Boolean(selectedMenuDataForSource?.externalOrderIdEnabled);
   const tablesEnabledForSource = selectedMenuType?.tablesEnabled ?? source === "in_house";
-  const isExternalOrder = !tablesEnabledForSource && ["foodpanda", "foodie", "other"].includes(source);
-  const canPrintKitchen = !isExternalOrder || externalKitchenEnabled;
   const activePaymentMethods = paymentMethods.filter((method) => method.active);
   const cashReceivedAmount = Number(cashReceived);
   const cashPaymentInvalid = paymentMethod === "cash" && (
@@ -291,11 +292,13 @@ export function App() {
     ? "Add items to start the order"
     : activeOrder.unresolvedKotCount > 0
       ? "Print or retry every required Kitchen KOT"
-      : !activeOrder.paid
-        ? "Record payment"
-        : activeOrder.billState !== "printed"
-          ? "Print the original Bill Copy"
-          : "Complete Order";
+      : activeOrder.billState !== "printed"
+        ? "Print the Unpaid Bill Copy"
+        : !activeOrder.paid
+          ? "Record payment and print Paid Slip"
+          : activeOrder.paidSlipState !== "printed"
+            ? "Retry the Paid Slip"
+            : "Complete Payment";
   const needsDineInTable = tablesEnabledForSource && !tableNumber.trim();
   const failedPrintJobs = printJobs.filter((job) => job.status === "failed" || job.status === "retry");
   const completedOrders = history.filter((order) => order.status === "settled");
@@ -448,15 +451,17 @@ export function App() {
     setPaymentMethod("cash");
     setPaymentReference("");
     setCashReceived("");
-    setExternalKitchenEnabled(false);
+    setTableChangeMode(false);
     setCancelConfirmOpen(false);
     setCancellationReason("");
-    setReprintMode(false);
     setSwapLine(null);
     setSwapReplacement(null);
     setSwapRemoveOnly(false);
     setSwapPin("");
     setSwapReason("");
+    setRedoPaymentOpen(false);
+    setRedoPin("");
+    setRedoReason("");
     setMessage("");
   }
 
@@ -481,6 +486,7 @@ export function App() {
     if (!window.yamzo) return;
     const detail = await window.yamzo.orders.detail(orderId);
     setActiveOrder(detail);
+    setTableChangeMode(false);
     setSource(detail.source);
     setTableNumber(detail.tableNumber ?? "");
     setGuestCount(detail.guestCount ?? 1);
@@ -494,7 +500,6 @@ export function App() {
     setPaymentMethod(detail.payment?.method ?? activePaymentMethods[0]?.key ?? "cash");
     setPaymentReference(detail.payment?.reference ?? "");
     setCashReceived(detail.payment?.cashReceived ? String(detail.payment.cashReceived) : "");
-    setReprintMode(false);
     setOrderLane("openOrders");
     setScreen("editOrder");
     setMessage(`Editing ${detail.orderNumber}.`);
@@ -524,7 +529,7 @@ export function App() {
       tableNumber: tablesEnabledForSource ? tableNumber || undefined : undefined,
       guestCount,
       hostName: selectedHost,
-      requiresKot: canPrintKitchen,
+      requiresKot: true,
       note: orderNote || undefined,
       externalOrderId: externalOrderIdEnabled ? externalOrderId : null
     });
@@ -549,14 +554,6 @@ export function App() {
     await refreshData();
   }
 
-  async function changeHistoryOrderDate(nextDate: string) {
-    if (!nextDate || !historyView || !window.yamzo) return;
-    const updated = await window.yamzo.orders.updateDate(historyView.id, nextDate);
-    setHistoryView(await window.yamzo.orders.detail(updated.id));
-    setMessage(`Order date changed. Receipt is now ${updated.orderNumber}.`);
-    await refreshData();
-  }
-
   async function chooseSource(nextSource: OrderSource) {
     setSource(nextSource);
     const nextType = menuTypes.find((type) => type.key === nextSource);
@@ -575,15 +572,27 @@ export function App() {
   async function chooseTable(table: string) {
     const existing = openOrderByTable.get(table);
     if (existing && existing.id !== activeOrder?.id) {
-      await loadOrder(existing.id);
+      setMessage(`${table} is already in use by ${existing.orderNumber}.`);
       return;
     }
+    if (activeOrder && orderLane === "openOrders" && !tableChangeMode) return;
     setTableNumber(table);
     if (activeOrder && window.yamzo) {
-      await window.yamzo.orders.updateInfo(activeOrder.id, { source, tableNumber: table, note: orderNote, externalOrderId: externalOrderIdEnabled ? externalOrderId : null });
+      await window.yamzo.orders.changeTable(activeOrder.id, table);
       setActiveOrder(await window.yamzo.orders.detail(activeOrder.id));
+      setTableChangeMode(false);
+      setMessage(`Order moved to ${table}.`);
       await refreshData();
     }
+  }
+
+  async function changeCustomTable() {
+    if (!activeOrder || (orderLane === "openOrders" && !tableChangeMode) || !window.yamzo || !tableNumber.trim()) return;
+    await window.yamzo.orders.changeTable(activeOrder.id, tableNumber);
+    setActiveOrder(await window.yamzo.orders.detail(activeOrder.id));
+    setTableChangeMode(false);
+    setMessage(`Order moved to ${tableNumber.trim()}.`);
+    await refreshData();
   }
 
   async function addMenuItem(item: MenuItem) {
@@ -676,7 +685,6 @@ export function App() {
   }
 
   async function kitchenCopy() {
-    if (!canPrintKitchen) return;
     const order = await ensureOrder();
     if (!order || !window.yamzo) return;
     if (order.initialKotState === "awaiting_retry") {
@@ -688,11 +696,7 @@ export function App() {
       setMessage("Kitchen KOT is already queued. It must print successfully before continuing.");
       return;
     }
-    if (reprintMode) {
-      setPrintConfirm({ type: "kitchen", orderId: order.id, orderNumber: order.orderNumber });
-      return;
-    }
-    const jobId = await window.yamzo.orders.sendKitchen(order.id, externalKitchenEnabled);
+    const jobId = await window.yamzo.orders.sendKitchen(order.id);
     if (!jobId) {
       setPrintConfirm({ type: "kitchen", orderId: order.id, orderNumber: order.orderNumber });
     } else {
@@ -709,22 +713,22 @@ export function App() {
   async function billCopy() {
     const order = await ensureOrder();
     if (!order || !window.yamzo) return;
-    if (!order.paid) {
-      setMessage("Record a valid payment before printing Bill Copy.");
+    if (order.paid) {
+      setMessage("Payment is already recorded. Use Paid Slip retry or manager-authorized Redo Payment.");
       return;
     }
     if (order.unresolvedKotCount > 0) {
-      setMessage("Every required Kitchen KOT must print before Bill Copy.");
+      setMessage("Every required Kitchen KOT must print before the Unpaid Bill Copy.");
       return;
     }
     if (order.billState === "failed") {
       const retried = await window.yamzo.orders.retryBill(order.id);
       setActiveOrder(retried);
-      setMessage(retried.billState === "printed" ? `Bill Copy printed for ${order.orderNumber}.` : "Bill Copy is still awaiting a successful print.");
+      setMessage(retried.billState === "printed" ? `Unpaid Bill Copy printed for ${order.orderNumber}.` : "Unpaid Bill Copy is still awaiting a successful print.");
       await refreshData();
       return;
     }
-    if (reprintMode || order.billState === "printed" || sessionPrinted[`bill-${order.id}`]) {
+    if (order.billState === "printed" || sessionPrinted[`bill-${order.id}`]) {
       setPrintConfirm({ type: "bill", orderId: order.id, orderNumber: order.orderNumber });
       return;
     }
@@ -735,7 +739,7 @@ export function App() {
     if (!window.yamzo) return;
     const jobId = await window.yamzo.orders.printBill(orderId, buildReceiptPaymentInfo(), reprint);
     const printed = await window.yamzo.print.printJob(jobId);
-    setMessage(printed ? `Bill Copy sent to printer for ${orderNumber}.` : "Bill Copy saved, but printing failed. Check Printer Settings.");
+    setMessage(printed ? `Unpaid Bill Copy sent to printer for ${orderNumber}.` : "Unpaid Bill Copy saved, but printing failed. Check Printer Settings.");
     if (printed) {
       setSessionPrinted((current) => ({ ...current, [`bill-${orderId}`]: true }));
     }
@@ -815,15 +819,15 @@ export function App() {
       return;
     }
     try {
-      const replacement = swapRemoveOnly || !swapReplacement
-        ? null
-        : { menuItemId: swapReplacement.id, quantity: 1 };
-      const result = await window.yamzo.orders.swapItem(swapLine.id, replacement, {
+      const authorization = {
         managerId,
         pin: swapPin,
         reason: swapReason,
         operator: selectedHost
-      });
+      };
+      const result = swapRemoveOnly
+        ? await window.yamzo.orders.cancelItem(swapLine.id, authorization)
+        : await window.yamzo.orders.swapItem(swapLine.id, { menuItemId: swapReplacement!.id, quantity: 1 }, authorization);
       const adjustmentPrinted = await window.yamzo.print.printJob(result.adjustmentPrintJobId);
       const originalName = swapLine.name;
       const replacementName = swapReplacement?.name;
@@ -834,8 +838,8 @@ export function App() {
       setSwapPin("");
       setSwapReason("");
       setMessage(adjustmentPrinted
-        ? `${originalName} ${replacementName ? `changed to ${replacementName}` : "removed"}. Adjustment KOT printed${replacementName ? "; send the replacement with Kitchen Copy" : ""}.`
-        : "Swap saved, but the required adjustment KOT did not print. Retry is required.");
+        ? `${originalName} ${replacementName ? `changed to ${replacementName}` : "cancelled"}. ${replacementName ? "Swap" : "Cancellation"} KOT printed${replacementName ? "; send the replacement with Kitchen Copy" : ""}.`
+        : `${replacementName ? "Swap" : "Cancellation"} saved, but the required KOT did not print. Retry is required.`);
       await refreshData();
     } catch (error) {
       setSwapPin("");
@@ -850,21 +854,63 @@ export function App() {
       setMessage("Every required Kitchen KOT must print before payment.");
       return;
     }
+    if (order.billState !== "printed") {
+      setMessage("Print the Unpaid Bill Copy before recording payment.");
+      return;
+    }
     if (paymentMethod === "cash" && cashPaymentInvalid) {
       setMessage(`Cash Received must be at least ${money(payableTotal)}.`);
       return;
     }
-    const updated = await window.yamzo.orders.recordPayment(order.id, {
+    const result = await window.yamzo.orders.recordPayment(order.id, {
       method: paymentMethod,
       cashReceived: paymentMethod === "cash" ? Number(cashReceived) : undefined,
       reference: paymentReference.trim() || undefined,
       hostName: selectedHost
     });
-    setActiveOrder(await window.yamzo.orders.detail(updated.id));
-    setMessage(paymentMethod === "cash"
-      ? `Payment recorded. Change / Vangti: ${money(updated.payment?.changeGiven ?? 0)}.`
-      : `${updated.payment ? labelize(updated.payment.method) : "Payment"} recorded.`);
+    const printed = await window.yamzo.print.printJob(result.paidSlipPrintJobId);
+    const updated = await window.yamzo.orders.detail(order.id);
+    setActiveOrder(updated);
+    setMessage(printed
+      ? paymentMethod === "cash"
+        ? `Payment recorded and Paid Slip printed. Change / Vangti: ${money(updated.payment?.changeGiven ?? 0)}.`
+        : `${updated.payment ? labelize(updated.payment.method) : "Payment"} recorded and Paid Slip printed.`
+      : "Payment recorded, but Paid Slip printing failed. Retry it before Complete Payment.");
     await refreshData();
+  }
+
+  async function retryPaidSlip() {
+    if (!activeOrder || !window.yamzo) return;
+    const updated = await window.yamzo.orders.retryPaidSlip(activeOrder.id);
+    setActiveOrder(updated);
+    setMessage(updated.paidSlipState === "printed" ? "Paid Slip printed successfully." : "Paid Slip is still awaiting a successful print.");
+    await refreshData();
+  }
+
+  async function authorizeRedoPayment() {
+    if (!activeOrder || !window.yamzo) return;
+    const managerId = Number(redoManagerId);
+    if (!managerId || !redoPin.trim() || redoReason.trim().length < 2) {
+      setMessage("Select a manager, enter the PIN, and provide a payment redo reason.");
+      return;
+    }
+    try {
+      const updated = await window.yamzo.orders.redoPayment(activeOrder.id, {
+        managerId,
+        pin: redoPin,
+        reason: redoReason,
+        operator: selectedHost
+      });
+      setActiveOrder(updated);
+      setRedoPaymentOpen(false);
+      setRedoPin("");
+      setRedoReason("");
+      setMessage("Payment reopened. Make the correction, print a new Unpaid Bill Copy, then record payment again.");
+      await refreshData();
+    } catch (error) {
+      setRedoPin("");
+      setMessage(error instanceof Error ? error.message : "Payment redo authorization failed.");
+    }
   }
 
   function buildReceiptPaymentInfo() {
@@ -875,15 +921,6 @@ export function App() {
       reference: activeOrder?.payment?.reference ?? (paymentReference.trim() || undefined),
       host: activeOrder?.payment?.hostName ?? selectedHost
     };
-  }
-
-  async function reopenHistoryOrder(orderId: number) {
-    if (!window.yamzo) return;
-    await window.yamzo.orders.reopen(orderId);
-    await loadOrder(orderId);
-    setOrderLane("openOrders");
-    setMessage("Order reopened for editing.");
-    await refreshData();
   }
 
   async function viewHistoryOrder(orderId: number) {
@@ -927,10 +964,14 @@ export function App() {
       return;
     }
     await saveOrderInfo(order.id);
+    const jobId = await window.yamzo.orders.sendKitchen(order.id);
+    const printed = jobId ? await window.yamzo.print.printJob(jobId) : false;
     setActiveOrder(await window.yamzo.orders.detail(order.id));
     setOrderLane("openOrders");
     setScreen("editOrder");
-    setMessage(`${detail.orderNumber} is now an Open Order. Kitchen KOT is required next.`);
+    setMessage(printed
+      ? `${detail.orderNumber} is open and its Kitchen KOT printed automatically.`
+      : `${detail.orderNumber} is open, but its required Kitchen KOT needs retry.`);
     await refreshData();
   }
 
@@ -1118,6 +1159,7 @@ export function App() {
         <SideNav active={screen === "completedOrders"} onClick={() => void goProtectedScreen("completedOrders")}>Completed Orders</SideNav>
         <SideNav active={screen === "cancelledOrders"} onClick={() => void goProtectedScreen("cancelledOrders")}>Cancelled Orders</SideNav>
         <SideNav active={screen === "swappedOrders"} onClick={() => void goProtectedScreen("swappedOrders")}>Swapped Orders</SideNav>
+        <SideNav active={screen === "cancelledKots"} onClick={() => void goProtectedScreen("cancelledKots")}>Cancelled KOTs</SideNav>
         <SideNav active={screen === "kitchenKot"} onClick={() => void goProtectedScreen("kitchenKot")}>Kitchen KOT</SideNav>
         <SideNav active={screen === "reports"} onClick={() => setScreen("reports")}>Reports</SideNav>
         <SideNav active={screen === "menu"} onClick={() => void goProtectedScreen("menu")}>Menu</SideNav>
@@ -1172,23 +1214,24 @@ export function App() {
                       <Button
                         key={table}
                         variant={selected ? "default" : "outline"}
-                        disabled={Boolean(activeOrder?.paid)}
-                        className={`h-14 text-base font-bold ${!selected && occupied ? "border-emerald-500 bg-emerald-100 text-emerald-950 hover:bg-emerald-200" : ""}`}
+                        disabled={Boolean(activeOrder?.paid) || Boolean(occupied && occupied.id !== activeOrder?.id) || Boolean(activeOrder && orderLane === "openOrders" && !tableChangeMode)}
+                        aria-label={occupied && occupied.id !== activeOrder?.id ? `${table} occupied and locked` : table}
+                        className={`h-14 text-base font-bold ${!selected && occupied ? "border-slate-400 bg-slate-200 text-slate-600" : ""}`}
                         onClick={() => chooseTable(table)}
                       >
-                        {table}{occupied ? " *" : ""}
+                        {table}{occupied && occupied.id !== activeOrder?.id ? " · Locked" : ""}
                       </Button>
                     );
                   })}
-                  <Input disabled={Boolean(activeOrder?.paid)} className="h-14 text-base font-bold" value={/^Table \d+$/.test(tableNumber) ? "" : tableNumber} onChange={(event) => setTableNumber(event.target.value)} onBlur={() => saveOrderInfo()} placeholder="Custom table" />
+                  <Input disabled={Boolean(activeOrder?.paid) || Boolean(activeOrder && orderLane === "openOrders" && !tableChangeMode)} className="h-14 text-base font-bold" value={/^Table \d+$/.test(tableNumber) ? "" : tableNumber} onChange={(event) => setTableNumber(event.target.value)} onBlur={() => activeOrder ? changeCustomTable() : saveOrderInfo()} placeholder="Custom table" />
                   </div>
+                  {activeOrder && orderLane === "openOrders" && !activeOrder.paid && (
+                    <div className="mt-2 flex gap-2">
+                      <Button type="button" variant={tableChangeMode ? "default" : "secondary"} onClick={() => setTableChangeMode(true)}>Change Table</Button>
+                      {tableChangeMode && <Button type="button" variant="outline" onClick={() => { setTableNumber(activeOrder.tableNumber ?? ""); setTableChangeMode(false); }}>Cancel</Button>}
+                    </div>
+                  )}
                   {needsDineInTable && <p className="mt-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-900">Select a table before choosing menu items.</p>}
-                </div>
-              )}
-              {isExternalOrder && (
-                <div className="flex items-center gap-2 rounded-lg border bg-muted/40 px-3 py-2">
-                  <Checkbox disabled={Boolean(activeOrder?.paid)} checked={externalKitchenEnabled} onCheckedChange={(checked) => setExternalKitchenEnabled(Boolean(checked))} />
-                  <span className="text-sm font-medium">Allow Kitchen Copy for this external order</span>
                 </div>
               )}
               <div className="rounded-xl border bg-white p-3">
@@ -1260,7 +1303,7 @@ export function App() {
               <div className="grid gap-2 pr-3">
                 {activeItems.length === 0 && <p className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">No items selected.</p>}
                 {activeItems.map((line) => (
-                  <OrderItemRow key={line.id} line={line} postKot={activeOrder?.initialKotState === "confirmed"} locked={Boolean(activeOrder?.paid)} onQty={updateExistingItem} onNote={editItemNote} onParcel={toggleItemParcel} onRemove={removeExistingItem} onSwap={(item) => { setSwapLine(item); setSwapReplacement(null); setSwapRemoveOnly(false); setSwapPin(""); setSwapReason(""); setSwapManagerId(String(managers[0]?.id ?? "")); setMessage(`Choose a replacement for ${item.name} from the menu, or remove it with manager authorization.`); }} />
+                  <OrderItemRow key={line.id} line={line} postKot={activeOrder?.initialKotState === "confirmed"} locked={Boolean(activeOrder?.paid)} onQty={updateExistingItem} onNote={editItemNote} onParcel={toggleItemParcel} onRemove={removeExistingItem} onSwap={(item) => { setSwapLine(item); setSwapReplacement(null); setSwapRemoveOnly(false); setSwapPin(""); setSwapReason(""); setSwapManagerId(String(managers[0]?.id ?? "")); setMessage(`Choose a replacement menu item for ${item.name}.`); }} onCancel={(item) => { setSwapLine(item); setSwapReplacement(null); setSwapRemoveOnly(true); setSwapPin(""); setSwapReason(""); setSwapManagerId(String(managers[0]?.id ?? "")); setMessage(`Authorize cancellation of ${item.name}.`); }} />
                 ))}
               </div>
             </ScrollArea>
@@ -1281,7 +1324,7 @@ export function App() {
                 <div className="flex justify-between gap-3"><span className="text-muted-foreground">Host</span><strong>{selectedHost}</strong></div>
                 <div className="flex justify-between gap-3"><span className="text-muted-foreground">Items</span><strong>{activeItems.reduce((sum, item) => sum + item.quantity, 0)}</strong></div>
               </div>
-              {swapLine && !swapReplacement && !swapRemoveOnly && <div role="status" className="grid gap-2 rounded-lg border border-sky-300 bg-sky-50 px-3 py-2 text-sm font-medium text-sky-950"><span>Select a menu item to replace {swapLine.name}, or authorize removal.</span><Button size="sm" variant="secondary" onClick={() => { setSwapRemoveOnly(true); setSwapPin(""); setSwapReason(""); }}>Remove without replacement</Button></div>}
+              {swapLine && !swapReplacement && !swapRemoveOnly && <div role="status" className="grid gap-2 rounded-lg border border-sky-300 bg-sky-50 px-3 py-2 text-sm font-medium text-sky-950"><span>Select a menu item to replace {swapLine.name}.</span></div>}
               <Button size="lg" className="mt-auto h-14 w-full text-base font-bold" disabled={!activeOrder || activeItems.length === 0 || needsDineInTable} onClick={finishNewOrder}>Create Open Order</Button>
               <p className="text-xs text-muted-foreground">Payment, Bill Copy, and Complete Order become available only after this order enters Open Orders.</p>
             </CardContent>
@@ -1295,12 +1338,17 @@ export function App() {
             <CardContent className="flex min-h-0 flex-col gap-4 overflow-y-auto p-4">
               <div role="status" className="grid grid-cols-2 gap-2 text-xs font-semibold">
                 <div className={`rounded-lg border p-2 ${activeOrder?.unresolvedKotCount === 0 ? "border-emerald-300 bg-emerald-50 text-emerald-900" : "border-amber-300 bg-amber-50 text-amber-950"}`}>1. Kitchen KOT {activeOrder?.unresolvedKotCount === 0 ? "✓" : `(${activeOrder?.unresolvedKotCount ?? 0} pending)`}</div>
-                <div className={`rounded-lg border p-2 ${activeOrder?.paid ? "border-emerald-300 bg-emerald-50 text-emerald-900" : "border-slate-300 bg-white text-slate-700"}`}>2. Payment {activeOrder?.paid ? "✓" : ""}</div>
-                <div className={`rounded-lg border p-2 ${activeOrder?.billState === "printed" ? "border-emerald-300 bg-emerald-50 text-emerald-900" : activeOrder?.billState === "failed" ? "border-amber-300 bg-amber-50 text-amber-950" : "border-slate-300 bg-white text-slate-700"}`}>3. Bill Copy {activeOrder?.billState === "printed" ? "✓" : activeOrder?.billState === "failed" ? "retry" : ""}</div>
-                <div className="rounded-lg border border-slate-300 bg-white p-2 text-slate-700">4. Complete</div>
+                <div className={`rounded-lg border p-2 ${activeOrder?.unresolvedKotCount === 0 ? "border-emerald-300 bg-emerald-50 text-emerald-900" : "border-slate-300 bg-white text-slate-700"}`}>2. Discount / Manual Entry</div>
+                <div className={`rounded-lg border p-2 ${activeOrder?.billState === "printed" ? "border-emerald-300 bg-emerald-50 text-emerald-900" : activeOrder?.billState === "failed" ? "border-amber-300 bg-amber-50 text-amber-950" : "border-slate-300 bg-white text-slate-700"}`}>3. Unpaid Bill {activeOrder?.billState === "printed" ? "✓" : activeOrder?.billState === "failed" ? "retry" : ""}</div>
+                <div className={`rounded-lg border p-2 ${activeOrder?.paid && activeOrder.paidSlipState === "printed" ? "border-emerald-300 bg-emerald-50 text-emerald-900" : activeOrder?.paid ? "border-amber-300 bg-amber-50 text-amber-950" : "border-slate-300 bg-white text-slate-700"}`}>4. Payment + Paid Slip {activeOrder?.paid && activeOrder.paidSlipState === "printed" ? "✓" : activeOrder?.paid ? "retry slip" : ""}</div>
+                <div className="col-span-2 rounded-lg border border-slate-300 bg-white p-2 text-slate-700">5. Complete Payment</div>
+              </div>
+              <div className="grid gap-2 rounded-xl border border-amber-200 bg-white p-3">
+                <p className="text-xs font-medium text-muted-foreground">Kitchen KOT is mandatory for every order type and prints automatically when Create Open Order is pressed.</p>
+                <Button size="lg" disabled={!activeOrder || Boolean(activeOrder.paid)} onClick={activeOrder?.failedKotCount ? () => retryWebsiteKitchenKot(activeOrder.id) : kitchenCopy}>{activeOrder?.failedKotCount ? "Retry Required KOT" : "Kitchen KOT / Reprint"}</Button>
               </div>
               {activeOrder?.paid && (
-                <p className="rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm font-medium text-emerald-950">Payment is recorded. Order items, totals, table, guests, and host are now locked.</p>
+                <p className="rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm font-medium text-emerald-950">Payment is recorded. Use Redo Payment with a manager PIN before Complete Payment if anything needs correction.</p>
               )}
               <MoneyRow label="Subtotal" value={subtotal} />
               <div className="grid gap-3 rounded-xl border border-emerald-200 bg-white p-3 shadow-sm">
@@ -1323,6 +1371,10 @@ export function App() {
               <div className="grid gap-3 rounded-xl border border-sky-200 bg-white p-3 shadow-sm">
                 <Field label="Manual entry"><Input disabled={Boolean(activeOrder?.paid)} type="number" min="0" value={finalTotalInput} onChange={(event) => handleFinalTotal(event.target.value)} onFocus={(event) => event.currentTarget.select()} placeholder={String(payableTotal)} /></Field>
                 <div className="rounded-xl border border-emerald-300 bg-emerald-50 p-3"><MoneyRow label="Total" value={activeOrder?.payment?.amount ?? payableTotal} strong /></div>
+              </div>
+              <div className="grid gap-3 rounded-xl border border-amber-300 bg-white p-3 shadow-sm">
+                <div><Label>Unpaid Bill Copy</Label><p className="text-xs text-muted-foreground">Confirm discounts and manual total, then print this before taking payment.</p></div>
+                <Button size="lg" className="h-14 w-full text-base font-bold" variant="secondary" disabled={!activeOrder || Boolean(activeOrder.paid) || activeOrder.unresolvedKotCount > 0 || activeItems.length === 0} onClick={billCopy}>{activeOrder?.billState === "failed" ? "Retry Unpaid Bill Copy" : activeOrder?.billState === "printed" ? "Reprint Unpaid Bill Copy" : "Print Unpaid Bill Copy"}</Button>
               </div>
               <div className="grid gap-3 rounded-xl border border-emerald-200 bg-white p-3 shadow-sm">
                 {activeOrder?.payment ? (
@@ -1359,21 +1411,16 @@ export function App() {
                         <Input value={paymentReference} onChange={(event) => setPaymentReference(event.target.value)} placeholder="Example: bKash number or card note" />
                       </Field>
                     )}
-                    <Button size="lg" className="h-14 w-full text-base font-bold" disabled={!activeOrder || activeOrder.unresolvedKotCount > 0 || cashPaymentInvalid || activeItems.length === 0} onClick={recordPayment}>Record Payment</Button>
+                    <Button size="lg" className="h-14 w-full text-base font-bold" disabled={!activeOrder || activeOrder.unresolvedKotCount > 0 || activeOrder.billState !== "printed" || cashPaymentInvalid || activeItems.length === 0} onClick={recordPayment}>Record Payment & Print Paid Slip</Button>
                   </>
                 )}
               </div>
-              <label className="flex items-center gap-2 rounded-lg border bg-white px-3 py-2 text-sm">
-                <Checkbox checked={reprintMode} onCheckedChange={(checked) => setReprintMode(Boolean(checked))} />
-                Reprint copy
-              </label>
-              <div className="grid gap-3 rounded-xl border bg-white p-3">
-                <p className="text-xs font-medium text-muted-foreground">Print</p>
-                <div className="grid grid-cols-2 gap-2">
-                  <Button size="lg" disabled={!activeOrder || !canPrintKitchen || Boolean(activeOrder.paid)} onClick={activeOrder?.failedKotCount ? () => retryWebsiteKitchenKot(activeOrder.id) : kitchenCopy}>{activeOrder?.failedKotCount ? "Retry KOT" : "Kitchen Copy"}</Button>
-                  <Button size="lg" variant="secondary" disabled={!activeOrder?.paid || activeOrder.unresolvedKotCount > 0} onClick={billCopy}>{activeOrder?.billState === "failed" ? "Retry Bill" : activeOrder?.billState === "printed" ? "Reprint Bill" : "Bill Copy"}</Button>
+              {activeOrder?.paid && (
+                <div className="grid gap-2 rounded-xl border border-sky-200 bg-white p-3">
+                  <Button size="lg" variant="secondary" disabled={activeOrder.paidSlipState === "printed"} onClick={retryPaidSlip}>{activeOrder.paidSlipState === "printed" ? "Paid Slip Printed" : "Retry Paid Slip"}</Button>
+                  <Button size="lg" variant="outline" onClick={() => { setRedoManagerId(String(managers[0]?.id ?? "")); setRedoPin(""); setRedoReason(""); setRedoPaymentOpen(true); }}>Redo Payment (Manager PIN)</Button>
                 </div>
-              </div>
+              )}
               {activeOrder?.source === "website" && (
                 <div className="grid gap-3 rounded-xl border border-sky-200 bg-sky-50 p-3">
                   <p className="text-xs font-bold text-sky-950">Website customer status</p>
@@ -1388,13 +1435,12 @@ export function App() {
                 <p className="text-xs font-medium text-muted-foreground">Close order</p>
                 {Boolean(activeOrder?.unresolvedKotCount) && (
                   <p role="status" className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-950">
-                    {activeOrder?.unresolvedKotCount} required Kitchen KOT {activeOrder?.unresolvedKotCount === 1 ? "is" : "are"} unresolved. Payment, Bill Copy, and completion are locked.
+                    {activeOrder?.unresolvedKotCount} required Kitchen KOT {activeOrder?.unresolvedKotCount === 1 ? "is" : "are"} unresolved. Unpaid Bill, payment, and completion are locked.
                   </p>
                 )}
-                <Button size="lg" className="w-full" disabled={!activeOrder?.paid || activeItems.length === 0 || activeOrder.unresolvedKotCount > 0 || activeOrder.billState !== "printed"} onClick={completeOrder}>Complete Order</Button>
-                <Button size="lg" variant="secondary" className="w-full" disabled={!activeOrder} onClick={requestCancelOrder}>Cancel Order</Button>
+                <Button size="lg" className="w-full" disabled={!activeOrder?.paid || activeOrder.paidSlipState !== "printed" || activeItems.length === 0 || activeOrder.unresolvedKotCount > 0 || activeOrder.billState !== "printed"} onClick={completeOrder}>Complete Payment</Button>
+                <Button size="lg" variant="secondary" className="w-full" disabled={!activeOrder || Boolean(activeOrder.paid)} onClick={requestCancelOrder}>Cancel Order</Button>
               </div>
-              {!canPrintKitchen && <p className="text-sm text-muted-foreground">Kitchen Copy is off for this external order.</p>}
               <div className="mt-auto grid gap-2 border-t pt-3">
                 <p className="text-xs font-medium text-muted-foreground">Printer quick actions</p>
                 <div className="grid grid-cols-2 gap-2">
@@ -1411,9 +1457,10 @@ export function App() {
       )}
 
       {screen === "websiteOrders" && <WebsiteOrdersScreen onMessage={setMessage} onAccepted={async () => { await refreshData(); setScreen("openOrders"); }} />}
-      {screen === "completedOrders" && <OrdersScreen title="Completed Orders" description="Settled POS orders and delivered website snapshots retained for audit." orders={completedOrders} menuTypes={menuTypes} onRefresh={refreshData} onResume={reopenHistoryOrder} resumeLabel="Edit" onView={viewHistoryOrder} afterList={<WebsiteCompletedOrdersPanel orders={completedWebsiteOrders} onRefresh={refreshData} onMessage={setMessage} />} />}
+      {screen === "completedOrders" && <OrdersScreen title="Completed Orders" description="Permanent read-only POS orders and delivered website snapshots retained for audit." orders={completedOrders} menuTypes={menuTypes} onRefresh={refreshData} onView={viewHistoryOrder} afterList={<WebsiteCompletedOrdersPanel orders={completedWebsiteOrders} onRefresh={refreshData} onMessage={setMessage} />} />}
       {screen === "cancelledOrders" && <OrdersScreen title="Cancelled Orders" description="Cancelled orders are retained permanently for audit." orders={cancelledOrders} menuTypes={menuTypes} onRefresh={refreshData} onView={viewHistoryOrder} />}
       {screen === "swappedOrders" && <SwappedOrdersScreen />}
+      {screen === "cancelledKots" && <CancelledKotsScreen />}
       {screen === "kitchenKot" && <KitchenKotHistoryScreen />}
       {screen === "reports" && <ContentShell title="Reports" description="Sales, order timing, payments, and profit reports."><ReportsPanel summary={summary} inventory={inventorySnapshot} menuTypes={menuTypes} /></ContentShell>}
       {screen === "menu" && (
@@ -1513,9 +1560,9 @@ export function App() {
       <AlertDialog open={Boolean(swapLine && (swapReplacement || swapRemoveOnly))} onOpenChange={(open) => { if (!open) { setSwapLine(null); setSwapReplacement(null); setSwapRemoveOnly(false); setSwapPin(""); setSwapReason(""); } }}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Authorize Swap / Change</AlertDialogTitle>
+            <AlertDialogTitle>{swapRemoveOnly ? "Authorize Item Cancellation" : "Authorize Swap"}</AlertDialogTitle>
             <AlertDialogDescription>
-              {swapLine?.name} → {swapRemoveOnly ? "Remove item" : swapReplacement?.name}. The original Kitchen KOT remains immutable and a required adjustment KOT will be created.
+              {swapLine?.name} → {swapRemoveOnly ? "Cancelled" : swapReplacement?.name}. The original Kitchen KOT remains immutable and a required {swapRemoveOnly ? "cancellation" : "swap"} KOT will be created for audit.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <Field label="Authorized By">
@@ -1525,10 +1572,30 @@ export function App() {
             </Select>
           </Field>
           <Field label="Manager PIN"><Input type="password" inputMode="numeric" autoComplete="off" value={swapPin} onChange={(event) => setSwapPin(event.target.value.replace(/\D/g, "").slice(0, 8))} /></Field>
-          <Field label="Reason *"><Textarea value={swapReason} onChange={(event) => setSwapReason(event.target.value)} placeholder="Example: Customer requested a different item" /></Field>
+          <Field label="Reason *"><Textarea value={swapReason} onChange={(event) => setSwapReason(event.target.value)} placeholder={swapRemoveOnly ? "Example: Customer cancelled this item" : "Example: Customer requested a different item"} /></Field>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <Button disabled={!swapManagerId || !swapPin || swapReason.trim().length < 2} onClick={authorizeSwap}>Authorize Change</Button>
+            <Button disabled={!swapManagerId || !swapPin || swapReason.trim().length < 2} onClick={authorizeSwap}>{swapRemoveOnly ? "Cancel Item" : "Authorize Swap"}</Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <AlertDialog open={redoPaymentOpen} onOpenChange={setRedoPaymentOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Redo Payment</AlertDialogTitle>
+            <AlertDialogDescription>The previous payment and print remain in the audit trail. This unlocks the running order and requires a new Unpaid Bill Copy and Paid Slip before completion.</AlertDialogDescription>
+          </AlertDialogHeader>
+          <Field label="Authorized By">
+            <Select value={redoManagerId || "none"} onValueChange={(value) => setRedoManagerId(value === "none" ? "" : value)}>
+              <SelectTrigger><SelectValue placeholder="Select manager" /></SelectTrigger>
+              <SelectContent><SelectItem value="none">Select manager</SelectItem>{managers.map((manager) => <SelectItem key={manager.id} value={String(manager.id)}>{manager.name} · {manager.managerCode}</SelectItem>)}</SelectContent>
+            </Select>
+          </Field>
+          <Field label="Manager PIN"><Input type="password" inputMode="numeric" autoComplete="off" value={redoPin} onChange={(event) => setRedoPin(event.target.value.replace(/\D/g, "").slice(0, 8))} /></Field>
+          <Field label="Reason *"><Textarea value={redoReason} onChange={(event) => setRedoReason(event.target.value)} placeholder="Example: Cash received was entered incorrectly" /></Field>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Keep Payment</AlertDialogCancel>
+            <Button disabled={!redoManagerId || !redoPin || redoReason.trim().length < 2} onClick={authorizeRedoPayment}>Authorize Redo</Button>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
@@ -1539,7 +1606,7 @@ export function App() {
             <AlertDialogDescription>
               {printConfirm?.type === "kitchen"
                 ? "There are no new kitchen items. Print the full Kitchen Copy again?"
-                : "This bill was already printed in this session. Print another Bill Copy?"}
+                : "This Unpaid Bill Copy was already printed. Print another copy?"}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -1585,11 +1652,6 @@ export function App() {
                 <span>Order date: {formatBusinessDate(historyView.orderDate)}</span>
                 <span>Created: {formatDate(historyView.createdAt)}</span>
                 <span>Updated: {formatDate(historyView.updatedAt)}</span>
-              </div>
-              <div className="grid gap-2 rounded-xl border bg-background p-3">
-                <Label>Correct order date</Label>
-                <DatePicker value={historyView.orderDate} onChange={changeHistoryOrderDate} label="Correct order date" />
-                <p className="text-xs text-muted-foreground">Changing the date regenerates Yamzo's internal receipt number. External platform IDs stay unchanged.</p>
               </div>
               <div className="max-h-64 overflow-auto rounded-xl border bg-muted/30 p-3">
                 {historyView.items.filter((item) => item.status === "active").map((item) => (
@@ -1905,7 +1967,7 @@ function MoneyRow({ label, value, strong = false }: { label: string; value: numb
   return <div className="flex items-center justify-between text-sm"><span>{label}</span><strong className={strong ? "text-xl" : "text-lg"}>{money(value)}</strong></div>;
 }
 
-function OrderItemRow({ line, postKot, locked, onQty, onNote, onParcel, onRemove, onSwap }: { line: OrderLine; postKot: boolean; locked: boolean; onQty: (line: OrderLine, quantity: number) => void; onNote: (line: OrderLine) => void; onParcel: (line: OrderLine, parcel: boolean) => void; onRemove: (line: OrderLine) => void; onSwap: (line: OrderLine) => void }) {
+function OrderItemRow({ line, postKot, locked, onQty, onNote, onParcel, onRemove, onSwap, onCancel }: { line: OrderLine; postKot: boolean; locked: boolean; onQty: (line: OrderLine, quantity: number) => void; onNote: (line: OrderLine) => void; onParcel: (line: OrderLine, parcel: boolean) => void; onRemove: (line: OrderLine) => void; onSwap: (line: OrderLine) => void; onCancel: (line: OrderLine) => void }) {
   const requiresSwap = postKot && line.kitchenPrinted;
   return (
     <Card size="sm" className="gap-2 py-3">
@@ -1925,8 +1987,11 @@ function OrderItemRow({ line, postKot, locked, onQty, onNote, onParcel, onRemove
         {line.note && <p className="rounded-md bg-muted px-2 py-1 text-xs text-muted-foreground">{line.note}</p>}
         {requiresSwap ? (
           <div className="grid gap-2">
-            <p className="text-xs text-muted-foreground">This item reached the kitchen. Use a traceable replacement instead of Remove.</p>
-            <Button disabled={locked} variant="secondary" className="h-11 font-semibold" onClick={() => onSwap(line)}>Swap / Change</Button>
+            <p className="text-xs text-muted-foreground">This item reached the kitchen. Swap it or cancel it with manager authorization and a reason.</p>
+            <div className="grid grid-cols-2 gap-2">
+              <Button disabled={locked} variant="secondary" className="h-11 font-semibold" onClick={() => onSwap(line)}>Swap</Button>
+              <Button disabled={locked} variant="destructive" className="h-11 font-semibold" onClick={() => onCancel(line)}>Cancel</Button>
+            </div>
           </div>
         ) : (
           <>
@@ -5268,7 +5333,7 @@ function receiptPreview(branding: BrandingSettings): string {
 }
 
 function friendlyPrintType(type: PrintJob["type"]): string {
-  const labels: Record<PrintJob["type"], string> = { kot: "Kitchen copy", kot_reprint: "Kitchen copy reprint", addition_kot: "Additional kitchen copy", void_kot: "Removed item notice", parcel_slip: "Parcel slip", bill: "Bill copy", audit: "Audit copy", receipt: "Receipt", receipt_reprint: "Receipt reprint", test: "Printer test" };
+  const labels: Record<PrintJob["type"], string> = { kot: "Kitchen copy", kot_reprint: "Kitchen copy reprint", addition_kot: "Additional kitchen copy", void_kot: "Cancelled / changed item KOT", parcel_slip: "Parcel slip", bill: "Unpaid bill copy", audit: "Audit copy", receipt: "Receipt", paid_slip: "Paid slip", receipt_reprint: "Receipt reprint", test: "Printer test" };
   return labels[type];
 }
 
