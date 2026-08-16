@@ -45,16 +45,17 @@ import {
   importRecipeInventoryCsv,
   listInventorySnapshot,
   previewInventoryBackfill,
+  resetInventoryActivity,
   saveMenuRecipe,
   setRecipeUseInRecipeEnabled,
   updateCostRecord,
   updatePhysicalCount
 } from "../src/main/domain/inventory";
 import { archiveMenuItem, deleteMenuItem, importMenuCsv, listMenuItems, parsePrice, saveMenuItem } from "../src/main/services/menuImport";
-import { getBrandingSettings, getHostNames, getMenuData, getTotalTables, setBrandingSettings, setHostNames, setInventoryTracking, getSetting, setMenuData, setMenuTypes, setPaymentMethods, setPrinterName, setTotalTables } from "../src/main/services/settings";
+import { getBrandingSettings, getHostNames, getMenuData, getTestMode, getTotalTables, setBrandingSettings, setHostNames, setInventoryTracking, getSetting, setMenuData, setMenuTypes, setPaymentMethods, setPrinterName, setTestMode, setTotalTables } from "../src/main/services/settings";
 import { buildDailySalesEmail, clearGmailAuth, getEmailSettings, saveEmailSettings } from "../src/main/services/email";
-import { renderReceiptHtml } from "../src/main/services/printer";
-import { beginPrintAttempt, finishPrintAttempt, getPrintJob, listPrintJobs, markPrintJobFailed, markPrintJobPrinted, markPrintJobRetry } from "../src/main/services/printQueue";
+import { printJob, renderReceiptHtml } from "../src/main/services/printer";
+import { beginPrintAttempt, enqueuePrintJob, finishPrintAttempt, getPrintJob, listPrintJobs, markPrintJobFailed, markPrintJobPrinted, markPrintJobRetry } from "../src/main/services/printQueue";
 import { listCancelledKotHistory, listKotHistory, listSwapHistory } from "../src/main/services/operationsHistory";
 import { buildAuditCopy, buildKitchenTicket, buildReceipt } from "../src/main/services/receipts";
 import { listActivityLogs, recordProtectedPanelAccess } from "../src/main/services/audit";
@@ -349,6 +350,19 @@ describe("Yamzo POS core", () => {
     expect(addressLines).toHaveLength(2);
   });
 
+  it("keeps Test Mode off by default and bypasses printer transport without skipping print audit", async () => {
+    const database = freshDb();
+    expect(getTestMode(database)).toBe(false);
+    setTestMode(database, true);
+    expect(getTestMode(database)).toBe(true);
+
+    const jobId = enqueuePrintJob(database, "kot", "TEST KOT", "Missing test printer");
+    await expect(printJob(database, jobId)).resolves.toBe(true);
+    expect(getPrintJob(database, jobId).status).toBe("printed");
+    expect(database.prepare("SELECT COUNT(*) AS count FROM print_attempts WHERE print_job_id = ? AND success = 1").get(jobId)).toMatchObject({ count: 1 });
+    expect(listActivityLogs(database, 10).some((log) => log.action === "test_mode_print_bypassed")).toBe(true);
+  });
+
   it("stores host names and consolidates matching bill-copy items only", () => {
     const database = freshDb();
     database.prepare("INSERT INTO menu_items (name, price) VALUES ('Chicken Chowmin', 240)").run();
@@ -484,6 +498,74 @@ describe("Yamzo POS core", () => {
     expect(actions).toContain("cost_record_updated");
     expect(actions).toContain("cost_record_deleted");
   });
+
+  it("resets only inventory activity while preserving catalog, recipes, prices, costs, and orders", () => {
+    const database = freshDb();
+    const menuItem = saveMenuItem(database, { name: "Reset Boundary Bowl", price: 300, category: "Rice", available: true, trackRecipe: true });
+    const unit = database.prepare("SELECT id FROM inventory_units WHERE short_name = 'g'").get() as { id: number };
+    const category = database.prepare("SELECT id FROM inventory_categories LIMIT 1").get() as { id: number };
+    const inventoryItemId = Number(database.prepare("INSERT INTO inventory_items (name, category_id, base_unit_id, low_stock_threshold) VALUES ('Reset Boundary Chicken', ?, ?, 100)").run(category.id, unit.id).lastInsertRowid);
+    saveMenuRecipe(database, { menuItemId: menuItem.id, ingredients: [{ inventoryItemId, quantityBase: 100, unitLabel: "g" }] });
+    addPriceRecord(database, { inventoryItemId, pricePerBase: 1, responsiblePerson: "Admin" });
+    addRestockEntry(database, { inventoryItemId, quantity: 1000, totalCost: 1000, responsiblePerson: "Admin" });
+    addPhysicalCount(database, { inventoryItemId, quantity: 800, responsiblePerson: "Admin" });
+    const costCategory = listInventorySnapshot(database).costCategories[0];
+    addCostRecord(database, { categoryId: costCategory.id, costName: "Reset boundary cost", amount: 50, paymentMethod: "cash" });
+    const order = createOrder(database, { source: "in_house", tableNumber: "Table 9" });
+    addOrderItem(database, order.id, { menuItemId: menuItem.id, quantity: 1 });
+    settleWithKot(database, order.id, "cash");
+
+    const retainedTables = [
+      "inventory_items",
+      "inventory_categories",
+      "inventory_units",
+      "menu_item_recipes",
+      "recipe_ingredients",
+      "inventory_price_history",
+      "cost_records",
+      "orders",
+      "order_items",
+      "order_cost_snapshots",
+      "order_item_cost_snapshots",
+      "payments"
+    ] as const;
+    const before = Object.fromEntries(retainedTables.map((table) => [table, (database.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as { count: number }).count]));
+    expect(() => resetInventoryActivity(database, { username: "admin", password: "wrong", confirmation: "RESET INVENTORY ACTIVITY" })).toThrow(/password/i);
+    expect(database.prepare("SELECT COUNT(*) AS count FROM inventory_restock_entries").get()).toMatchObject({ count: 1 });
+
+    expect(resetInventoryActivity(database, { username: "admin", password: "1234", confirmation: "RESET INVENTORY ACTIVITY" })).toEqual({
+      usageAdjustments: 1,
+      restockEntries: 1,
+      physicalCounts: 1
+    });
+    expect(database.prepare("SELECT COUNT(*) AS count FROM inventory_adjustments").get()).toMatchObject({ count: 0 });
+    expect(database.prepare("SELECT COUNT(*) AS count FROM inventory_restock_entries").get()).toMatchObject({ count: 0 });
+    expect(database.prepare("SELECT COUNT(*) AS count FROM inventory_physical_counts").get()).toMatchObject({ count: 0 });
+    for (const table of retainedTables) {
+      expect((database.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as { count: number }).count, table).toBe(before[table]);
+    }
+    expect(listInventorySnapshot(database).orderUsage.orders).toEqual([]);
+    expect(getOrderDetail(database, order.id).status).toBe("settled");
+    expect(listActivityLogs(database, 10).some((log) => log.action === "inventory_activity_reset")).toBe(true);
+  }, 10000);
+
+  it("rolls back every inventory activity deletion if any reset step fails", () => {
+    const database = freshDb();
+    const unit = database.prepare("SELECT id FROM inventory_units WHERE short_name = 'g'").get() as { id: number };
+    const category = database.prepare("SELECT id FROM inventory_categories LIMIT 1").get() as { id: number };
+    const inventoryItemId = Number(database.prepare("INSERT INTO inventory_items (name, category_id, base_unit_id, low_stock_threshold) VALUES ('Reset Rollback Item', ?, ?, 0)").run(category.id, unit.id).lastInsertRowid);
+    addRestockEntry(database, { inventoryItemId, quantity: 500, totalCost: 500 });
+    addPhysicalCount(database, { inventoryItemId, quantity: 400 });
+    database.prepare("INSERT INTO inventory_adjustments (inventory_item_id, quantity_delta, reason) VALUES (?, -10, 'test')").run(inventoryItemId);
+    database.exec("CREATE TRIGGER block_restock_reset BEFORE DELETE ON inventory_restock_entries BEGIN SELECT RAISE(ABORT, 'blocked reset'); END");
+
+    expect(() => resetInventoryActivity(database, { username: "admin", password: "1234", confirmation: "RESET INVENTORY ACTIVITY" })).toThrow(/blocked reset/i);
+    expect(database.prepare("SELECT COUNT(*) AS count FROM inventory_adjustments").get()).toMatchObject({ count: 1 });
+    expect(database.prepare("SELECT COUNT(*) AS count FROM inventory_restock_entries").get()).toMatchObject({ count: 1 });
+    expect(database.prepare("SELECT COUNT(*) AS count FROM inventory_physical_counts").get()).toMatchObject({ count: 1 });
+    expect(getSetting<number>(database, "inventoryActivityResetOrderId", -1)).toBe(-1);
+    expect(listActivityLogs(database, 10).some((log) => log.action === "inventory_activity_reset")).toBe(false);
+  }, 10000);
 
   it("counts sales and inventory only for completed orders", () => {
     const database = freshDb();

@@ -828,6 +828,12 @@ export interface InventorySnapshot {
   profit: SalesProfitSummary;
 }
 
+export interface InventoryActivityResetResult {
+  usageAdjustments: number;
+  restockEntries: number;
+  physicalCounts: number;
+}
+
 export interface PhysicalCountInput {
   inventoryItemId: number;
   quantity: number;

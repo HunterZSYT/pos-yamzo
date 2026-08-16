@@ -74,6 +74,14 @@ export function getInventoryTracking(db: Database.Database): boolean {
   return getSetting<boolean>(db, "trackInventory", false);
 }
 
+export function setTestMode(db: Database.Database, enabled: boolean): void {
+  setSetting(db, "testMode", Boolean(enabled));
+}
+
+export function getTestMode(db: Database.Database): boolean {
+  return getSetting<boolean>(db, "testMode", false);
+}
+
 export function getPrinterName(db: Database.Database): string {
   return getSetting<string>(db, "printerName", "");
 }

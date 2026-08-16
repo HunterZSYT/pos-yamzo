@@ -184,6 +184,7 @@ export function App() {
   const [selectedPrinter, setSelectedPrinter] = useState("");
   const [branding, setBranding] = useState<BrandingSettings>(emptyBranding);
   const [trackInventory, setTrackInventory] = useState(false);
+  const [testMode, setTestMode] = useState(false);
   const [inventorySnapshot, setInventorySnapshot] = useState<InventorySnapshot>(emptyInventorySnapshot);
   const [totalTables, setTotalTables] = useState(10);
   const [hostNames, setHostNames] = useState<string[]>(["Cashier"]);
@@ -349,7 +350,7 @@ export function App() {
   async function refreshData() {
     if (!window.yamzo) return;
     const today = dateInputValue(new Date());
-    const [menuRows, openRows, historyRows, websiteHistoryRows, sales, jobs, receipt, inventory, inventoryData, printerName, tableCount, hosts, categories, dataSets, types, paymentOptions, managerRows, activity] = await Promise.all([
+    const [menuRows, openRows, historyRows, websiteHistoryRows, sales, jobs, receipt, inventory, testModeEnabled, inventoryData, printerName, tableCount, hosts, categories, dataSets, types, paymentOptions, managerRows, activity] = await Promise.all([
       window.yamzo.menu.list(),
       window.yamzo.orders.open(),
       window.yamzo.orders.history(),
@@ -358,6 +359,7 @@ export function App() {
       window.yamzo.print.listJobs(),
       window.yamzo.settings.getBranding(),
       window.yamzo.settings.getInventoryTracking(),
+      window.yamzo.settings.getTestMode(),
       window.yamzo.inventory.snapshot(),
       window.yamzo.settings.getPrinterName(),
       window.yamzo.settings.getTotalTables(),
@@ -378,6 +380,7 @@ export function App() {
     setActivityLogs(activity);
     setBranding({ ...emptyBranding, ...receipt });
     setTrackInventory(Boolean(inventory));
+    setTestMode(Boolean(testModeEnabled));
     setInventorySnapshot(inventoryData ?? emptyInventorySnapshot);
     setSelectedPrinter(printerName);
     setTotalTables(tableCount);
@@ -1102,7 +1105,15 @@ export function App() {
 
   async function saveAppSettings() {
     await window.yamzo?.settings.setInventoryTracking(trackInventory);
+    await window.yamzo?.settings.setTestMode(testMode);
     setMessage("App settings saved.");
+    await refreshData();
+  }
+
+  async function resetInventoryActivity(passwordInput: string, confirmation: string) {
+    const result = await window.yamzo?.inventory.resetActivity({ username: "admin", password: passwordInput, confirmation });
+    if (!result) throw new Error("Inventory reset is unavailable.");
+    setMessage(`Inventory activity reset: ${result.usageAdjustments} usage, ${result.restockEntries} restocks, ${result.physicalCounts} stock counts cleared.`);
     await refreshData();
   }
 
@@ -1224,7 +1235,7 @@ export function App() {
               <DialogTitle>{orderLane === "newOrder" ? "New Order" : "Open Order"}</DialogTitle>
               <DialogDescription>Yamzo order workspace</DialogDescription>
             </DialogHeader>
-        <section className="grid h-full grid-cols-[minmax(340px,1fr)_minmax(220px,300px)_minmax(230px,300px)] gap-4 overflow-hidden p-4 xl:grid-cols-[minmax(420px,1fr)_minmax(300px,340px)_minmax(280px,320px)]">
+        <section className="grid h-full grid-cols-[minmax(340px,1fr)_minmax(220px,300px)_minmax(230px,300px)] gap-4 overflow-hidden p-4 xl:grid-cols-[minmax(420px,1fr)_minmax(300px,340px)_minmax(280px,320px)] [&>*]:min-w-0">
           <Card className="min-h-0 overflow-hidden border-amber-200 bg-amber-50/30 py-0">
             <CardHeader className="border-b py-4">
               <div className="flex flex-wrap items-start justify-between gap-3">
@@ -1378,12 +1389,13 @@ export function App() {
             </CardContent>
           </Card>
           ) : (
-          <Card className="grid min-h-0 grid-rows-[auto_1fr] overflow-hidden border-emerald-200 bg-emerald-50/40 py-0">
-            <CardHeader className="border-b py-4">
+          <Card className="grid min-h-0 min-w-0 grid-rows-[auto_1fr] overflow-hidden border-emerald-200 bg-emerald-50/40 py-0">
+            <CardHeader className="min-w-0 border-b py-4">
               <CardTitle>Payment & Close</CardTitle>
-              <CardDescription>{tableNumber ? tableNumber : formatConfiguredSource(source, menuTypes)} · Next: {nextOrderAction}</CardDescription>
+              <CardDescription className="break-words">{tableNumber ? tableNumber : formatConfiguredSource(source, menuTypes)} · Next: {nextOrderAction}</CardDescription>
             </CardHeader>
-            <CardContent className="flex min-h-0 flex-col gap-4 overflow-y-auto p-4">
+            <CardContent className="flex min-h-0 min-w-0 flex-col gap-4 overflow-x-hidden overflow-y-auto p-4">
+              {testMode && <p role="status" className="rounded-lg border border-amber-400 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-950">TEST MODE — physical printing is bypassed on this PC; print workflow and audit records remain active.</p>}
               <div role="status" className="grid grid-cols-2 gap-2 text-xs font-semibold">
                 <div className={`rounded-lg border p-2 ${activeOrder?.unresolvedKotCount === 0 ? "border-emerald-300 bg-emerald-50 text-emerald-900" : "border-amber-300 bg-amber-50 text-amber-950"}`}>1. Kitchen KOT {activeOrder?.unresolvedKotCount === 0 ? "✓" : `(${activeOrder?.unresolvedKotCount ?? 0} pending)`}</div>
                 <div className={`rounded-lg border p-2 ${activeOrder?.unresolvedKotCount === 0 ? "border-emerald-300 bg-emerald-50 text-emerald-900" : "border-slate-300 bg-white text-slate-700"}`}>2. Discount / Manual Entry</div>
@@ -1400,9 +1412,9 @@ export function App() {
                 )}
                 <div className="col-span-2 rounded-lg border border-slate-300 bg-white p-2 text-slate-700">5. Confirm Complete Order</div>
               </div>
-              <div className="grid gap-2 rounded-xl border border-amber-200 bg-white p-3">
+              <div className="grid min-w-0 gap-2 rounded-xl border border-amber-200 bg-white p-3">
                 <p className="text-xs font-medium text-muted-foreground">Kitchen KOT is mandatory for every order type and prints automatically when Create Open Order is pressed.</p>
-                <Button size="lg" disabled={!activeOrder || Boolean(activeOrder.paid)} onClick={activeOrder?.failedKotCount ? () => retryWebsiteKitchenKot(activeOrder.id) : kitchenCopy}>{activeOrder?.failedKotCount ? "Retry Required KOT" : "Kitchen KOT / Reprint"}</Button>
+                <Button size="lg" className="h-auto min-h-9 whitespace-normal px-3 py-2 text-center leading-tight" disabled={!activeOrder || Boolean(activeOrder.paid)} onClick={activeOrder?.failedKotCount ? () => retryWebsiteKitchenKot(activeOrder.id) : kitchenCopy}>{activeOrder?.failedKotCount ? "Retry Required KOT" : "Kitchen KOT / Reprint"}</Button>
               </div>
               {!platformManagedOrder && activeOrder?.paid && (
                 <p className="rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm font-medium text-emerald-950">Payment is recorded. Use Redo Payment with a manager PIN before Complete Payment if anything needs correction.</p>
@@ -1413,7 +1425,7 @@ export function App() {
                   <Label>Discount</Label>
                   <p className="text-xs text-muted-foreground">Percent by default, flat TK when needed.</p>
                 </div>
-                <div className="grid grid-cols-[1fr_92px] gap-2">
+                <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_92px] gap-2">
                   <Input disabled={Boolean(activeOrder?.paid)} type="number" min="0" value={discountValue} onChange={(event) => handleDiscountValue(event.target.value)} onFocus={(event) => event.currentTarget.select()} onBlur={() => activeOrder && !activeOrder.paid && window.yamzo?.orders.discount(activeOrder.id, calculatedDiscount)} placeholder="0" />
                   <Select disabled={Boolean(activeOrder?.paid)} value={discountMode} onValueChange={(value) => { setDiscountMode(value as DiscountMode); setFinalTotalInput(""); }}>
                     <SelectTrigger><SelectValue /></SelectTrigger>
@@ -1429,11 +1441,11 @@ export function App() {
                 <Field label="Manual entry"><Input disabled={Boolean(activeOrder?.paid)} type="number" min="0" value={finalTotalInput} onChange={(event) => handleFinalTotal(event.target.value)} onFocus={(event) => event.currentTarget.select()} placeholder={String(payableTotal)} /></Field>
                 <div className="rounded-xl border border-emerald-300 bg-emerald-50 p-3"><MoneyRow label="Total" value={activeOrder?.payment?.amount ?? payableTotal} strong /></div>
               </div>
-              {!platformManagedOrder && <div className="grid gap-3 rounded-xl border border-amber-300 bg-white p-3 shadow-sm">
+              {!platformManagedOrder && <div className="grid min-w-0 gap-3 rounded-xl border border-amber-300 bg-white p-3 shadow-sm">
                 <div><Label>Unpaid Bill Copy</Label><p className="text-xs text-muted-foreground">Confirm discounts and manual total, then print this before taking payment.</p></div>
-                <Button size="lg" className="h-14 w-full text-base font-bold" variant="secondary" disabled={!activeOrder || Boolean(activeOrder.paid) || activeOrder.unresolvedKotCount > 0 || activeItems.length === 0} onClick={billCopy}>{activeOrder?.billState === "failed" ? "Retry Unpaid Bill Copy" : activeOrder?.billState === "printed" ? "Reprint Unpaid Bill Copy" : "Print Unpaid Bill Copy"}</Button>
+                <Button size="lg" className="h-auto min-h-14 w-full whitespace-normal px-3 py-2 text-center text-base font-bold leading-tight" variant="secondary" disabled={!activeOrder || Boolean(activeOrder.paid) || activeOrder.unresolvedKotCount > 0 || activeItems.length === 0} onClick={billCopy}>{activeOrder?.billState === "failed" ? "Retry Unpaid Bill Copy" : activeOrder?.billState === "printed" ? "Reprint Unpaid Bill Copy" : "Print Unpaid Bill Copy"}</Button>
               </div>}
-              {!platformManagedOrder ? <div className="grid gap-3 rounded-xl border border-emerald-200 bg-white p-3 shadow-sm">
+              {!platformManagedOrder ? <div className="grid min-w-0 gap-3 rounded-xl border border-emerald-200 bg-white p-3 shadow-sm">
                 {activeOrder?.payment ? (
                   <div className="grid gap-2 text-sm">
                     <div className="flex justify-between gap-3"><span className="text-muted-foreground">Paid with</span><strong>{paymentMethods.find((method) => method.key === activeOrder.payment?.method)?.label ?? labelize(activeOrder.payment.method)}</strong></div>
@@ -1448,9 +1460,9 @@ export function App() {
                   <>
                     <div className="grid gap-2">
                       <Label>Payment source *</Label>
-                      <div role="group" aria-label="Payment source" className="grid grid-cols-3 gap-2">
+                      <div role="group" aria-label="Payment source" className="grid min-w-0 grid-cols-[repeat(3,minmax(0,1fr))] gap-2">
                         {([['cash', 'Cash'], ['bkash', 'bKash'], ['split', 'Multi']] as const).map(([value, label]) => (
-                          <label key={value} className={`flex min-h-14 cursor-pointer items-center justify-center gap-2 rounded-xl border-2 px-2 text-sm font-bold ${paymentMethod === value ? "border-emerald-500 bg-emerald-50 text-emerald-950" : "border-slate-200 bg-white text-slate-700"}`}>
+                          <label key={value} className={`flex min-h-14 min-w-0 cursor-pointer items-center justify-center gap-1 rounded-xl border-2 px-1 text-sm font-bold ${paymentMethod === value ? "border-emerald-500 bg-emerald-50 text-emerald-950" : "border-slate-200 bg-white text-slate-700"}`}>
                             <Checkbox aria-label={label} checked={paymentMethod === value} onCheckedChange={(checked) => {
                               if (!checked) return;
                               setPaymentMethod(value);
@@ -1483,7 +1495,7 @@ export function App() {
                       </div>
                     )}
                     {(paymentMethod === "bkash" || paymentMethod === "split") && <Field label="bKash reference (optional)"><Input value={paymentReference} onChange={(event) => setPaymentReference(event.target.value)} placeholder="Customer number or transaction note" /></Field>}
-                    <Button size="lg" className="h-14 w-full text-base font-bold" disabled={!activeOrder || activeOrder.unresolvedKotCount > 0 || activeOrder.billState !== "printed" || paymentEntryInvalid || activeItems.length === 0} onClick={recordPayment}>Record Payment & Print Paid Slip</Button>
+                    <Button size="lg" className="h-auto min-h-14 w-full whitespace-normal px-3 py-2 text-center text-base font-bold leading-tight" disabled={!activeOrder || activeOrder.unresolvedKotCount > 0 || activeOrder.billState !== "printed" || paymentEntryInvalid || activeItems.length === 0} onClick={recordPayment}>Record Payment & Print Paid Slip</Button>
                   </>
                 )}
               </div> : (
@@ -1495,7 +1507,7 @@ export function App() {
               {activeOrder?.paid && (
                 <div className="grid gap-2 rounded-xl border border-sky-200 bg-white p-3">
                   <Button size="lg" variant="secondary" disabled={activeOrder.paidSlipState === "printed"} onClick={retryPaidSlip}>{activeOrder.paidSlipState === "printed" ? "Paid Slip Printed" : "Retry Paid Slip"}</Button>
-                  <Button size="lg" variant="outline" onClick={() => { setRedoManagerId(String(managers[0]?.id ?? "")); setRedoPin(""); setRedoReason(""); setRedoPaymentOpen(true); }}>Redo Payment (Manager PIN)</Button>
+                  <Button size="lg" className="h-auto min-h-9 whitespace-normal px-3 py-2 text-center leading-tight" variant="outline" onClick={() => { setRedoManagerId(String(managers[0]?.id ?? "")); setRedoPin(""); setRedoReason(""); setRedoPaymentOpen(true); }}>Redo Payment (Manager PIN)</Button>
                 </div>
               )}
               {activeOrder?.source === "website" && (
@@ -1515,14 +1527,14 @@ export function App() {
                     {activeOrder?.unresolvedKotCount} required Kitchen KOT {activeOrder?.unresolvedKotCount === 1 ? "is" : "are"} unresolved. Unpaid Bill, payment, and completion are locked.
                   </p>
                 )}
-                <Button size="lg" className="w-full" disabled={!activeOrder || activeItems.length === 0 || activeOrder.unresolvedKotCount > 0 || (platformManagedOrder ? !externalOrderId.trim() : !activeOrder.paid || activeOrder.paidSlipState !== "printed" || activeOrder.billState !== "printed")} onClick={requestCompleteOrder}>Review & Complete Order</Button>
-                <Button size="lg" variant="secondary" className="w-full" disabled={!activeOrder || Boolean(activeOrder.paid)} onClick={requestCancelOrder}>Cancel Order</Button>
+                <Button size="lg" className="h-auto min-h-9 w-full whitespace-normal px-3 py-2 text-center leading-tight" disabled={!activeOrder || activeItems.length === 0 || activeOrder.unresolvedKotCount > 0 || (platformManagedOrder ? !externalOrderId.trim() : !activeOrder.paid || activeOrder.paidSlipState !== "printed" || activeOrder.billState !== "printed")} onClick={requestCompleteOrder}>Review & Complete Order</Button>
+                <Button size="lg" variant="secondary" className="h-auto min-h-9 w-full whitespace-normal px-3 py-2 text-center leading-tight" disabled={!activeOrder || Boolean(activeOrder.paid)} onClick={requestCancelOrder}>Cancel Order</Button>
               </div>
               <div className="mt-auto grid gap-2 border-t pt-3">
                 <p className="text-xs font-medium text-muted-foreground">Printer quick actions</p>
-                <div className="grid grid-cols-2 gap-2">
-                  <Button size="lg" variant="secondary" onClick={quickTestPrint}>Test Print</Button>
-                  <Button size="lg" variant="secondary" onClick={connectPrinter}>Printer Connect</Button>
+                <div className="grid min-w-0 grid-cols-[repeat(2,minmax(0,1fr))] gap-2">
+                  <Button size="lg" className="min-w-0 whitespace-normal px-2 text-center leading-tight" variant="secondary" onClick={quickTestPrint}>Test Print</Button>
+                  <Button size="lg" className="min-w-0 whitespace-normal px-2 text-center leading-tight" variant="secondary" onClick={connectPrinter}>Printer Connect</Button>
                 </div>
               </div>
             </CardContent>
@@ -1558,7 +1570,7 @@ export function App() {
       {screen === "admin" && (
         <ContentShell title="Admin" description="Restaurant settings, integrations, and audit controls.">
           <Tabs value={adminTab} onValueChange={(value) => setAdminTab(value as AdminTab)} className="min-h-0">
-            <TabsList className="grid w-full max-w-5xl grid-cols-3 lg:grid-cols-6">
+            <TabsList className="grid w-full max-w-5xl grid-cols-3 lg:grid-cols-7">
               <TabsTrigger value="receipt">Receipt</TabsTrigger>
               <TabsTrigger value="printer">Printers</TabsTrigger>
               <TabsTrigger value="integrations">Integrations</TabsTrigger>
@@ -1570,7 +1582,7 @@ export function App() {
             <TabsContent value="receipt"><ReceiptAdmin branding={branding} setBranding={setBranding} chooseReceiptImage={chooseReceiptImage} setMessage={setMessage} /></TabsContent>
             <TabsContent value="printer"><PrinterAdmin selectedPrinter={selectedPrinter} setSelectedPrinter={setSelectedPrinter} printers={printers} failedPrintJobs={failedPrintJobs} refreshData={refreshData} setMessage={setMessage} /></TabsContent>
             <TabsContent value="integrations"><IntegrationsAdmin /></TabsContent>
-            <TabsContent value="app"><AppSettings trackInventory={trackInventory} setTrackInventory={setTrackInventory} saveAppSettings={saveAppSettings} hostNames={hostNames} hostDraft={hostDraft} setHostDraft={setHostDraft} saveHostNames={saveHostNames} paymentMethods={paymentMethods} setPaymentMethods={setPaymentMethods} savePaymentMethods={savePaymentMethods} /></TabsContent>
+            <TabsContent value="app"><AppSettings trackInventory={trackInventory} setTrackInventory={setTrackInventory} testMode={testMode} setTestMode={setTestMode} saveAppSettings={saveAppSettings} resetInventoryActivity={resetInventoryActivity} hostNames={hostNames} hostDraft={hostDraft} setHostDraft={setHostDraft} saveHostNames={saveHostNames} paymentMethods={paymentMethods} setPaymentMethods={setPaymentMethods} savePaymentMethods={savePaymentMethods} /></TabsContent>
             <TabsContent value="managers"><ManagerAdmin onMessage={setMessage} /></TabsContent>
             <TabsContent value="security"><SecurityAdmin username={username} passwordForm={passwordForm} setPasswordForm={setPasswordForm} setMessage={setMessage} /></TabsContent>
             <TabsContent value="activity"><ActivityLogAdmin logs={activityLogs} refreshData={refreshData} /></TabsContent>
@@ -5340,7 +5352,10 @@ function SecurityAdmin({ username, passwordForm, setPasswordForm, setMessage }: 
 function AppSettings({
   trackInventory,
   setTrackInventory,
+  testMode,
+  setTestMode,
   saveAppSettings,
+  resetInventoryActivity,
   hostNames,
   hostDraft,
   setHostDraft,
@@ -5351,7 +5366,10 @@ function AppSettings({
 }: {
   trackInventory: boolean;
   setTrackInventory: (value: boolean) => void;
+  testMode: boolean;
+  setTestMode: (value: boolean) => void;
   saveAppSettings: () => void;
+  resetInventoryActivity: (password: string, confirmation: string) => Promise<void>;
   hostNames: string[];
   hostDraft: string;
   setHostDraft: (value: string) => void;
@@ -5360,15 +5378,54 @@ function AppSettings({
   setPaymentMethods: React.Dispatch<React.SetStateAction<PaymentMethodSetting[]>>;
   savePaymentMethods: (methods?: PaymentMethodSetting[]) => void;
 }) {
+  const [resetOpen, setResetOpen] = useState(false);
+  const [resetPassword, setResetPassword] = useState("");
+  const [resetConfirmation, setResetConfirmation] = useState("");
+  const [resetError, setResetError] = useState("");
+  const [resetBusy, setResetBusy] = useState(false);
+
+  function closeResetDialog() {
+    setResetOpen(false);
+    setResetPassword("");
+    setResetConfirmation("");
+    setResetError("");
+  }
+
+  async function confirmInventoryReset() {
+    setResetBusy(true);
+    setResetError("");
+    try {
+      await resetInventoryActivity(resetPassword, resetConfirmation);
+      closeResetDialog();
+    } catch (error) {
+      setResetError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setResetBusy(false);
+    }
+  }
+
   return (
     <div className="grid max-w-2xl gap-3 pt-4">
       <Card>
         <CardContent className="grid gap-4 p-4">
           <label className="flex items-start gap-3">
-            <Checkbox checked={trackInventory} onCheckedChange={(checked) => setTrackInventory(Boolean(checked))} />
-            <span className="grid gap-1"><strong>Track Inventory</strong><small className="text-muted-foreground">Completed orders reduce stock using recipe or direct-item links configured in Menu.</small></span>
+            <Checkbox aria-describedby="track-inventory-description" checked={trackInventory} onCheckedChange={(checked) => setTrackInventory(Boolean(checked))} />
+            <span className="grid gap-1"><strong>Track Inventory</strong><small id="track-inventory-description" className="text-muted-foreground">Completed orders reduce stock using recipe or direct-item links configured in Menu.</small></span>
+          </label>
+          <label className="flex items-start gap-3 rounded-xl border border-amber-300 bg-amber-50 p-3 text-amber-950">
+            <Checkbox aria-describedby="test-mode-description" checked={testMode} onCheckedChange={(checked) => setTestMode(Boolean(checked))} />
+            <span className="grid gap-1"><strong>Enable Test Mode on this PC</strong><small id="test-mode-description">Bypasses physical printer transport while preserving KOT, bill, paid-slip, print-job, and audit flow. It is off by default on every other installation.</small></span>
           </label>
           <Button onClick={saveAppSettings}>Save App Settings</Button>
+        </CardContent>
+      </Card>
+      <Card className="border-destructive/40">
+        <CardHeader>
+          <CardTitle>Reset Inventory Activity</CardTitle>
+          <CardDescription>Clears usage adjustments, restock history, and physical stock counts only. Catalog items, recipes, categories, units, prices, costs, orders, payments, and order history are permanently preserved.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Button variant="destructive" onClick={() => setResetOpen(true)}>Reset Usage, Restocks & Stock Counts</Button>
         </CardContent>
       </Card>
       <Card>
@@ -5414,6 +5471,23 @@ function AppSettings({
           </div>
         </CardContent>
       </Card>
+      <AlertDialog open={resetOpen} onOpenChange={(open) => { if (!open && !resetBusy) closeResetDialog(); }}>
+        <AlertDialogContent className="sm:max-w-md">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Reset inventory activity?</AlertDialogTitle>
+            <AlertDialogDescription>This cannot be undone. Only usage adjustments, restock entries, and physical counts will be removed. No items, recipes, prices, costs, or orders will be changed.</AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="grid gap-3">
+            <Field id="inventory-reset-password" label="Admin password"><Input id="inventory-reset-password" type="password" autoComplete="current-password" value={resetPassword} onChange={(event) => setResetPassword(event.target.value)} /></Field>
+            <Field id="inventory-reset-confirmation" label='Type "RESET INVENTORY ACTIVITY"'><Input id="inventory-reset-confirmation" autoComplete="off" value={resetConfirmation} onChange={(event) => setResetConfirmation(event.target.value)} /></Field>
+            {resetError && <p role="alert" className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">{resetError}</p>}
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={resetBusy}>Keep Inventory Activity</AlertDialogCancel>
+            <Button variant="destructive" disabled={resetBusy || !resetPassword || resetConfirmation !== "RESET INVENTORY ACTIVITY"} onClick={() => void confirmInventoryReset()}>{resetBusy ? "Resetting…" : "Reset Inventory Activity"}</Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

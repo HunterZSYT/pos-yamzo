@@ -59,6 +59,7 @@ import {
   previewMenuBindingImpact,
   previewInventoryBackfill,
   recalculateOrderUsage,
+  resetInventoryActivity,
   removeCostCategory,
   removeInventoryCategory,
   removeInventoryUnit,
@@ -86,6 +87,7 @@ import {
   getPaymentMethods,
   getPrinterName,
   getTotalTables,
+  getTestMode,
   setBrandingSettings,
   setHostNames,
   setInventoryTracking,
@@ -94,6 +96,7 @@ import {
   setMenuTypes,
   setPaymentMethods,
   setPrinterName,
+  setTestMode,
   setTotalTables
 } from "./services/settings.js";
 import { enqueuePrintJob, listPrintJobs } from "./services/printQueue.js";
@@ -162,6 +165,7 @@ export function registerIpc(db: Database.Database, dependencies: IpcDependencies
   ipcMain.handle("operations:swapHistory", (_event, range) => listSwapHistory(db, range));
   ipcMain.handle("operations:cancelledKotHistory", (_event, range) => listCancelledKotHistory(db, range));
   ipcMain.handle("inventory:snapshot", () => listInventorySnapshot(db));
+  ipcMain.handle("inventory:resetActivity", (_event, input) => resetInventoryActivity(db, input));
   ipcMain.handle("inventory:previewBackfill", (_event, input) => previewInventoryBackfill(db, input));
   ipcMain.handle("inventory:applyBackfill", (_event, input) => applyInventoryBackfill(db, input));
   ipcMain.handle("inventory:recalculateOrderUsage", (_event, orderId: number) => recalculateOrderUsage(db, orderId));
@@ -378,6 +382,11 @@ export function registerIpc(db: Database.Database, dependencies: IpcDependencies
   ipcMain.handle("settings:setInventoryTracking", (_event, enabled: boolean) => {
     setInventoryTracking(db, enabled);
     recordActivity(db, "inventory_tracking_setting_updated", { enabled }, "admin");
+  });
+  ipcMain.handle("settings:getTestMode", () => getTestMode(db));
+  ipcMain.handle("settings:setTestMode", (_event, enabled: boolean) => {
+    setTestMode(db, enabled);
+    recordActivity(db, "test_mode_setting_updated", { enabled }, "admin");
   });
   ipcMain.handle("settings:getPrinterName", () => getPrinterName(db));
   ipcMain.handle("settings:setPrinterName", (_event, printerName: string) => {

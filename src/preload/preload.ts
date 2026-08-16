@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron";
-import type { BrandingSettings, EmailSettingsInput, GoogleOAuthClientInput, GoogleSheetsSettingsInput, HistoricalScope, HistoryRange, Manager, ManagerAuthorization, ManagerInput, MenuDataSetting, MenuItemInput, MenuTypeSetting, OrderDetail, OrderItemInput, OrderSource, OrderSummary, PaymentMethod, PaymentMethodSetting, PhysicalCountInput, PhysicalCountUpdateInput, ReceiptPaymentInfo, RecipeSaveInput, RecordPaymentResult, RestockEntryInput, RestockEntryUpdateInput, SalesSummary, WebsiteConnectionDiagnostics, WebsiteConnectionStatus, WebsiteOrderDetail, WebsiteOrderPrintBatch, WebsiteOrderPrintKind, WebsiteOrderStatus, WebsiteOrderSummary } from "../shared/types.js";
+import type { BrandingSettings, EmailSettingsInput, GoogleOAuthClientInput, GoogleSheetsSettingsInput, HistoricalScope, HistoryRange, InventoryActivityResetResult, Manager, ManagerAuthorization, ManagerInput, MenuDataSetting, MenuItemInput, MenuTypeSetting, OrderDetail, OrderItemInput, OrderSource, OrderSummary, PaymentMethod, PaymentMethodSetting, PhysicalCountInput, PhysicalCountUpdateInput, ReceiptPaymentInfo, RecipeSaveInput, RecordPaymentResult, RestockEntryInput, RestockEntryUpdateInput, SalesSummary, WebsiteConnectionDiagnostics, WebsiteConnectionStatus, WebsiteOrderDetail, WebsiteOrderPrintBatch, WebsiteOrderPrintKind, WebsiteOrderStatus, WebsiteOrderSummary } from "../shared/types.js";
 
 const api = {
   auth: {
@@ -14,6 +14,7 @@ const api = {
   },
   inventory: {
     snapshot: () => ipcRenderer.invoke("inventory:snapshot"),
+    resetActivity: (input: { username: string; password: string; confirmation: string }): Promise<InventoryActivityResetResult> => ipcRenderer.invoke("inventory:resetActivity", input),
     previewBackfill: (input?: { start?: string | null; end?: string | null }) => ipcRenderer.invoke("inventory:previewBackfill", input),
     applyBackfill: (input?: { start?: string | null; end?: string | null; mode?: "missing" | "replace"; reason?: string | null }) => ipcRenderer.invoke("inventory:applyBackfill", input),
     recalculateOrderUsage: (orderId: number) => ipcRenderer.invoke("inventory:recalculateOrderUsage", orderId),
@@ -157,6 +158,8 @@ const api = {
     chooseImage: () => ipcRenderer.invoke("settings:chooseImage"),
     getInventoryTracking: () => ipcRenderer.invoke("settings:getInventoryTracking"),
     setInventoryTracking: (enabled: boolean) => ipcRenderer.invoke("settings:setInventoryTracking", enabled),
+    getTestMode: (): Promise<boolean> => ipcRenderer.invoke("settings:getTestMode"),
+    setTestMode: (enabled: boolean) => ipcRenderer.invoke("settings:setTestMode", enabled),
     getPrinterName: () => ipcRenderer.invoke("settings:getPrinterName"),
     setPrinterName: (printerName: string) => ipcRenderer.invoke("settings:setPrinterName", printerName),
     getTotalTables: () => ipcRenderer.invoke("settings:getTotalTables"),

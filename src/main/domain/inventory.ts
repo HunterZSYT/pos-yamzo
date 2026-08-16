@@ -10,6 +10,7 @@ import type {
   InventoryImportResult,
   InventoryItemImportResult,
   InventoryItem,
+  InventoryActivityResetResult,
   InventoryOrderUsageSnapshot,
   InventorySnapshot,
   InventoryStatusSummary,
@@ -30,6 +31,8 @@ import type {
   SalesProfitSummary
 } from "../../shared/types.js";
 import { recordActivity } from "../services/audit.js";
+import { getSetting, setSetting } from "../services/settings.js";
+import { login } from "./auth.js";
 
 type RecipeCsvRow = {
   "recipe number"?: string;
@@ -79,6 +82,12 @@ type MenuBindingInput = {
   reason?: string | null;
 };
 
+type InventoryActivityTable = "inventory_adjustments" | "inventory_restock_entries" | "inventory_physical_counts";
+
+function countRows(db: Database.Database, table: InventoryActivityTable): number {
+  return (db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as { count: number }).count;
+}
+
 export function listInventorySnapshot(db: Database.Database): InventorySnapshot {
   const items = listInventoryItems(db);
   const recipes = listMenuRecipes(db);
@@ -101,6 +110,40 @@ export function listInventorySnapshot(db: Database.Database): InventorySnapshot 
     status: getInventoryStatus(db, items, recipes, restocks),
     profit: getSalesProfitSummary(db)
   };
+}
+
+export function resetInventoryActivity(
+  db: Database.Database,
+  input: { username: string; password: string; confirmation: string }
+): InventoryActivityResetResult {
+  const username = cleanText(input.username);
+  const confirmation = cleanText(input.confirmation);
+  if (confirmation !== "RESET INVENTORY ACTIVITY") {
+    recordActivity(db, "inventory_activity_reset_failed", { username, reason: "confirmation_mismatch" }, username || "unknown");
+    throw new Error('Type "RESET INVENTORY ACTIVITY" to confirm.');
+  }
+
+  const user = login(db, username, input.password);
+  if (!user || user.role !== "admin") {
+    recordActivity(db, "inventory_activity_reset_failed", { username, reason: "admin_authentication_failed" }, username || "unknown");
+    throw new Error("Admin password is incorrect.");
+  }
+
+  const result: InventoryActivityResetResult = {
+    usageAdjustments: countRows(db, "inventory_adjustments"),
+    restockEntries: countRows(db, "inventory_restock_entries"),
+    physicalCounts: countRows(db, "inventory_physical_counts")
+  };
+  const reset = db.transaction(() => {
+    const latestOrder = db.prepare("SELECT COALESCE(MAX(id), 0) AS id FROM orders").get() as { id: number };
+    db.prepare("DELETE FROM inventory_adjustments").run();
+    db.prepare("DELETE FROM inventory_physical_counts").run();
+    db.prepare("DELETE FROM inventory_restock_entries").run();
+    setSetting(db, "inventoryActivityResetOrderId", latestOrder.id);
+    recordActivity(db, "inventory_activity_reset", { ...result }, user.username);
+  });
+  reset();
+  return result;
 }
 
 export function importRecipeInventoryCsv(
@@ -1403,6 +1446,7 @@ export function listCostRecords(db: Database.Database, limit = 120): CostRecord[
 }
 
 export function listInventoryOrderUsage(db: Database.Database, limit = 120): InventoryOrderUsageSnapshot {
+  const resetAfterOrderId = getSetting<number>(db, "inventoryActivityResetOrderId", 0);
   const rows = db.prepare(
     `SELECT o.id AS order_id, o.order_number, o.order_date, o.source, o.table_number, o.settled_at, COALESCE(ocs.revenue, 0) AS order_total,
             oi.id AS order_item_id, oi.name AS menu_item_name, oics.quantity, oics.revenue, oics.raw_cost, oics.details_json
@@ -1410,10 +1454,10 @@ export function listInventoryOrderUsage(db: Database.Database, limit = 120): Inv
      JOIN orders o ON o.id = oics.order_id
      JOIN order_items oi ON oi.id = oics.order_item_id
      LEFT JOIN order_cost_snapshots ocs ON ocs.order_id = o.id
-     WHERE o.status = 'settled' AND o.is_test = 0
+     WHERE o.status = 'settled' AND o.is_test = 0 AND o.id > ?
      ORDER BY datetime(o.settled_at) DESC, o.id DESC, oi.id ASC
      LIMIT ?`
-  ).all(limit) as Array<{
+  ).all(resetAfterOrderId, limit) as Array<{
     order_id: number;
     order_number: string;
     order_date: string;

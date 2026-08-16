@@ -121,6 +121,22 @@ function describeActivity(action: string, details: AuditDetails): Pick<ActivityL
   if (action === "inventory_tracking_setting_updated") {
     return { title: "Inventory tracking setting updated", description: `Track Inventory is ${details.enabled ? "on" : "off"}.`, status: "info" };
   }
+  if (action === "test_mode_setting_updated") {
+    return { title: "Test Mode setting updated", description: `Local printer bypass is ${details.enabled ? "on" : "off"} on this PC.`, status: "info" };
+  }
+  if (action === "test_mode_print_bypassed") {
+    return { title: "Print bypassed in Test Mode", description: `${String(details.printType ?? "Print")} job ${String(details.printJobId ?? "-")} completed without physical printer transport.`, status: "success" };
+  }
+  if (action === "inventory_activity_reset" || action === "inventory_activity_reset_failed") {
+    if (action === "inventory_activity_reset_failed") {
+      return { title: "Inventory activity reset denied", description: "Admin authorization or confirmation failed. No inventory data was reset.", status: "failed" };
+    }
+    return {
+      title: "Inventory activity reset",
+      description: `${Number(details.usageAdjustments ?? 0)} usage adjustments, ${Number(details.restockEntries ?? 0)} restocks, and ${Number(details.physicalCounts ?? 0)} physical counts cleared. Catalog, recipes, and orders preserved.`,
+      status: "success"
+    };
+  }
   if (action === "inventory_csv_imported") {
     return {
       title: "Inventory CSV imported",
