@@ -8,7 +8,8 @@ import {
   runScheduledDailyEmail,
   saveEmailSettings
 } from "../src/main/services/email";
-import { addOrderItem, createOrder, settleOrder } from "../src/main/domain/orders";
+import { addOrderItem, createOrder, sendNewItemsToKitchen, settleOrder } from "../src/main/domain/orders";
+import { markPrintJobPrinted } from "../src/main/services/printQueue";
 import { setMenuTypes } from "../src/main/services/settings";
 import { migrate } from "../src/main/database/schema";
 
@@ -61,6 +62,7 @@ describe("Google-backed daily email scheduling", () => {
     const menuItemId = Number(db.prepare("INSERT INTO menu_items (name, price) VALUES ('Lunch Box', 250)").run().lastInsertRowid);
     const order = createOrder(db, { source, orderDate: "2026-07-13" });
     addOrderItem(db, order.id, { menuItemId, quantity: 1 });
+    markPrintJobPrinted(db, sendNewItemsToKitchen(db, order.id)!);
     settleOrder(db, order.id, "cash", 250);
     const email = buildDailySalesEmail(db, "2026-07-13");
     expect(email).toContain("Corporate Catering");

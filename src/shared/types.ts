@@ -17,6 +17,7 @@ export type PrintJobType =
   | "bill"
   | "audit"
   | "receipt"
+  | "paid_slip"
   | "receipt_reprint"
   | "test";
 
@@ -131,7 +132,13 @@ export interface OrderSummary {
   unresolvedKotCount: number;
   failedKotCount: number;
   billState: PrintJobStatus | "not_printed";
+  paidSlipState: PrintJobStatus | "not_printed";
   websiteInitialKotState?: WebsiteInitialKotState | null;
+}
+
+export interface RecordPaymentResult {
+  order: OrderSummary;
+  paidSlipPrintJobId: number;
 }
 
 export interface Manager {
@@ -515,6 +522,7 @@ export interface SwapHistoryEntry {
   source: string;
   tableNumber: string | null;
   guestCount: number;
+  eventKind: "swap" | "cancel";
   originalName: string;
   originalQuantity: number;
   replacementName: string | null;
@@ -921,6 +929,8 @@ export interface ReceiptPaymentInfo {
   paid: boolean;
   method: PaymentMethod;
   amount?: number;
+  cashReceived?: number;
+  changeGiven?: number;
   reference?: string;
   host?: string;
 }

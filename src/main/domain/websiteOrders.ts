@@ -317,7 +317,7 @@ export function ensureWebsiteInitialKot(
     const existing = getWebsiteInitialKot(db, cleanId);
     if (existing) return existing;
 
-    const printJobId = sendNewItemsToKitchen(db, remote.pos_order_id, true);
+    const printJobId = sendNewItemsToKitchen(db, remote.pos_order_id);
     if (!printJobId) {
       throw new Error("The website order did not produce an initial Kitchen KOT.");
     }

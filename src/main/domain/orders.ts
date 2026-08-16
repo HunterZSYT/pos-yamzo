@@ -1,10 +1,10 @@
 import type Database from "better-sqlite3";
-import type { ManagerAuthorization, OrderBatch, OrderDetail, OrderItemInput, OrderLine, OrderSource, OrderSummary, PaymentMethod, ReceiptPaymentInfo } from "../../shared/types.js";
+import type { ManagerAuthorization, OrderBatch, OrderDetail, OrderItemInput, OrderLine, OrderSource, OrderSummary, PaymentMethod, ReceiptPaymentInfo, RecordPaymentResult } from "../../shared/types.js";
 import { calculateOrderTotals } from "./pricing.js";
 import { enqueuePrintJob } from "../services/printQueue.js";
 import { buildAuditCopy, buildKitchenTicket, buildReceipt } from "../services/receipts.js";
 import { getBrandingSettings, getMenuTypes, getPaymentMethods, getPrinterName } from "../services/settings.js";
-import { createOrderCostSnapshot, reverseOrderCostSnapshot } from "./inventory.js";
+import { createOrderCostSnapshot } from "./inventory.js";
 import { verifyManagerPin } from "./managers.js";
 
 export function createOrder(
@@ -14,12 +14,14 @@ export function createOrder(
   const orderDate = normalizeBusinessDate(input.orderDate ?? localBusinessDate());
   const deliveryFee = Math.round(Number(input.deliveryFee ?? 0));
   if (!Number.isSafeInteger(deliveryFee) || deliveryFee < 0) throw new Error("Delivery fee cannot be negative.");
+  const tableNumber = input.tableNumber?.trim() || null;
+  assertTableAvailable(db, tableNumber);
   const create = db.transaction(() => {
     const orderNumber = nextOrderNumber(db, orderDate);
     return Number(
       db
         .prepare("INSERT INTO orders (order_number, source, table_number, guest_count, host_name, requires_kot, note, external_order_id, order_date, delivery_fee, is_test) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-        .run(orderNumber, input.source, input.tableNumber ?? null, normalizeGuestCount(input.guestCount), cleanHostName(input.hostName), input.requiresKot ? 1 : 0, input.note ?? null, cleanExternalOrderId(input.externalOrderId), orderDate, deliveryFee, input.isTest ? 1 : 0).lastInsertRowid
+        .run(orderNumber, input.source, tableNumber, normalizeGuestCount(input.guestCount), cleanHostName(input.hostName), 1, input.note ?? null, cleanExternalOrderId(input.externalOrderId), orderDate, deliveryFee, input.isTest ? 1 : 0).lastInsertRowid
     );
   });
   return getOrderSummary(db, create());
@@ -58,15 +60,11 @@ export function addOrderItem(db: Database.Database, orderId: number, input: Orde
   return Number(result.lastInsertRowid);
 }
 
-export function sendNewItemsToKitchen(db: Database.Database, orderId: number, allowExternal = false): number | null {
+export function sendNewItemsToKitchen(db: Database.Database, orderId: number): number | null {
   const order = db.prepare("SELECT source, requires_kot, host_name FROM orders WHERE id = ?").get(orderId) as { source: OrderSource; requires_kot: number; host_name: string } | undefined;
   if (!order) {
     throw new Error("Order not found.");
   }
-  if (!allowExternal && ["foodpanda", "foodie", "other"].includes(order.source)) {
-    return null;
-  }
-
   const unsentItems = db
     .prepare("SELECT id FROM order_items WHERE order_id = ? AND status = 'active' AND kitchen_sent_at IS NULL")
     .all(orderId) as Array<{ id: number }>;
@@ -126,17 +124,27 @@ export function applyDiscount(db: Database.Database, orderId: number, discount: 
     throw new Error("Discount cannot be negative.");
   }
   assertEditableOrder(db, orderId);
-  db.prepare("UPDATE orders SET discount = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(Math.max(0, discount), orderId);
+  const normalizedDiscount = Math.max(0, discount);
+  const current = db.prepare("SELECT discount FROM orders WHERE id = ?").get(orderId) as { discount: number } | undefined;
+  if (current?.discount === normalizedDiscount) return getOrderSummary(db, orderId);
+  invalidateCurrentBill(db, orderId);
+  db.prepare("UPDATE orders SET discount = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(normalizedDiscount, orderId);
   return getOrderSummary(db, orderId);
 }
 
 export function updateOrderNote(db: Database.Database, orderId: number, note: string): OrderSummary {
-  db.prepare("UPDATE orders SET note = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(note.trim() || null, orderId);
+  assertEditableOrder(db, orderId);
+  const normalizedNote = note.trim() || null;
+  const current = db.prepare("SELECT note FROM orders WHERE id = ?").get(orderId) as { note: string | null } | undefined;
+  if (current?.note === normalizedNote) return getOrderSummary(db, orderId);
+  invalidateCurrentBill(db, orderId);
+  db.prepare("UPDATE orders SET note = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(normalizedNote, orderId);
   return getOrderSummary(db, orderId);
 }
 
 export function updateOrderDate(db: Database.Database, orderId: number, value: string): OrderSummary {
   const orderDate = normalizeBusinessDate(value);
+  assertEditableOrder(db, orderId);
   const update = db.transaction(() => {
     const order = db
       .prepare("SELECT order_number, order_date, external_order_id FROM orders WHERE id = ?")
@@ -148,6 +156,7 @@ export function updateOrderDate(db: Database.Database, orderId: number, value: s
       return;
     }
 
+    invalidateCurrentBill(db, orderId);
     const orderNumber = nextOrderNumber(db, orderDate);
     db.prepare("UPDATE orders SET order_number = ?, order_date = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(orderNumber, orderDate, orderId);
     db.prepare(
@@ -174,18 +183,50 @@ export function updateOrderInfo(
   assertEditableOrder(db, orderId);
   const menuType = getMenuTypes(db).find((type) => type.key === input.source);
   const tablesEnabled = menuType?.tablesEnabled ?? input.source === "in_house";
+  const tableNumber = tablesEnabled ? input.tableNumber?.trim() || null : null;
+  assertTableAvailable(db, tableNumber, orderId);
   const existing = db.prepare(
-    "SELECT external_order_id, guest_count, host_name FROM orders WHERE id = ?"
-  ).get(orderId) as { external_order_id: string | null; guest_count: number; host_name: string } | undefined;
+    "SELECT source, table_number, external_order_id, guest_count, host_name, note FROM orders WHERE id = ?"
+  ).get(orderId) as { source: OrderSource; table_number: string | null; external_order_id: string | null; guest_count: number; host_name: string; note: string | null } | undefined;
+  if (!existing) throw new Error("Order not found.");
+  const guestCount = normalizeGuestCount(input.guestCount ?? existing.guest_count);
+  const hostName = cleanHostName(input.hostName ?? existing.host_name);
+  const note = input.note?.trim() || null;
+  const externalOrderId = input.externalOrderId === undefined ? existing.external_order_id : cleanExternalOrderId(input.externalOrderId);
+  if (existing.source === input.source && existing.table_number === tableNumber && existing.guest_count === guestCount && existing.host_name === hostName && existing.note === note && existing.external_order_id === externalOrderId) {
+    return getOrderSummary(db, orderId);
+  }
+  invalidateCurrentBill(db, orderId);
   db.prepare("UPDATE orders SET source = ?, table_number = ?, guest_count = ?, host_name = ?, note = ?, external_order_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(
     input.source,
-    tablesEnabled ? input.tableNumber?.trim() || null : null,
-    normalizeGuestCount(input.guestCount ?? existing?.guest_count),
-    cleanHostName(input.hostName ?? existing?.host_name),
-    input.note?.trim() || null,
-    input.externalOrderId === undefined ? existing?.external_order_id ?? null : cleanExternalOrderId(input.externalOrderId),
+    tableNumber,
+    guestCount,
+    hostName,
+    note,
+    externalOrderId,
     orderId
   );
+  return getOrderSummary(db, orderId);
+}
+
+export function changeOrderTable(db: Database.Database, orderId: number, tableNumber: string): OrderSummary {
+  assertEditableOrder(db, orderId);
+  const nextTable = tableNumber.trim();
+  if (!nextTable) throw new Error("Choose a table before confirming the change.");
+  const order = db.prepare("SELECT source, table_number FROM orders WHERE id = ?").get(orderId) as { source: OrderSource; table_number: string | null } | undefined;
+  if (!order) throw new Error("Order not found.");
+  const menuType = getMenuTypes(db).find((type) => type.key === order.source);
+  if (!(menuType?.tablesEnabled ?? order.source === "in_house")) throw new Error("This order type does not use tables.");
+  if (order.table_number === nextTable) return getOrderSummary(db, orderId);
+  assertTableAvailable(db, nextTable, orderId);
+  const tx = db.transaction(() => {
+    invalidateCurrentBill(db, orderId);
+    db.prepare("UPDATE orders SET table_number = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(nextTable, orderId);
+    db.prepare(
+      "INSERT INTO audit_logs (action, entity_type, entity_id, details) VALUES ('change_order_table', 'order', ?, ?)"
+    ).run(String(orderId), JSON.stringify({ from: order.table_number, to: nextTable }));
+  });
+  tx();
   return getOrderSummary(db, orderId);
 }
 
@@ -229,12 +270,30 @@ export function removeOrderItem(db: Database.Database, orderItemId: number, reas
 export function swapOrderItem(
   db: Database.Database,
   orderItemId: number,
-  replacement: OrderItemInput | null,
+  replacement: OrderItemInput,
   authorization: ManagerAuthorization
+): { order: OrderDetail; voidPrintJobId: number; adjustmentPrintJobId: number } {
+  return adjustPostKotItem(db, orderItemId, replacement, authorization, "swap");
+}
+
+export function cancelOrderItem(
+  db: Database.Database,
+  orderItemId: number,
+  authorization: ManagerAuthorization
+): { order: OrderDetail; voidPrintJobId: number; adjustmentPrintJobId: number } {
+  return adjustPostKotItem(db, orderItemId, null, authorization, "cancel");
+}
+
+function adjustPostKotItem(
+  db: Database.Database,
+  orderItemId: number,
+  replacement: OrderItemInput | null,
+  authorization: ManagerAuthorization,
+  eventKind: "swap" | "cancel"
 ): { order: OrderDetail; voidPrintJobId: number; adjustmentPrintJobId: number } {
   const reason = authorization.reason.trim().replace(/\s+/g, " ");
   const operator = authorization.operator.trim().replace(/\s+/g, " ") || "Cashier";
-  if (reason.length < 2 || reason.length > 240) throw new Error("A Swap / Change reason is required.");
+  if (reason.length < 2 || reason.length > 240) throw new Error(`A ${eventKind === "cancel" ? "cancellation" : "Swap / Change"} reason is required.`);
   const manager = verifyManagerPin(db, authorization.managerId, authorization.pin);
   const original = db.prepare(
     `SELECT oi.order_id, oi.kitchen_sent_at, oi.name, oi.quantity,
@@ -247,13 +306,13 @@ export function swapOrderItem(
   if (!original.kitchen_sent_at || !isInitialKotConfirmed(db, original.order_id)) {
     throw new Error("Remove and replace this item before the first Kitchen KOT prints.");
   }
-  assertNoRecordedPayment(db, original.order_id);
+  assertEditableOrder(db, original.order_id);
   const tx = db.transaction(() => {
     db.prepare("UPDATE order_items SET status = 'voided', void_reason = ? WHERE id = ?").run(reason, orderItemId);
     const adjustmentPrintJobId = enqueuePrintJob(
       db,
       "void_kot",
-      buildKitchenTicket(db, original.order_id, [orderItemId], "Yamzo Swap / Change - Remove"),
+      buildKitchenTicket(db, original.order_id, [orderItemId], eventKind === "cancel" ? "Yamzo Cancelled KOT" : "Yamzo Swap / Change - Remove"),
       getPrinterName(db) || null,
       { orderId: original.order_id, operator, managerId: manager.id, reason, relatedPrintJobId: original.initial_kot_print_job_id ?? undefined }
     );
@@ -268,8 +327,8 @@ export function swapOrderItem(
       `INSERT INTO swap_events
         (order_id, original_order_item_id, replacement_order_item_id, original_name, original_quantity,
          replacement_name, replacement_quantity, manager_id, manager_name, operator, reason,
-         original_kot_print_job_id, adjustment_print_job_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         original_kot_print_job_id, adjustment_print_job_id, event_kind)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       original.order_id,
       orderItemId,
@@ -283,11 +342,12 @@ export function swapOrderItem(
       operator,
       reason,
       original.initial_kot_print_job_id,
-      adjustmentPrintJobId
+      adjustmentPrintJobId,
+      eventKind
     );
     db.prepare(
-      "INSERT INTO audit_logs (actor, action, entity_type, entity_id, details) VALUES (?, 'swap_order_item', 'order', ?, ?)"
-    ).run(manager.name, String(original.order_id), JSON.stringify({ orderItemId, replacementOrderItemId, reason, operator, adjustmentPrintJobId }));
+      "INSERT INTO audit_logs (actor, action, entity_type, entity_id, details) VALUES (?, ?, 'order', ?, ?)"
+    ).run(manager.name, eventKind === "cancel" ? "cancel_kot_item" : "swap_order_item", String(original.order_id), JSON.stringify({ orderItemId, replacementOrderItemId, reason, operator, adjustmentPrintJobId }));
     touchOrder(db, original.order_id);
     return { order: getOrderDetail(db, original.order_id), voidPrintJobId: adjustmentPrintJobId, adjustmentPrintJobId };
   });
@@ -302,16 +362,15 @@ export function cancelOrder(db: Database.Database, orderId: number, reason = "")
   if (order.status === "cancelled") {
     return getOrderSummary(db, orderId);
   }
+  if (order.status === "settled") {
+    throw new Error("Completed orders are permanent and cannot be cancelled.");
+  }
+  assertNoRecordedPayment(db, orderId);
   const cancellationReason = reason.trim();
   if (cancellationReason.length < 2) {
     throw new Error("A short cancellation reason is required.");
   }
   const tx = db.transaction(() => {
-    db.prepare("DELETE FROM order_payment_sessions WHERE order_id = ?").run(orderId);
-    db.prepare("DELETE FROM payments WHERE order_id = ?").run(orderId);
-    if (order.status === "settled") {
-      reverseOrderCostSnapshot(db, orderId);
-    }
     db.prepare(
       "INSERT INTO audit_logs (action, entity_type, entity_id, details) VALUES ('cancel_order', 'order', ?, ?)"
     ).run(String(orderId), JSON.stringify({ reason: cancellationReason || null, fromStatus: order.status }));
@@ -329,19 +388,7 @@ export function reopenOrder(db: Database.Database, orderId: number): OrderSummar
   if (order.status === "open" || order.status === "kitchen_sent") {
     return getOrderSummary(db, orderId);
   }
-  const tx = db.transaction(() => {
-    db.prepare("DELETE FROM order_payment_sessions WHERE order_id = ?").run(orderId);
-    db.prepare("DELETE FROM payments WHERE order_id = ?").run(orderId);
-    db.prepare("DELETE FROM order_bill_prints WHERE order_id = ?").run(orderId);
-    reverseOrderCostSnapshot(db, orderId);
-    const kitchenStatus = orderHasKitchenPrintedItems(db, orderId) ? "kitchen_sent" : "open";
-    db.prepare("UPDATE orders SET status = ?, settled_at = NULL, bill_print_job_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(kitchenStatus, orderId);
-    db.prepare(
-      "INSERT INTO audit_logs (action, entity_type, entity_id, details) VALUES ('reopen_order', 'order', ?, ?)"
-    ).run(String(orderId), JSON.stringify({ fromStatus: order.status }));
-  });
-  tx();
-  return getOrderSummary(db, orderId);
+  throw new Error("Closed orders are permanent and cannot be reopened.");
 }
 
 export function orderHasKitchenPrintedItems(db: Database.Database, orderId: number): boolean {
@@ -406,11 +453,18 @@ export function recordOrderPayment(
   db: Database.Database,
   orderId: number,
   input: { method: PaymentMethod; cashReceived?: number; reference?: string; hostName?: string }
-): OrderSummary {
+): RecordPaymentResult {
   const order = db.prepare("SELECT status FROM orders WHERE id = ?").get(orderId) as { status: string } | undefined;
   if (!order) throw new Error("Order not found.");
   if (order.status === "settled" || order.status === "cancelled") throw new Error("Order is already closed.");
   assertAllRequiredKotsPrinted(db, orderId);
+  const bill = db.prepare(
+    `SELECT pj.status
+     FROM orders o
+     LEFT JOIN print_jobs pj ON pj.id = o.bill_print_job_id
+     WHERE o.id = ?`
+  ).get(orderId) as { status: string | null } | undefined;
+  if (bill?.status !== "printed") throw new Error("Print the Unpaid Bill Copy before recording payment.");
   const totals = calculateOrderTotals(db, orderId);
   if (totals.total <= 0) throw new Error("Cannot record payment for an empty order.");
   const activeMethods = getPaymentMethods(db).filter((method) => method.active).map((method) => method.key);
@@ -429,10 +483,13 @@ export function recordOrderPayment(
   ).get(orderId) as { method: PaymentMethod; payable_amount: number; cash_received: number | null; reference: string | null; host_name: string } | undefined;
   if (existing) {
     if (existing.method === input.method && existing.payable_amount === totals.total && existing.cash_received === cashReceived && existing.reference === reference && existing.host_name === hostName) {
-      return getOrderSummary(db, orderId);
+      const pointer = db.prepare("SELECT paid_slip_print_job_id FROM orders WHERE id = ?").get(orderId) as { paid_slip_print_job_id: number | null };
+      if (!pointer.paid_slip_print_job_id) throw new Error("Paid Slip is missing for the recorded payment.");
+      return { order: getOrderSummary(db, orderId), paidSlipPrintJobId: pointer.paid_slip_print_job_id };
     }
     throw new Error("Payment is already recorded for this order.");
   }
+  const branding = getBrandingSettings(db);
   const tx = db.transaction(() => {
     db.prepare(
       `INSERT INTO order_payment_sessions
@@ -444,9 +501,56 @@ export function recordOrderPayment(
     db.prepare(
       "INSERT INTO audit_logs (action, entity_type, entity_id, details) VALUES ('record_payment', 'order', ?, ?)"
     ).run(String(orderId), JSON.stringify({ method: input.method, amount: totals.total, cashReceived, changeGiven, reference }));
+    const paidSlipPrintJobId = enqueuePrintJob(
+      db,
+      "paid_slip",
+      buildReceipt(db, orderId, branding, "PAID SLIP", {
+        paid: true,
+        method: input.method,
+        amount: totals.total,
+        cashReceived: cashReceived ?? undefined,
+        changeGiven,
+        reference: reference ?? undefined,
+        host: hostName
+      }, { consolidateUnmodifiedItems: true }),
+      getPrinterName(db) || null,
+      { orderId, operator: hostName }
+    );
+    db.prepare("UPDATE orders SET paid_slip_print_job_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(paidSlipPrintJobId, orderId);
+    return paidSlipPrintJobId;
+  });
+  const paidSlipPrintJobId = tx();
+  return { order: getOrderSummary(db, orderId), paidSlipPrintJobId };
+}
+
+export function redoOrderPayment(
+  db: Database.Database,
+  orderId: number,
+  authorization: ManagerAuthorization
+): OrderDetail {
+  const reason = authorization.reason.trim().replace(/\s+/g, " ");
+  const operator = authorization.operator.trim().replace(/\s+/g, " ") || "Cashier";
+  if (reason.length < 2 || reason.length > 240) throw new Error("A payment redo reason is required.");
+  const manager = verifyManagerPin(db, authorization.managerId, authorization.pin);
+  const order = db.prepare("SELECT status FROM orders WHERE id = ?").get(orderId) as { status: string } | undefined;
+  if (!order) throw new Error("Order not found.");
+  if (order.status === "settled" || order.status === "cancelled") throw new Error("Completed and cancelled orders are permanent.");
+  const payment = db.prepare(
+    "SELECT method, payable_amount, cash_received, change_given, reference, host_name, created_at FROM order_payment_sessions WHERE order_id = ?"
+  ).get(orderId) as Record<string, unknown> | undefined;
+  if (!payment) throw new Error("No recorded payment is available to redo.");
+  const tx = db.transaction(() => {
+    db.prepare("DELETE FROM payments WHERE order_id = ?").run(orderId);
+    db.prepare("DELETE FROM order_payment_sessions WHERE order_id = ?").run(orderId);
+    db.prepare(
+      "UPDATE orders SET bill_print_job_id = NULL, paid_slip_print_job_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+    ).run(orderId);
+    db.prepare(
+      "INSERT INTO audit_logs (actor, action, entity_type, entity_id, details) VALUES (?, 'redo_order_payment', 'order', ?, ?)"
+    ).run(manager.name, String(orderId), JSON.stringify({ reason, operator, previousPayment: payment }));
   });
   tx();
-  return getOrderSummary(db, orderId);
+  return getOrderDetail(db, orderId);
 }
 
 export function completePaidOrder(db: Database.Database, orderId: number): OrderSummary {
@@ -462,12 +566,18 @@ export function completePaidOrder(db: Database.Database, orderId: number): Order
   if (!payment || payment.payable_amount !== totals.total) throw new Error("A valid payment is required before completion.");
   const bill = db.prepare(
     `SELECT pj.status
-     FROM order_bill_prints obp
-     JOIN print_jobs pj ON pj.id = obp.print_job_id
-     WHERE obp.order_id = ? AND obp.is_original = 1
-     ORDER BY obp.id LIMIT 1`
+     FROM orders o
+     LEFT JOIN print_jobs pj ON pj.id = o.bill_print_job_id
+     WHERE o.id = ?`
   ).get(orderId) as { status: string } | undefined;
-  if (bill?.status !== "printed") throw new Error("Bill Copy must print successfully before completion.");
+  if (bill?.status !== "printed") throw new Error("The current Unpaid Bill Copy must print successfully before completion.");
+  const paidSlip = db.prepare(
+    `SELECT pj.status
+     FROM orders o
+     LEFT JOIN print_jobs pj ON pj.id = o.paid_slip_print_job_id
+     WHERE o.id = ?`
+  ).get(orderId) as { status: string | null } | undefined;
+  if (paidSlip?.status !== "printed") throw new Error("Paid Slip must print successfully before completion.");
   const tx = db.transaction(() => {
     createOrderCostSnapshot(db, orderId);
     db.prepare("UPDATE kitchen_tickets SET completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP) WHERE order_id = ? AND completed_at IS NULL").run(orderId);
@@ -542,6 +652,7 @@ export function getOrderSummary(db: Database.Database, orderId: number): OrderSu
     initial_kot_print_job_id: number | null;
     initial_kot_printed_at: string | null;
     bill_print_job_id: number | null;
+    paid_slip_print_job_id: number | null;
     requires_kot: number;
   };
   const totals = calculateOrderTotals(db, orderId);
@@ -560,6 +671,9 @@ export function getOrderSummary(db: Database.Database, orderId: number): OrderSu
     : undefined;
   const billJob = order.bill_print_job_id
     ? db.prepare("SELECT status FROM print_jobs WHERE id = ?").get(order.bill_print_job_id) as { status: OrderSummary["billState"] } | undefined
+    : undefined;
+  const paidSlipJob = order.paid_slip_print_job_id
+    ? db.prepare("SELECT status FROM print_jobs WHERE id = ?").get(order.paid_slip_print_job_id) as { status: OrderSummary["paidSlipState"] } | undefined
     : undefined;
   const paid = db.prepare("SELECT COUNT(*) AS count FROM payments WHERE order_id = ?").get(orderId) as { count: number };
   const payment = db.prepare(
@@ -629,6 +743,7 @@ export function getOrderSummary(db: Database.Database, orderId: number): OrderSu
     unresolvedKotCount: Math.max(kotRequirements.unresolved ?? 0, initialKotState === "required" ? 1 : 0),
     failedKotCount: kotRequirements.failed ?? 0,
     billState: billJob?.status ?? "not_printed",
+    paidSlipState: paidSlipJob?.status ?? "not_printed",
     websiteInitialKotState: initialKot?.state ?? null
   };
 }
@@ -665,18 +780,13 @@ export function printBillCopy(db: Database.Database, orderId: number, paymentInf
     "SELECT requires_kot, bill_print_job_id FROM orders WHERE id = ?"
   ).get(orderId) as { requires_kot: number; bill_print_job_id: number | null } | undefined;
   if (!order) throw new Error("Order not found.");
-  if (order.requires_kot === 1) {
-    assertAllRequiredKotsPrinted(db, orderId);
-    const paid = db.prepare(
-      "SELECT method, payable_amount, reference, host_name FROM order_payment_sessions WHERE order_id = ?"
-    ).get(orderId) as { method: PaymentMethod; payable_amount: number; reference: string | null; host_name: string } | undefined;
-    if (!paid) throw new Error("Record payment before printing Bill Copy.");
-    paymentInfo = { paid: true, method: paid.method, amount: paid.payable_amount, reference: paid.reference ?? undefined, host: paid.host_name };
-  }
+  assertAllRequiredKotsPrinted(db, orderId);
+  assertNoRecordedPayment(db, orderId);
+  paymentInfo = { paid: false, method: "cash" };
   if (!reprint && order.bill_print_job_id) return order.bill_print_job_id;
   const branding = getBrandingSettings(db);
   const host = db.prepare("SELECT host_name FROM orders WHERE id = ?").get(orderId) as { host_name: string };
-  const jobId = enqueuePrintJob(db, "bill", buildReceipt(db, orderId, branding, "BILL COPY", paymentInfo, { consolidateUnmodifiedItems: true }), getPrinterName(db) || null, { orderId, operator: host.host_name, relatedPrintJobId: reprint ? order.bill_print_job_id ?? undefined : undefined });
+  const jobId = enqueuePrintJob(db, "bill", buildReceipt(db, orderId, branding, "UNPAID BILL COPY", paymentInfo, { consolidateUnmodifiedItems: true }), getPrinterName(db) || null, { orderId, operator: host.host_name, relatedPrintJobId: reprint ? order.bill_print_job_id ?? undefined : undefined });
   db.prepare(
     "INSERT INTO order_bill_prints (order_id, print_job_id, is_original) VALUES (?, ?, ?)"
   ).run(orderId, jobId, order.bill_print_job_id ? 0 : 1);
@@ -885,7 +995,27 @@ function normalizeMoney(value: number | undefined, label: string): number {
 }
 
 function touchOrder(db: Database.Database, orderId: number): void {
+  invalidateCurrentBill(db, orderId);
   db.prepare("UPDATE orders SET updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(orderId);
+}
+
+function invalidateCurrentBill(db: Database.Database, orderId: number): void {
+  const payment = db.prepare("SELECT 1 FROM order_payment_sessions WHERE order_id = ?").get(orderId);
+  if (payment) return;
+  db.prepare("UPDATE orders SET bill_print_job_id = NULL WHERE id = ? AND bill_print_job_id IS NOT NULL").run(orderId);
+}
+
+function assertTableAvailable(db: Database.Database, tableNumber: string | null, excludeOrderId?: number): void {
+  if (!tableNumber) return;
+  const occupied = db.prepare(
+    `SELECT id, order_number
+     FROM orders
+     WHERE table_number = ? COLLATE NOCASE
+       AND status IN ('open', 'kitchen_sent')
+       AND (? IS NULL OR id <> ?)
+     LIMIT 1`
+  ).get(tableNumber, excludeOrderId ?? null, excludeOrderId ?? null) as { id: number; order_number: string } | undefined;
+  if (occupied) throw new Error(`${tableNumber} is already in use by ${occupied.order_number}. Choose an available table.`);
 }
 
 function cleanExternalOrderId(value?: string | null): string | null {

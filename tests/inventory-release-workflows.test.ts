@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import type Database from "better-sqlite3";
 import { openMemoryDatabase } from "../src/main/database/connection";
 import { migrate } from "../src/main/database/schema";
-import { addOrderItem, createOrder, settleOrder } from "../src/main/domain/orders";
+import { addOrderItem, createOrder, sendNewItemsToKitchen, settleOrder } from "../src/main/domain/orders";
+import { markPrintJobPrinted } from "../src/main/services/printQueue";
 import {
   addCostRecord,
   addPhysicalCount,
@@ -41,6 +42,7 @@ function createInventoryItem(database: Database.Database, name: string, unit = "
 function completeOrder(database: Database.Database, menuItemId: number, orderDate: string, quantity = 1): number {
   const order = createOrder(database, { source: "parcel", orderDate });
   addOrderItem(database, order.id, { menuItemId, quantity });
+  markPrintJobPrinted(database, sendNewItemsToKitchen(database, order.id)!);
   settleOrder(database, order.id, "cash");
   return order.id;
 }

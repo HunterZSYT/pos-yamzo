@@ -47,6 +47,14 @@ export function listKotHistory(db: Database.Database, range: HistoryRange = {}):
 }
 
 export function listSwapHistory(db: Database.Database, range: HistoryRange = {}): SwapHistoryEntry[] {
+  return listAdjustmentHistory(db, "swap", range);
+}
+
+export function listCancelledKotHistory(db: Database.Database, range: HistoryRange = {}): SwapHistoryEntry[] {
+  return listAdjustmentHistory(db, "cancel", range);
+}
+
+function listAdjustmentHistory(db: Database.Database, eventKind: "swap" | "cancel", range: HistoryRange): SwapHistoryEntry[] {
   const { clause, params } = dateClause("se.created_at", range);
   const rows = db.prepare(
     `SELECT se.*, o.order_number, o.source, o.table_number, o.guest_count,
@@ -55,10 +63,10 @@ export function listSwapHistory(db: Database.Database, range: HistoryRange = {})
      FROM swap_events se
      JOIN orders o ON o.id = se.order_id
      JOIN print_jobs pj ON pj.id = se.adjustment_print_job_id
-     WHERE 1 = 1 ${clause}
+     WHERE se.event_kind = ? ${clause}
      ORDER BY se.created_at DESC, se.id DESC
      LIMIT 500`
-  ).all(...params) as Array<Record<string, unknown>>;
+  ).all(eventKind, ...params) as Array<Record<string, unknown>>;
   return rows.map((row) => ({
     id: Number(row.id),
     orderId: Number(row.order_id),
@@ -66,6 +74,7 @@ export function listSwapHistory(db: Database.Database, range: HistoryRange = {})
     source: String(row.source),
     tableNumber: row.table_number ? String(row.table_number) : null,
     guestCount: Number(row.guest_count ?? 1),
+    eventKind: String(row.event_kind) as SwapHistoryEntry["eventKind"],
     originalName: String(row.original_name),
     originalQuantity: Number(row.original_quantity),
     replacementName: row.replacement_name ? String(row.replacement_name) : null,

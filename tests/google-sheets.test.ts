@@ -5,7 +5,8 @@ import type Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { openMemoryDatabase } from "../src/main/database/connection";
 import { addCostRecord } from "../src/main/domain/inventory";
-import { addOrderItem, createOrder, settleOrder } from "../src/main/domain/orders";
+import { addOrderItem, createOrder, sendNewItemsToKitchen, settleOrder } from "../src/main/domain/orders";
+import { markPrintJobPrinted } from "../src/main/services/printQueue";
 import {
   buildGoogleSheetsSnapshot,
   describeGoogleError,
@@ -128,6 +129,7 @@ describe("Google Sheets export", () => {
     const settled = createOrder(db, { source: "in_house", tableNumber: "Table 4", orderDate: "2026-07-10" });
     addOrderItem(db, settled.id, { menuItemId: firstMenuId, quantity: 2 });
     addOrderItem(db, settled.id, { menuItemId: secondMenuId, quantity: 1, parcel: true });
+    markPrintJobPrinted(db, sendNewItemsToKitchen(db, settled.id)!);
     settleOrder(db, settled.id, "cash", 500);
 
     const open = createOrder(db, {

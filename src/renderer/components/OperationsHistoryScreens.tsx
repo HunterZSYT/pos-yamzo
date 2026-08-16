@@ -35,17 +35,30 @@ export function KitchenKotHistoryScreen() {
 }
 
 export function SwappedOrdersScreen() {
+  return <AdjustmentHistoryScreen kind="swap" />;
+}
+
+export function CancelledKotsScreen() {
+  return <AdjustmentHistoryScreen kind="cancel" />;
+}
+
+function AdjustmentHistoryScreen({ kind }: { kind: "swap" | "cancel" }) {
   const [range, setRange] = useState<HistoryRange>(() => rangeFor("today"));
   const [preset, setPreset] = useState<Preset>("today");
   const [rows, setRows] = useState<SwapHistoryEntry[]>([]);
-  useEffect(() => { void window.yamzo?.operations.swapHistory(range).then(setRows); }, [range.startDate, range.endDate]);
+  useEffect(() => {
+    const request = kind === "cancel"
+      ? window.yamzo?.operations.cancelledKotHistory(range)
+      : window.yamzo?.operations.swapHistory(range);
+    void request?.then(setRows);
+  }, [kind, range.startDate, range.endDate]);
   return (
-    <HistoryShell title="Swapped Orders" description="Post-KOT changes with manager authorization, reasons, and adjustment KOT state." preset={preset} range={range} onPreset={(next) => { setPreset(next); if (next !== "custom") setRange(rangeFor(next)); }} onRange={setRange}>
+    <HistoryShell title={kind === "cancel" ? "Cancelled KOTs" : "Swapped Orders"} description={kind === "cancel" ? "Post-KOT item cancellations retained with manager authorization, reasons, and cancellation KOT state." : "Post-KOT swaps with manager authorization, reasons, and adjustment KOT state."} preset={preset} range={range} onPreset={(next) => { setPreset(next); if (next !== "custom") setRange(rangeFor(next)); }} onRange={setRange}>
       <Table>
         <TableHeader><TableRow><TableHead>Order</TableHead><TableHead>Change</TableHead><TableHead>Reason</TableHead><TableHead>Manager</TableHead><TableHead>Operator</TableHead><TableHead>KOT link</TableHead><TableHead>Prints</TableHead><TableHead>Time</TableHead></TableRow></TableHeader>
         <TableBody>{rows.map((row) => <TableRow key={row.id}>
           <TableCell><strong>{row.orderNumber}</strong><span className="block text-xs text-muted-foreground">{row.tableNumber ?? label(row.source)}</span></TableCell>
-          <TableCell><span className="block">{row.originalQuantity} x {row.originalName}</span><strong className="text-sky-800">→ {row.replacementName ? `${row.replacementQuantity} x ${row.replacementName}` : "Removed"}</strong></TableCell>
+          <TableCell><span className="block">{row.originalQuantity} x {row.originalName}</span><strong className={kind === "cancel" ? "text-red-800" : "text-sky-800"}>→ {row.replacementName ? `${row.replacementQuantity} x ${row.replacementName}` : "Cancelled"}</strong></TableCell>
           <TableCell className="max-w-64">{row.reason}</TableCell><TableCell>{row.managerName}</TableCell><TableCell>{row.operator}</TableCell>
           <TableCell><span className="block text-xs">Original #{row.originalKotPrintJobId ?? "-"}</span><span className="block text-xs">Adjustment #{row.adjustmentPrintJobId}</span><Badge variant="outline">{label(row.adjustmentStatus)}</Badge></TableCell>
           <TableCell>{row.successfulPrintCount}</TableCell><TableCell>{formatDate(row.createdAt)}</TableCell>

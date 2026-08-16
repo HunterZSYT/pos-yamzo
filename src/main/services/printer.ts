@@ -175,7 +175,7 @@ function textBrandHeaderBytes(): Buffer {
 }
 
 function isReceiptTitle(line: string): boolean {
-  return ["RECEIPT", "BILL COPY", "RECEIPT REPRINT", "KITCHEN COPY"].includes(line.trim());
+  return ["RECEIPT", "UNPAID BILL COPY", "PAID SLIP", "BILL COPY", "RECEIPT REPRINT", "KITCHEN COPY"].includes(line.trim());
 }
 
 function receiptTitleBytes(title: string): Buffer {

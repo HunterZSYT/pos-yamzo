@@ -6,6 +6,8 @@ import {
   addOrderItem,
   applyDiscount,
   cancelOrder,
+  cancelOrderItem,
+  changeOrderTable,
   completePaidOrder,
   createOrder,
   getOrderDetail,
@@ -16,6 +18,7 @@ import {
   printBillCopy,
   reopenOrder,
   recordOrderPayment,
+  redoOrderPayment,
   removeOrderItem,
   restartKitchenTimer,
   sendNewItemsToKitchen,
@@ -51,7 +54,7 @@ import { getBrandingSettings, getHostNames, getMenuData, getTotalTables, setBran
 import { buildDailySalesEmail, clearGmailAuth, getEmailSettings, saveEmailSettings } from "../src/main/services/email";
 import { renderReceiptHtml } from "../src/main/services/printer";
 import { beginPrintAttempt, finishPrintAttempt, getPrintJob, listPrintJobs, markPrintJobFailed, markPrintJobPrinted, markPrintJobRetry } from "../src/main/services/printQueue";
-import { listKotHistory, listSwapHistory } from "../src/main/services/operationsHistory";
+import { listCancelledKotHistory, listKotHistory, listSwapHistory } from "../src/main/services/operationsHistory";
 import { buildAuditCopy, buildKitchenTicket, buildReceipt } from "../src/main/services/receipts";
 import { listActivityLogs, recordProtectedPanelAccess } from "../src/main/services/audit";
 import fs from "node:fs";
@@ -63,6 +66,13 @@ let db: Database.Database | null = null;
 function freshDb() {
   db = openMemoryDatabase();
   return db;
+}
+
+function settleWithKot(database: Database.Database, orderId: number, method: Parameters<typeof settleOrder>[2]) {
+  const detail = getOrderDetail(database, orderId);
+  const jobId = detail.initialKotPrintJobId ?? sendNewItemsToKitchen(database, orderId);
+  if (jobId) markPrintJobPrinted(database, jobId);
+  return settleOrder(database, orderId, method);
 }
 
 afterEach(() => {
@@ -159,6 +169,7 @@ describe("Yamzo POS core", () => {
     expect(buildAuditCopy(database, order.id)).toContain("Internal kitchen issue");
     expect(listOpenOrders(database)[0].updatedAt).toBeTruthy();
     expect(getOrderDetail(database, order.id).note).toBe("Internal kitchen issue");
+    markPrintJobPrinted(database, firstKitchenPrintId!);
     const delivered = markKitchenDelivered(database, order.id);
     expect(delivered.kitchenCompletedAt).toBeTruthy();
     const restarted = restartKitchenTimer(database, order.id);
@@ -175,17 +186,14 @@ describe("Yamzo POS core", () => {
     expect(getPrintJob(database, kitchenReprintId ?? 0).type).toBe("kot_reprint");
     const discounted = applyDiscount(database, order.id, 50);
     expect(discounted.total).toBe(780);
-    const settled = settleOrder(database, order.id, "cash");
+    const settled = settleWithKot(database, order.id, "cash");
     expect(settled.status).toBe("settled");
     expect(getSalesSummary(database).averageKitchenMinutes).toBeGreaterThanOrEqual(0);
-    const reopened = reopenOrder(database, order.id);
-    expect(reopened.status).toBe("kitchen_sent");
-    expect(database.prepare("SELECT COUNT(*) AS count FROM payments WHERE order_id = ?").get(order.id)).toMatchObject({ count: 0 });
-    settleOrder(database, order.id, "cash");
+    expect(() => reopenOrder(database, order.id)).toThrow(/permanent/i);
     const auditId = printAuditCopy(database, order.id);
     expect(getPrintJob(database, auditId).type).toBe("audit");
     const printJobs = database.prepare("SELECT type FROM print_jobs ORDER BY id").all() as Array<{ type: string }>;
-    expect(printJobs.map((job) => job.type)).toEqual(["kot", "addition_kot", "kot_reprint", "receipt", "receipt", "audit"]);
+    expect(printJobs.map((job) => job.type)).toEqual(["kot", "addition_kot", "kot_reprint", "receipt", "audit"]);
     expect(listPrintJobs(database).every((job) => job.printer === "Xprinter COM8 Receipt (Generic)")).toBe(true);
     expect(buildReceipt(database, order.id, getBrandingSettings(database))).toContain("TABLE: A1");
     expect(buildReceipt(database, order.id, getBrandingSettings(database))).toContain("Note: Parcel");
@@ -236,10 +244,11 @@ describe("Yamzo POS core", () => {
     expect(detail.tableNumber).toBe("Table 3");
     expect(detail.note).toBe("Window side");
     expect(detail.itemCount).toBe(1);
+    const initialKotId = sendNewItemsToKitchen(database, order.id)!;
+    markPrintJobPrinted(database, initialKotId);
     const billId = printBillCopy(database, order.id);
     expect(getPrintJob(database, billId).type).toBe("bill");
     expect(getPrintJob(database, billId).printer).toBe("Xprinter COM8 Receipt (Generic)");
-    expect(sendNewItemsToKitchen(database, order.id)).toBeTypeOf("number");
     expect(orderHasKitchenPrintedItems(database, order.id)).toBe(true);
     expect(() => cancelOrder(database, order.id)).toThrow("cancellation reason");
     cancelOrder(database, order.id, "Wrong table");
@@ -267,6 +276,18 @@ describe("Yamzo POS core", () => {
     expect(updated.externalOrderId).toBeNull();
   });
 
+  it("locks occupied tables and moves a whole running order only through the table-transfer action", () => {
+    const database = freshDb();
+    const first = createOrder(database, { source: "in_house", tableNumber: "Table 1", hostName: "Nadia" });
+    expect(() => createOrder(database, { source: "in_house", tableNumber: "Table 1" })).toThrow(/already in use/i);
+    const second = createOrder(database, { source: "in_house", tableNumber: "Table 2", hostName: "Rafi" });
+    expect(() => changeOrderTable(database, second.id, "Table 1")).toThrow(/already in use/i);
+    expect(changeOrderTable(database, second.id, "Table 3").tableNumber).toBe("Table 3");
+    expect(database.prepare("SELECT action FROM audit_logs WHERE entity_id = ? ORDER BY id DESC LIMIT 1").get(String(second.id))).toMatchObject({ action: "change_order_table" });
+    cancelOrder(database, first.id, "Customer left before ordering");
+    expect(changeOrderTable(database, second.id, "Table 1").tableNumber).toBe("Table 1");
+  });
+
   it("rejects invalid order edges and prevents closed-order mutation", () => {
     const database = freshDb();
     database.prepare("INSERT INTO menu_items (name, price) VALUES ('Chicken Momo', 190)").run();
@@ -276,7 +297,7 @@ describe("Yamzo POS core", () => {
     expect(() => applyDiscount(database, order.id, -1)).toThrow("Discount");
     expect(() => settleOrder(database, order.id, "cash")).toThrow("empty");
     addOrderItem(database, order.id, { menuItemId: item.id, quantity: 1 });
-    settleOrder(database, order.id, "cash");
+    settleWithKot(database, order.id, "cash");
     expect(() => addOrderItem(database, order.id, { menuItemId: item.id, quantity: 1 })).toThrow("closed");
     expect(() => settleOrder(database, order.id, "cash")).toThrow("closed");
   });
@@ -289,7 +310,7 @@ describe("Yamzo POS core", () => {
     const voidedItemId = addOrderItem(database, order.id, { menuItemId: momo.id, quantity: 1 });
     addOrderItem(database, order.id, { menuItemId: pasta.id, quantity: 1 });
     voidOrderItem(database, voidedItemId, "Customer changed mind");
-    settleOrder(database, order.id, "cash");
+    settleWithKot(database, order.id, "cash");
     const reprintId = reprintReceipt(database, order.id);
     markPrintJobFailed(database, reprintId, "Printer offline");
     markPrintJobRetry(database, reprintId);
@@ -298,13 +319,15 @@ describe("Yamzo POS core", () => {
     expect(listPrintJobs(database).some((job) => job.type === "receipt_reprint")).toBe(true);
   });
 
-  it("skips kitchen print for external manual orders but includes them in reports", () => {
+  it("requires kitchen print for external manual orders and includes them in reports", () => {
     const database = freshDb();
     database.prepare("INSERT INTO menu_items (name, price) VALUES ('Chicken Momo', 190)").run();
     const item = listMenuItems(database)[0];
     const order = createOrder(database, { source: "foodpanda" });
     addOrderItem(database, order.id, { menuItemId: item.id, quantity: 1 });
-    expect(sendNewItemsToKitchen(database, order.id)).toBeNull();
+    const externalKot = sendNewItemsToKitchen(database, order.id);
+    expect(externalKot).toBeTypeOf("number");
+    markPrintJobPrinted(database, externalKot!);
     settleOrder(database, order.id, "other");
     const summary = getSalesSummary(database);
     expect(summary.totalSales).toBe(190);
@@ -320,6 +343,9 @@ describe("Yamzo POS core", () => {
     expect(getBrandingSettings(database).restaurantName).toBe("Yamzo Test");
     expect(getSetting<boolean>(database, "trackInventory", false)).toBe(true);
     expect(getTotalTables(database)).toBe(8);
+    const order = createOrder(database, { source: "parcel" });
+    const addressLines = buildReceipt(database, order.id, getBrandingSettings(database)).split("\n").filter((line) => /House-80|Road-20|Sector 11|Uttara|Dhaka 1230/.test(line));
+    expect(addressLines).toHaveLength(2);
   });
 
   it("stores host names and consolidates matching bill-copy items only", () => {
@@ -328,11 +354,12 @@ describe("Yamzo POS core", () => {
     const item = listMenuItems(database)[0];
     setHostNames(database, ["Cashier", "Rafi", "Rafi"]);
     expect(getHostNames(database)).toEqual(["Cashier", "Rafi"]);
-    const order = createOrder(database, { source: "in_house", tableNumber: "Table 5" });
+    const order = createOrder(database, { source: "in_house", tableNumber: "Table 5", hostName: "Rafi" });
     addOrderItem(database, order.id, { menuItemId: item.id, quantity: 1 });
     addOrderItem(database, order.id, { menuItemId: item.id, quantity: 1 });
     addOrderItem(database, order.id, { menuItemId: item.id, quantity: 1, parcel: true });
     const normalReceipt = buildReceipt(database, order.id, getBrandingSettings(database), "RECEIPT");
+    markPrintJobPrinted(database, sendNewItemsToKitchen(database, order.id)!);
     const billId = printBillCopy(database, order.id, { paid: false, method: "cash", amount: 720, host: "Rafi" });
     const bill = getPrintJob(database, billId).content;
     expect(normalReceipt.match(/1 x 240 TK/g)).toHaveLength(3);
@@ -412,7 +439,7 @@ describe("Yamzo POS core", () => {
     const menuItem = listMenuItems(database).find((item) => item.name === "Chicken Momo")!;
     const order = createOrder(database, { source: "in_house", tableNumber: "Table 1" });
     addOrderItem(database, order.id, { menuItemId: menuItem.id, quantity: 2 });
-    settleOrder(database, order.id, "cash");
+    settleWithKot(database, order.id, "cash");
     const costSnapshot = database.prepare("SELECT revenue, raw_cost, gross_profit FROM order_cost_snapshots WHERE order_id = ?").get(order.id) as { revenue: number; raw_cost: number; gross_profit: number };
     expect(costSnapshot.revenue).toBe(480);
     expect(costSnapshot.raw_cost).toBeGreaterThan(0);
@@ -477,16 +504,16 @@ describe("Yamzo POS core", () => {
 
     const completed = createOrder(database, { source: "in_house", tableNumber: "Table 3" });
     addOrderItem(database, completed.id, { menuItemId: menuItem.id, quantity: 1 });
-    settleOrder(database, completed.id, "cash");
+    settleWithKot(database, completed.id, "cash");
     expect(getSalesSummary(database).totalSales).toBe(240);
     expect(database.prepare("SELECT COUNT(*) AS count FROM order_item_cost_snapshots WHERE order_id = ?").get(completed.id)).toMatchObject({ count: 1 });
     expect(database.prepare("SELECT COUNT(*) AS count FROM inventory_adjustments WHERE order_id = ?").get(completed.id)).toMatchObject({ count: 1 });
     expect(listInventorySnapshot(database).items.find((item) => item.id === chicken.id)!.currentStock).toBe(900);
-    reopenOrder(database, completed.id);
-    expect(getSalesSummary(database).totalSales).toBe(0);
-    expect(database.prepare("SELECT COUNT(*) AS count FROM order_item_cost_snapshots WHERE order_id = ?").get(completed.id)).toMatchObject({ count: 0 });
-    expect(database.prepare("SELECT COUNT(*) AS count FROM inventory_adjustments WHERE order_id = ?").get(completed.id)).toMatchObject({ count: 0 });
-    expect(listInventorySnapshot(database).items.find((item) => item.id === chicken.id)!.currentStock).toBe(1000);
+    expect(() => reopenOrder(database, completed.id)).toThrow(/permanent/i);
+    expect(getSalesSummary(database).totalSales).toBe(240);
+    expect(database.prepare("SELECT COUNT(*) AS count FROM order_item_cost_snapshots WHERE order_id = ?").get(completed.id)).toMatchObject({ count: 1 });
+    expect(database.prepare("SELECT COUNT(*) AS count FROM inventory_adjustments WHERE order_id = ?").get(completed.id)).toMatchObject({ count: 1 });
+    expect(listInventorySnapshot(database).items.find((item) => item.id === chicken.id)!.currentStock).toBe(900);
     fs.unlinkSync(file);
     fs.unlinkSync(itemsFile);
   });
@@ -509,7 +536,7 @@ describe("Yamzo POS core", () => {
 
     const order = createOrder(database, { source: "in_house", tableNumber: "Table 1" });
     addOrderItem(database, order.id, { menuItemId: fish.id, quantity: 1 });
-    settleOrder(database, order.id, "cash");
+    settleWithKot(database, order.id, "cash");
     expect(listInventorySnapshot(database).items.find((item) => item.id === lemonId)!.currentStock).toBe(990);
   });
 
@@ -522,7 +549,7 @@ describe("Yamzo POS core", () => {
     addRestockEntry(database, { inventoryItemId: chickenId, quantity: 1000, totalCost: 1000 });
     const order = createOrder(database, { source: "in_house", tableNumber: "Table 2" });
     addOrderItem(database, order.id, { menuItemId: item.id, quantity: 2 });
-    settleOrder(database, order.id, "cash");
+    settleWithKot(database, order.id, "cash");
     expect(previewInventoryBackfill(database).estimatedMissingRecipeCount).toBe(1);
     saveMenuRecipe(database, { menuItemId: item.id, ingredients: [{ inventoryItemId: chickenId, quantityBase: 100, unitLabel: "g" }] });
     const preview = previewInventoryBackfill(database);
@@ -609,6 +636,7 @@ describe("Yamzo POS core", () => {
 
     expect(getOrderDetail(database, order.id)).toMatchObject({ requiredKotCount: 2, unresolvedKotCount: 1, failedKotCount: 0 });
     expect(() => recordOrderPayment(database, order.id, { method: "cash", cashReceived: 500, hostName: "Nadia" })).toThrow(/every required Kitchen KOT/i);
+    const cancelledLineId = addOrderItem(database, order.id, { menuItemId: momo.id, quantity: 1 });
     const additionJobId = sendNewItemsToKitchen(database, order.id)!;
     expect(getPrintJob(database, additionJobId).type).toBe("addition_kot");
     expect(getOrderDetail(database, order.id)).toMatchObject({ requiredKotCount: 3, unresolvedKotCount: 2 });
@@ -616,6 +644,10 @@ describe("Yamzo POS core", () => {
     finishPrintAttempt(database, adjustmentAttemptId, true);
     markPrintJobPrinted(database, swapped.voidPrintJobId);
     markPrintJobPrinted(database, additionJobId);
+    const cancelled = cancelOrderItem(database, cancelledLineId, { ...managerAuthorization, reason: "Customer cancelled momo" });
+    expect(listCancelledKotHistory(database)[0]).toMatchObject({ eventKind: "cancel", originalName: "Gate Momo", reason: "Customer cancelled momo" });
+    expect(listSwapHistory(database)).toHaveLength(1);
+    markPrintJobPrinted(database, cancelled.adjustmentPrintJobId);
     expect(getOrderDetail(database, order.id).unresolvedKotCount).toBe(0);
     expect(listSwapHistory(database)[0].successfulPrintCount).toBe(1);
     expect(listKotHistory(database).find((entry) => entry.printJobId === swapped.adjustmentPrintJobId)).toMatchObject({
@@ -624,35 +656,52 @@ describe("Yamzo POS core", () => {
       managerName: manager.name,
       reason: "Customer requested pasta"
     });
-    expect(() => printBillCopy(database, order.id)).toThrow(/Record payment/i);
+    const billJobId = printBillCopy(database, order.id);
+    const bill = getPrintJob(database, billJobId).content;
+    expect(bill).toContain("UNPAID BILL COPY");
+    expect(bill).toContain("PAYMENT: Unpaid");
+    expect(() => recordOrderPayment(database, order.id, { method: "cash", cashReceived: 500, hostName: "Nadia" })).toThrow(/Unpaid Bill Copy/i);
+    markPrintJobPrinted(database, billJobId);
+    updateOrderInfo(database, order.id, { source: "in_house", tableNumber: "Table 4", guestCount: 5, hostName: "Nadia", note: null, externalOrderId: null });
+    applyDiscount(database, order.id, 0);
+    expect(getOrderDetail(database, order.id).billState).toBe("printed");
     expect(() => recordOrderPayment(database, order.id, { method: "cash", cashReceived: 300, hostName: "Nadia" })).toThrow(/less than the payable/i);
 
     const paid = recordOrderPayment(database, order.id, { method: "cash", cashReceived: 500, hostName: "Nadia" });
-    expect(paid.payment).toMatchObject({ method: "cash", amount: 395, cashReceived: 500, changeGiven: 105, hostName: "Nadia" });
+    expect(paid.order.payment).toMatchObject({ method: "cash", amount: 395, cashReceived: 500, changeGiven: 105, hostName: "Nadia" });
+    const paidSlip = getPrintJob(database, paid.paidSlipPrintJobId).content;
+    expect(paidSlip).toContain("PAID SLIP");
+    expect(paidSlip).toContain("CASH RECEIVED:");
+    expect(paidSlip).toContain("CHANGE:");
     expect(() => recordOrderPayment(database, order.id, { method: "cash", cashReceived: 600, hostName: "Nadia" })).toThrow(/already recorded/i);
-    recordOrderPayment(database, order.id, { method: "cash", cashReceived: 500, hostName: "Nadia" });
+    expect(recordOrderPayment(database, order.id, { method: "cash", cashReceived: 500, hostName: "Nadia" }).paidSlipPrintJobId).toBe(paid.paidSlipPrintJobId);
     expect(database.prepare("SELECT COUNT(*) AS count FROM payments WHERE order_id = ?").get(order.id)).toMatchObject({ count: 1 });
-
-    const billJobId = printBillCopy(database, order.id);
-    const bill = getPrintJob(database, billJobId).content;
     expect(bill).toContain("GUESTS: 5");
     expect(bill).toContain("HOST: Nadia");
-    expect(() => completePaidOrder(database, order.id)).toThrow(/Bill Copy must print successfully/i);
-    markPrintJobFailed(database, billJobId, "No printer on this QA PC.");
-    expect(printBillCopy(database, order.id)).toBe(billJobId);
-    markPrintJobPrinted(database, billJobId);
+    expect(() => completePaidOrder(database, order.id)).toThrow(/Paid Slip/i);
+    markPrintJobPrinted(database, paid.paidSlipPrintJobId);
+    expect(() => redoOrderPayment(database, order.id, { ...managerAuthorization, pin: "9999", reason: "Wrong cash" })).toThrow(/authorization failed/i);
+    const reopenedPayment = redoOrderPayment(database, order.id, { ...managerAuthorization, reason: "Wrong cash received" });
+    expect(reopenedPayment).toMatchObject({ paid: false, billState: "not_printed", paidSlipState: "not_printed" });
+    expect(database.prepare("SELECT action FROM audit_logs WHERE entity_id = ? ORDER BY id DESC LIMIT 1").get(String(order.id))).toMatchObject({ action: "redo_order_payment" });
+    const replacementBillId = printBillCopy(database, order.id);
+    markPrintJobPrinted(database, replacementBillId);
+    const replacementPayment = recordOrderPayment(database, order.id, { method: "cash", cashReceived: 500, hostName: "Nadia" });
+    markPrintJobPrinted(database, replacementPayment.paidSlipPrintJobId);
     const completed = completePaidOrder(database, order.id);
     expect(completed.status).toBe("settled");
     expect(completePaidOrder(database, order.id).status).toBe("settled");
-    const reprintBillId = printBillCopy(database, order.id, undefined, true);
-    expect(reprintBillId).not.toBe(billJobId);
+    expect(() => cancelOrder(database, order.id, "No longer wanted")).toThrow(/permanent/i);
+    expect(() => reopenOrder(database, order.id)).toThrow(/permanent/i);
+    expect(() => updateOrderInfo(database, order.id, { source: "in_house", tableNumber: "Table 9" })).toThrow(/closed/i);
+    expect(() => database.prepare("DELETE FROM orders WHERE id = ?").run(order.id)).toThrow(/cannot be deleted/i);
     expect(database.prepare("SELECT COUNT(*) AS count FROM payments WHERE order_id = ?").get(order.id)).toMatchObject({ count: 1 });
     expect(getSalesSummary(database)).toMatchObject({ dineInGuests: 5, averageGuestsPerDineInOrder: 5 });
 
     const takeaway = createOrder(database, { source: "takeaway", guestCount: 2, hostName: "Nadia", requiresKot: true });
     addOrderItem(database, takeaway.id, { menuItemId: momo.id, quantity: 1 });
     expect(getOrderDetail(database, takeaway.id)).toMatchObject({ tableNumber: null, guestCount: 2, initialKotState: "required" });
-  });
+  }, 15_000);
 
   it("persists a non-cash payment and Bill prerequisite across a database restart", () => {
     const tempDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "yamzo-gate3b-"));
@@ -671,11 +720,12 @@ describe("Yamzo POS core", () => {
         { key: "card", label: "Card", active: false },
         { key: "other", label: "Other", active: false }
       ]);
-      expect(() => recordOrderPayment(db!, order.id, { method: "cash", cashReceived: 245, hostName: "Rafi" })).toThrow(/active payment method/i);
-      const paid = recordOrderPayment(db, order.id, { method: "bkash", reference: "01700000000", hostName: "Rafi" });
-      expect(paid.payment).toMatchObject({ method: "bkash", amount: 245, reference: "01700000000", changeGiven: 0 });
       const billJobId = printBillCopy(db, order.id);
       markPrintJobPrinted(db, billJobId);
+      expect(() => recordOrderPayment(db!, order.id, { method: "cash", cashReceived: 245, hostName: "Rafi" })).toThrow(/active payment method/i);
+      const paid = recordOrderPayment(db, order.id, { method: "bkash", reference: "01700000000", hostName: "Rafi" });
+      expect(paid.order.payment).toMatchObject({ method: "bkash", amount: 245, reference: "01700000000", changeGiven: 0 });
+      markPrintJobPrinted(db, paid.paidSlipPrintJobId);
       db.close();
       db = null;
 
@@ -685,6 +735,7 @@ describe("Yamzo POS core", () => {
         paid: true,
         unresolvedKotCount: 0,
         billState: "printed",
+        paidSlipState: "printed",
         payment: { method: "bkash", amount: 245, reference: "01700000000" }
       });
       expect(completePaidOrder(reopenedDb, order.id).status).toBe("settled");

@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron";
-import type { BrandingSettings, EmailSettingsInput, GoogleOAuthClientInput, GoogleSheetsSettingsInput, HistoricalScope, HistoryRange, Manager, ManagerAuthorization, ManagerInput, MenuDataSetting, MenuItemInput, MenuTypeSetting, OrderDetail, OrderItemInput, OrderSource, OrderSummary, PaymentMethod, PaymentMethodSetting, PhysicalCountInput, PhysicalCountUpdateInput, ReceiptPaymentInfo, RecipeSaveInput, RestockEntryInput, RestockEntryUpdateInput, SalesSummary, WebsiteConnectionDiagnostics, WebsiteConnectionStatus, WebsiteOrderDetail, WebsiteOrderPrintBatch, WebsiteOrderPrintKind, WebsiteOrderStatus, WebsiteOrderSummary } from "../shared/types.js";
+import type { BrandingSettings, EmailSettingsInput, GoogleOAuthClientInput, GoogleSheetsSettingsInput, HistoricalScope, HistoryRange, Manager, ManagerAuthorization, ManagerInput, MenuDataSetting, MenuItemInput, MenuTypeSetting, OrderDetail, OrderItemInput, OrderSource, OrderSummary, PaymentMethod, PaymentMethodSetting, PhysicalCountInput, PhysicalCountUpdateInput, ReceiptPaymentInfo, RecipeSaveInput, RecordPaymentResult, RestockEntryInput, RestockEntryUpdateInput, SalesSummary, WebsiteConnectionDiagnostics, WebsiteConnectionStatus, WebsiteOrderDetail, WebsiteOrderPrintBatch, WebsiteOrderPrintKind, WebsiteOrderStatus, WebsiteOrderSummary } from "../shared/types.js";
 
 const api = {
   auth: {
@@ -67,16 +67,19 @@ const api = {
   orders: {
     create: (input: { source: OrderSource; tableNumber?: string; guestCount?: number; hostName?: string; requiresKot?: boolean; note?: string; externalOrderId?: string | null; orderDate?: string }): Promise<OrderSummary> => ipcRenderer.invoke("orders:create", input),
     addItem: (orderId: number, input: OrderItemInput) => ipcRenderer.invoke("orders:addItem", orderId, input),
-    sendKitchen: (orderId: number, allowExternal?: boolean) => ipcRenderer.invoke("orders:sendKitchen", orderId, allowExternal),
+    sendKitchen: (orderId: number) => ipcRenderer.invoke("orders:sendKitchen", orderId),
     discount: (orderId: number, discount: number) => ipcRenderer.invoke("orders:discount", orderId, discount),
     updateNote: (orderId: number, note: string) => ipcRenderer.invoke("orders:updateNote", orderId, note),
     updateInfo: (orderId: number, input: { source: OrderSource; tableNumber?: string | null; guestCount?: number; hostName?: string | null; note?: string | null; externalOrderId?: string | null }) =>
       ipcRenderer.invoke("orders:updateInfo", orderId, input),
+    changeTable: (orderId: number, tableNumber: string): Promise<OrderSummary> => ipcRenderer.invoke("orders:changeTable", orderId, tableNumber),
     updateDate: (orderId: number, orderDate: string) => ipcRenderer.invoke("orders:updateDate", orderId, orderDate),
     updateItem: (orderItemId: number, input: { quantity: number; note?: string | null; parcel?: boolean }) => ipcRenderer.invoke("orders:updateItem", orderItemId, input),
     removeItem: (orderItemId: number, reason?: string) => ipcRenderer.invoke("orders:removeItem", orderItemId, reason),
-    swapItem: (orderItemId: number, replacement: OrderItemInput | null, authorization: ManagerAuthorization): Promise<{ order: OrderDetail; voidPrintJobId: number; adjustmentPrintJobId: number }> => ipcRenderer.invoke("orders:swapItem", orderItemId, replacement, authorization),
-    recordPayment: (orderId: number, input: { method: PaymentMethod; cashReceived?: number; reference?: string; hostName?: string }): Promise<OrderSummary> => ipcRenderer.invoke("orders:recordPayment", orderId, input),
+    swapItem: (orderItemId: number, replacement: OrderItemInput, authorization: ManagerAuthorization): Promise<{ order: OrderDetail; voidPrintJobId: number; adjustmentPrintJobId: number }> => ipcRenderer.invoke("orders:swapItem", orderItemId, replacement, authorization),
+    cancelItem: (orderItemId: number, authorization: ManagerAuthorization): Promise<{ order: OrderDetail; voidPrintJobId: number; adjustmentPrintJobId: number }> => ipcRenderer.invoke("orders:cancelItem", orderItemId, authorization),
+    recordPayment: (orderId: number, input: { method: PaymentMethod; cashReceived?: number; reference?: string; hostName?: string }): Promise<RecordPaymentResult> => ipcRenderer.invoke("orders:recordPayment", orderId, input),
+    redoPayment: (orderId: number, authorization: ManagerAuthorization): Promise<OrderDetail> => ipcRenderer.invoke("orders:redoPayment", orderId, authorization),
     completePaid: (orderId: number): Promise<OrderSummary> => ipcRenderer.invoke("orders:completePaid", orderId),
     cancel: (orderId: number, reason?: string) => ipcRenderer.invoke("orders:cancel", orderId, reason),
     reopen: (orderId: number) => ipcRenderer.invoke("orders:reopen", orderId),
@@ -91,6 +94,7 @@ const api = {
     reprintReceipt: (orderId: number) => ipcRenderer.invoke("orders:reprintReceipt", orderId),
     printBill: (orderId: number, paymentInfo?: ReceiptPaymentInfo, reprint?: boolean) => ipcRenderer.invoke("orders:printBill", orderId, paymentInfo, reprint),
     retryBill: (orderId: number): Promise<OrderDetail> => ipcRenderer.invoke("orders:retryBill", orderId),
+    retryPaidSlip: (orderId: number): Promise<OrderDetail> => ipcRenderer.invoke("orders:retryPaidSlip", orderId),
     printAudit: (orderId: number) => ipcRenderer.invoke("orders:printAudit", orderId)
   },
   managers: {
@@ -100,7 +104,8 @@ const api = {
   },
   operations: {
     kotHistory: (range?: HistoryRange) => ipcRenderer.invoke("operations:kotHistory", range),
-    swapHistory: (range?: HistoryRange) => ipcRenderer.invoke("operations:swapHistory", range)
+    swapHistory: (range?: HistoryRange) => ipcRenderer.invoke("operations:swapHistory", range),
+    cancelledKotHistory: (range?: HistoryRange) => ipcRenderer.invoke("operations:cancelledKotHistory", range)
   },
   websiteOrders: {
     list: (statuses?: WebsiteOrderStatus[]): Promise<WebsiteOrderSummary[]> => ipcRenderer.invoke("websiteOrders:list", statuses),
