@@ -13,7 +13,7 @@ Ship a verified GitHub update that makes payment source an explicit Cash / bKash
 - [x] History and reports UI: add date filters to completed/cancelled orders and surface clear Cash, bKash, Foodpanda, and Foodie register totals without mixing parcel payments by order source.
 - [x] Timer repair: stop order and batch timers on completion/cancellation and migrate already closed orders/tickets to finite completion timestamps.
 - [x] Verification: migration safety, targeted and full tests, TypeScript, build, installer, packaged smoke, and one targeted rendered Electron inspection with printing bypassed.
-- [ ] Release: inspect the exact diff, secret-scan, commit the `codex/` branch, push, merge to `main`, push GitHub, and verify local/remote parity.
+- [x] Release: inspect the exact diff, secret-scan, commit the `codex/` branch, push, merge to `main`, push GitHub, and verify local/remote parity.
 
 ## Safety gates
 
