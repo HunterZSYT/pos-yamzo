@@ -115,6 +115,9 @@ export interface OrderSummary {
   subtotal: number;
   deliveryFee?: number;
   discount: number;
+  discountMode: "tk" | "percent";
+  discountInput: number;
+  manualTotalInput: number | null;
   total: number;
   createdAt: string;
   updatedAt: string;
@@ -135,6 +138,12 @@ export interface OrderSummary {
   billState: PrintJobStatus | "not_printed";
   paidSlipState: PrintJobStatus | "not_printed";
   websiteInitialKotState?: WebsiteInitialKotState | null;
+}
+
+export interface DiscountInputState {
+  mode: "tk" | "percent";
+  value: number;
+  manualTotal: number | null;
 }
 
 export interface RecordPaymentResult {

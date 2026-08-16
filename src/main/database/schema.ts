@@ -3,7 +3,7 @@ import bcrypt from "bcryptjs";
 import { randomUUID } from "node:crypto";
 
 const BRANDING_DEFAULTS_VERSION = 2;
-export const DATABASE_SCHEMA_VERSION = 10;
+export const DATABASE_SCHEMA_VERSION = 11;
 
 const defaultBranding = {
   restaurantName: "Yamzo",
@@ -76,6 +76,9 @@ export function migrate(db: Database.Database): void {
       status TEXT NOT NULL DEFAULT 'open',
       note TEXT,
       discount INTEGER NOT NULL DEFAULT 0,
+      discount_mode TEXT NOT NULL DEFAULT 'percent',
+      discount_input REAL NOT NULL DEFAULT 0,
+      manual_total_input INTEGER,
       first_kitchen_sent_at TEXT,
       kitchen_completed_at TEXT,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -510,6 +513,16 @@ export function migrate(db: Database.Database): void {
   ensureColumn(db, "orders", "bill_print_job_id", "INTEGER");
   ensureColumn(db, "orders", "paid_slip_print_job_id", "INTEGER");
   ensureColumn(db, "orders", "requires_kot", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn(db, "orders", "discount_mode", "TEXT NOT NULL DEFAULT 'percent'");
+  ensureColumn(db, "orders", "discount_input", "REAL NOT NULL DEFAULT 0");
+  ensureColumn(db, "orders", "manual_total_input", "INTEGER");
+  db.prepare(
+    `UPDATE orders
+     SET discount_mode = 'tk', discount_input = discount
+     WHERE discount > 0
+       AND discount_input = 0
+       AND manual_total_input IS NULL`
+  ).run();
   ensureColumn(db, "order_payment_sessions", "cash_amount", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn(db, "order_payment_sessions", "bkash_amount", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn(db, "swap_events", "event_kind", "TEXT NOT NULL DEFAULT 'swap'");

@@ -45,7 +45,7 @@ describe("database migration safety", () => {
     expect(fs.readdirSync(backupDirectory).filter((name) => name.endsWith(".sqlite3"))).toHaveLength(1);
   });
 
-  it("repairs legacy closed timers and backfills tender allocations during the version 10 upgrade", () => {
+  it("repairs legacy checkout state, closed timers, and tender allocations during upgrade", () => {
     temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "yamzo-migration-v10-"));
     const databasePath = path.join(temporaryDirectory, "yamzo-pos.sqlite3");
     const legacy = openDatabase(databasePath);
@@ -62,13 +62,20 @@ describe("database migration safety", () => {
         (order_id, method, payable_amount, cash_amount, bkash_amount, cash_received, change_given, host_name)
        VALUES (?, 'cash', 500, 0, 0, 500, 0, 'Cashier')`
     ).run(orderId);
-    legacy.pragma("user_version = 9");
+    legacy.prepare("UPDATE orders SET discount = 49, discount_mode = 'percent', discount_input = 0 WHERE id = ?").run(orderId);
+    legacy.pragma("user_version = 10");
     legacy.close();
 
     const upgraded = openDatabase(databasePath);
     expect(upgraded.prepare("SELECT kitchen_completed_at FROM orders WHERE id = ?").get(orderId)).toEqual({ kitchen_completed_at: "2026-08-16 10:30:00" });
     expect(upgraded.prepare("SELECT completed_at FROM kitchen_tickets WHERE id = ?").get(ticketId)).toEqual({ completed_at: "2026-08-16 10:30:00" });
     expect(upgraded.prepare("SELECT cash_amount, bkash_amount FROM order_payment_sessions WHERE order_id = ?").get(orderId)).toEqual({ cash_amount: 500, bkash_amount: 0 });
+    expect(upgraded.prepare("SELECT discount, discount_mode, discount_input, manual_total_input FROM orders WHERE id = ?").get(orderId)).toEqual({
+      discount: 49,
+      discount_mode: "tk",
+      discount_input: 49,
+      manual_total_input: null
+    });
     expect(upgraded.pragma("user_version", { simple: true })).toBe(DATABASE_SCHEMA_VERSION);
     expect(upgraded.pragma("quick_check", { simple: true })).toBe("ok");
     upgraded.close();

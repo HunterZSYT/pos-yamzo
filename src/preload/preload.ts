@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron";
-import type { BrandingSettings, EmailSettingsInput, GoogleOAuthClientInput, GoogleSheetsSettingsInput, HistoricalScope, HistoryRange, InventoryActivityResetResult, Manager, ManagerAuthorization, ManagerInput, MenuDataSetting, MenuItemInput, MenuTypeSetting, OrderDetail, OrderItemInput, OrderSource, OrderSummary, PaymentMethod, PaymentMethodSetting, PhysicalCountInput, PhysicalCountUpdateInput, ReceiptPaymentInfo, RecipeSaveInput, RecordPaymentResult, RestockEntryInput, RestockEntryUpdateInput, SalesSummary, WebsiteConnectionDiagnostics, WebsiteConnectionStatus, WebsiteOrderDetail, WebsiteOrderPrintBatch, WebsiteOrderPrintKind, WebsiteOrderStatus, WebsiteOrderSummary } from "../shared/types.js";
+import type { BrandingSettings, DiscountInputState, EmailSettingsInput, GoogleOAuthClientInput, GoogleSheetsSettingsInput, HistoricalScope, HistoryRange, InventoryActivityResetResult, Manager, ManagerAuthorization, ManagerInput, MenuDataSetting, MenuItemInput, MenuTypeSetting, OrderDetail, OrderItemInput, OrderSource, OrderSummary, PaymentMethod, PaymentMethodSetting, PhysicalCountInput, PhysicalCountUpdateInput, ReceiptPaymentInfo, RecipeSaveInput, RecordPaymentResult, RestockEntryInput, RestockEntryUpdateInput, SalesSummary, WebsiteConnectionDiagnostics, WebsiteConnectionStatus, WebsiteOrderDetail, WebsiteOrderPrintBatch, WebsiteOrderPrintKind, WebsiteOrderStatus, WebsiteOrderSummary } from "../shared/types.js";
 
 const api = {
   auth: {
@@ -69,7 +69,7 @@ const api = {
     create: (input: { source: OrderSource; tableNumber?: string; guestCount?: number; hostName?: string; requiresKot?: boolean; note?: string; externalOrderId?: string | null; orderDate?: string }): Promise<OrderSummary> => ipcRenderer.invoke("orders:create", input),
     addItem: (orderId: number, input: OrderItemInput) => ipcRenderer.invoke("orders:addItem", orderId, input),
     sendKitchen: (orderId: number) => ipcRenderer.invoke("orders:sendKitchen", orderId),
-    discount: (orderId: number, discount: number) => ipcRenderer.invoke("orders:discount", orderId, discount),
+    discount: (orderId: number, discount: number, input?: DiscountInputState) => ipcRenderer.invoke("orders:discount", orderId, discount, input),
     updateNote: (orderId: number, note: string) => ipcRenderer.invoke("orders:updateNote", orderId, note),
     updateInfo: (orderId: number, input: { source: OrderSource; tableNumber?: string | null; guestCount?: number; hostName?: string | null; note?: string | null; externalOrderId?: string | null }) =>
       ipcRenderer.invoke("orders:updateInfo", orderId, input),

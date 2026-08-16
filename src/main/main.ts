@@ -81,9 +81,13 @@ async function createWindow(): Promise<void> {
     if (!mainWindow) {
       return;
     }
-    mainWindow.maximize();
     mainWindow.show();
-    focusRenderer();
+    mainWindow.maximize();
+    setImmediate(() => {
+      if (!mainWindow || mainWindow.isDestroyed()) return;
+      if (!mainWindow.isMaximized()) mainWindow.maximize();
+      focusRenderer();
+    });
   });
   mainWindow.on("focus", () => {
     mainWindow?.webContents.focus();
@@ -115,7 +119,13 @@ async function createWindow(): Promise<void> {
         href: location.href
       })
     `);
-    writeSmokeProbe({ ok: true, phase: "did-finish-load", snapshot });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    writeSmokeProbe({
+      ok: true,
+      phase: "did-finish-load",
+      snapshot,
+      window: { maximized: mainWindow.isMaximized(), bounds: mainWindow.getBounds() }
+    });
   });
 
   if (process.env.VITE_DEV_SERVER_URL) {

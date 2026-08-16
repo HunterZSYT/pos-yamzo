@@ -1,6 +1,7 @@
 import { dialog, ipcMain, shell } from "electron";
 import type Database from "better-sqlite3";
 import type {
+  DiscountInputState,
   OrderSummary,
   WebsiteConnectionDiagnostics,
   WebsiteConnectionStatus
@@ -249,7 +250,7 @@ export function registerIpc(db: Database.Database, dependencies: IpcDependencies
   ipcMain.handle("orders:create", (_event, input) => withSheetSync(() => createOrder(db, input)));
   ipcMain.handle("orders:addItem", (_event, orderId: number, input) => withSheetSync(() => addOrderItem(db, orderId, input)));
   ipcMain.handle("orders:sendKitchen", (_event, orderId: number) => withSheetSync(() => sendNewItemsToKitchen(db, orderId)));
-  ipcMain.handle("orders:discount", (_event, orderId: number, discount: number) => withSheetSync(() => applyDiscount(db, orderId, discount)));
+  ipcMain.handle("orders:discount", (_event, orderId: number, discount: number, input?: DiscountInputState) => withSheetSync(() => applyDiscount(db, orderId, discount, input)));
   ipcMain.handle("orders:updateNote", (_event, orderId: number, note: string) => withSheetSync(() => updateOrderNote(db, orderId, note)));
   ipcMain.handle("orders:updateInfo", (_event, orderId: number, input) => withSheetSync(() => updateOrderInfo(db, orderId, input)));
   ipcMain.handle("orders:changeTable", (_event, orderId: number, tableNumber: string) => withSheetSync(() => changeOrderTable(db, orderId, tableNumber)));

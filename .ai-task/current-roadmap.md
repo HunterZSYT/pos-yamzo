@@ -1,22 +1,23 @@
-# Yamzo payment-panel and local admin controls — 2026-08-17
+# Yamzo checkout-state integrity hotfix — 2026-08-17
 
 ## Outcome
 
-Ship a verified GitHub update that removes horizontal overflow from Payment & Close, adds a per-PC Test Mode that bypasses physical print transport while preserving normal print-state workflow, and adds a password-confirmed reset for inventory usage, restocks, and physical counts only.
+Ship a verified GitHub hotfix that immediately unlocks payment after a successful Unpaid Bill print, keeps the order workspace open during repeat-print confirmation, restores every checkout input in its designated field, and opens the POS maximized reliably.
 
 ## Execution packets
 
-- [x] Recon: inspect the screenshot, rendered panel structure, print boundary, settings APIs, admin authorization, inventory schema, and existing reset patterns.
-- [x] Payment panel: contain every card/control at narrow desktop panel widths, remove the horizontal scrollbar, and keep primary actions readable.
-- [x] Local Test Mode: persist an off-by-default per-PC flag, surface it in Admin, and short-circuit physical printing only at the centralized print boundary while recording successful test attempts.
-- [x] Inventory activity reset: require current admin password plus `RESET INVENTORY ACTIVITY`, clear usage adjustments, restock history, and physical counts transactionally, and preserve every catalog, recipe, price, cost, and order record.
-- [x] Verification: TypeScript, targeted and full tests, build, disposable Electron UI inspection at the reported width, accessibility/overflow checks, and test-mode workflow proof.
-- [x] Release: secret-scan, commit a `codex/` branch, push, fast-forward `main`, push GitHub, and verify parity.
+- [x] Reproduce and map the stale bill state, repeat-print dialog dismissal, and discount hydration paths.
+- [x] Persist the cashier's discount mode, raw discount entry, and manual total additively, with migration backup coverage and safe legacy fallback.
+- [x] Centralize checkout draft hydration so new, edited, printed, retried, and resumed orders share one state update path.
+- [x] Prevent nested confirmation clicks from dismissing the parent order workspace.
+- [x] Add regression tests for percent, flat-TK, manual-total resume fidelity and legacy fallback.
+- [x] Verify TypeScript, full tests, build/package, immediate payment unlock, repeat-print retention, refreshed Open Orders state, panel overflow, renderer errors, and native maximized startup using disposable Test Mode data.
+- [ ] Secret-scan, commit, push branch, fast-forward GitHub `main`, and verify parity.
 
 ## Safety gates
 
-- Test Mode defaults off and is stored in each PC's local SQLite settings; updating the store PC cannot enable it.
-- Test Mode skips only the physical transport. Print jobs, attempts, KOT requirements, and auditability remain intact.
-- Inventory reset runs in one SQLite transaction and deletes only `inventory_adjustments`, `inventory_restock_entries`, and `inventory_physical_counts`.
-- Inventory items, categories, units, recipes, bindings, price history, costs, orders, order items, payments, print jobs, and order cost snapshots remain unchanged.
-- Public Live Ordering and production website authority remain unchanged.
+- Discount money remains an absolute whole-TK amount for receipts, reports, and payment calculations.
+- New metadata stores only presentation intent (`percent` or `tk`) and the cashier's raw numeric entry; legacy orders default to flat TK without changing stored totals.
+- Schema change is additive, increments the local schema version, and triggers the existing automatic pre-migration SQLite backup.
+- No production/store database or physical printer is used during testing; Test Mode and a disposable app-data directory remain mandatory.
+- No completed/cancelled order mutation, deletion, or reopen behavior changes.

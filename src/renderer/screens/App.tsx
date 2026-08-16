@@ -35,6 +35,7 @@ import type {
   ActivityLog,
   CostCategory,
   CostRecord,
+  DiscountInputState,
   InventoryCategory,
   InventoryBindingPreview,
   InventoryIngredientUsageTotal,
@@ -69,13 +70,21 @@ import { CancelledKotsScreen, KitchenKotHistoryScreen, SwappedOrdersScreen } fro
 
 type Screen = "newOrder" | "editOrder" | "openOrders" | "websiteOrders" | "completedOrders" | "cancelledOrders" | "swappedOrders" | "cancelledKots" | "kitchenKot" | "reports" | "menu" | "inventory" | "costs" | "admin";
 type AdminTab = "receipt" | "printer" | "integrations" | "app" | "managers" | "security" | "activity";
-type DiscountMode = "tk" | "percent";
+type DiscountMode = DiscountInputState["mode"];
 type OrderLane = "newOrder" | "openOrders";
 type PrintConfirm = { type: "kitchen" | "bill"; orderId: number; orderNumber: string } | null;
 type NoteEdit = { line: OrderLine; draft: string } | null;
 type ProtectedScreen = "completedOrders" | "cancelledOrders" | "swappedOrders" | "cancelledKots" | "kitchenKot" | "menu" | "inventory" | "costs" | "admin";
 type MenuFormState = { id: number; name: string; price: string; category: string; available: boolean; trackRecipe: boolean; menuPrices: Record<string, string> };
 type RecipeEditorTarget = { mode: "create" } | { mode: "edit"; recipe: MenuRecipe };
+
+function discountAmountFor(mode: DiscountMode, rawValue: number, subtotal: number): number {
+  const value = Number.isFinite(rawValue) ? rawValue : 0;
+  if (mode === "percent") {
+    return Math.round((subtotal * Math.min(Math.max(value, 0), 100)) / 100);
+  }
+  return Math.min(Math.max(Math.round(value), 0), subtotal);
+}
 
 interface PrinterOption {
   name: string;
@@ -267,14 +276,10 @@ export function App() {
 
   const activeItems = activeOrder?.items.filter((item) => item.status === "active") ?? [];
   const subtotal = activeOrder?.subtotal ?? 0;
-  const calculatedDiscount = useMemo(() => {
-    const parsed = Number(discountValue || 0);
-    const raw = Number.isFinite(parsed) ? parsed : 0;
-    if (discountMode === "percent") {
-      return Math.round((subtotal * Math.min(Math.max(raw, 0), 100)) / 100);
-    }
-    return Math.min(Math.max(Math.round(raw), 0), subtotal);
-  }, [discountMode, discountValue, subtotal]);
+  const calculatedDiscount = useMemo(
+    () => discountAmountFor(discountMode, Number(discountValue || 0), subtotal),
+    [discountMode, discountValue, subtotal]
+  );
   const payableTotal = Math.max(0, subtotal - calculatedDiscount);
   const activeMenuTypes = useMemo(() => menuTypes.filter((type) => type.active !== false), [menuTypes]);
   const selectedMenuType = activeMenuTypes.find((type) => type.key === source) ?? activeMenuTypes[0] ?? defaultMenuTypes[0];
@@ -508,9 +513,9 @@ export function App() {
     setExternalOrderId(detail.externalOrderId ?? "");
     setOrderDate(detail.orderDate ?? dateInputValue(parseSqliteTimestamp(detail.createdAt)));
     setOrderNote(detail.note ?? "");
-    setDiscountMode("percent");
-    setDiscountValue(detail.discount ? String(detail.discount) : "");
-    setFinalTotalInput("");
+    setDiscountMode(detail.discountMode);
+    setDiscountValue(detail.discountInput ? String(detail.discountInput) : "");
+    setFinalTotalInput(detail.manualTotalInput === null ? "" : String(detail.manualTotalInput));
     setPaymentMethod(detail.payment?.method ?? "");
     setPaymentReference(detail.payment?.reference ?? "");
     setCashReceived(detail.payment?.cashReceived ? String(detail.payment.cashReceived) : "");
@@ -533,7 +538,7 @@ export function App() {
         return detail;
       }
       await saveOrderInfo(activeOrder.id);
-      await window.yamzo.orders.discount(activeOrder.id, calculatedDiscount);
+      await window.yamzo.orders.discount(activeOrder.id, calculatedDiscount, checkoutInputState());
       const detail = await window.yamzo.orders.detail(activeOrder.id);
       setActiveOrder(detail);
       return detail;
@@ -548,7 +553,7 @@ export function App() {
       note: orderNote || undefined,
       externalOrderId: externalOrderIdEnabled ? externalOrderId : null
     });
-    await window.yamzo.orders.discount(created.id, calculatedDiscount);
+    await window.yamzo.orders.discount(created.id, calculatedDiscount, checkoutInputState());
     const detail = await window.yamzo.orders.detail(created.id);
     setActiveOrder(detail);
     return detail;
@@ -633,7 +638,12 @@ export function App() {
     await window.yamzo.orders.addItem(order.id, { menuItemId: item.id, quantity: 1 });
     const detail = await window.yamzo.orders.detail(order.id);
     setActiveOrder(detail);
-    setFinalTotalInput(String(Math.max(0, detail.subtotal - calculatedDiscount)));
+    if (finalTotalInput.trim()) {
+      const preservedManualTotal = Math.min(Math.max(Math.round(Number(finalTotalInput)), 0), detail.subtotal);
+      setFinalTotalInput(String(preservedManualTotal));
+      setDiscountMode("tk");
+      setDiscountValue(String(detail.subtotal - preservedManualTotal));
+    }
     if (!activeOrder) setOrderLane("newOrder");
     setScreen("editOrder");
     await refreshData();
@@ -703,6 +713,27 @@ export function App() {
     setDiscountValue(String(Math.max(0, subtotal - value)));
   }
 
+  function checkoutInputState(overrides: Partial<DiscountInputState> = {}): DiscountInputState {
+    const rawDiscount = Number(discountValue || 0);
+    const manualTotal = finalTotalInput.trim() ? Number(finalTotalInput) : null;
+    return {
+      mode: overrides.mode ?? discountMode,
+      value: overrides.value ?? (Number.isFinite(rawDiscount) ? rawDiscount : 0),
+      manualTotal: overrides.manualTotal !== undefined
+        ? overrides.manualTotal
+        : manualTotal !== null && Number.isSafeInteger(manualTotal) ? manualTotal : null
+    };
+  }
+
+  async function persistCheckoutInput(overrides: Partial<DiscountInputState> = {}) {
+    if (!activeOrder || activeOrder.paid || !window.yamzo) return;
+    const input = checkoutInputState(overrides);
+    const discount = discountAmountFor(input.mode, input.value, subtotal);
+    await window.yamzo.orders.discount(activeOrder.id, discount, input);
+    setActiveOrder(await window.yamzo.orders.detail(activeOrder.id));
+    await refreshData();
+  }
+
   async function kitchenCopy() {
     const order = await ensureOrder();
     if (!order || !window.yamzo) return;
@@ -762,6 +793,7 @@ export function App() {
     if (printed) {
       setSessionPrinted((current) => ({ ...current, [`bill-${orderId}`]: true }));
     }
+    setActiveOrder(await window.yamzo.orders.detail(orderId));
     await refreshData();
   }
 
@@ -1230,7 +1262,7 @@ export function App() {
 
       {(screen === "newOrder" || screen === "editOrder") && (
         <Dialog open onOpenChange={(open) => { if (!open) setScreen("openOrders"); }}>
-          <DialogContent className="h-[calc(100vh-2rem)] w-[calc(100vw-2rem)] max-w-none overflow-hidden p-0 sm:max-w-none">
+          <DialogContent onPointerDownOutside={(event) => event.preventDefault()} className="h-[calc(100vh-2rem)] w-[calc(100vw-2rem)] max-w-none overflow-hidden p-0 sm:max-w-none">
             <DialogHeader className="sr-only">
               <DialogTitle>{orderLane === "newOrder" ? "New Order" : "Open Order"}</DialogTitle>
               <DialogDescription>Yamzo order workspace</DialogDescription>
@@ -1426,9 +1458,14 @@ export function App() {
                   <p className="text-xs text-muted-foreground">Percent by default, flat TK when needed.</p>
                 </div>
                 <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_92px] gap-2">
-                  <Input disabled={Boolean(activeOrder?.paid)} type="number" min="0" value={discountValue} onChange={(event) => handleDiscountValue(event.target.value)} onFocus={(event) => event.currentTarget.select()} onBlur={() => activeOrder && !activeOrder.paid && window.yamzo?.orders.discount(activeOrder.id, calculatedDiscount)} placeholder="0" />
-                  <Select disabled={Boolean(activeOrder?.paid)} value={discountMode} onValueChange={(value) => { setDiscountMode(value as DiscountMode); setFinalTotalInput(""); }}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
+                  <Input aria-label="Discount value" disabled={Boolean(activeOrder?.paid)} type="number" min="0" value={discountValue} onChange={(event) => handleDiscountValue(event.target.value)} onFocus={(event) => event.currentTarget.select()} onBlur={() => void persistCheckoutInput()} placeholder="0" />
+                  <Select disabled={Boolean(activeOrder?.paid)} value={discountMode} onValueChange={(value) => {
+                    const mode = value as DiscountMode;
+                    setDiscountMode(mode);
+                    setFinalTotalInput("");
+                    void persistCheckoutInput({ mode, manualTotal: null });
+                  }}>
+                    <SelectTrigger aria-label="Discount mode"><SelectValue /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="percent">%</SelectItem>
                       <SelectItem value="tk">Flat TK</SelectItem>
@@ -1438,7 +1475,7 @@ export function App() {
                 <p className="text-sm text-muted-foreground">Discount amount: {money(calculatedDiscount)}</p>
               </div>
               <div className="grid gap-3 rounded-xl border border-sky-200 bg-white p-3 shadow-sm">
-                <Field label="Manual entry"><Input disabled={Boolean(activeOrder?.paid)} type="number" min="0" value={finalTotalInput} onChange={(event) => handleFinalTotal(event.target.value)} onFocus={(event) => event.currentTarget.select()} placeholder={String(payableTotal)} /></Field>
+                <Field label="Manual entry"><Input aria-label="Manual total" disabled={Boolean(activeOrder?.paid)} type="number" min="0" value={finalTotalInput} onChange={(event) => handleFinalTotal(event.target.value)} onFocus={(event) => event.currentTarget.select()} onBlur={() => void persistCheckoutInput()} placeholder={String(payableTotal)} /></Field>
                 <div className="rounded-xl border border-emerald-300 bg-emerald-50 p-3"><MoneyRow label="Total" value={activeOrder?.payment?.amount ?? payableTotal} strong /></div>
               </div>
               {!platformManagedOrder && <div className="grid min-w-0 gap-3 rounded-xl border border-amber-300 bg-white p-3 shadow-sm">
@@ -1478,7 +1515,7 @@ export function App() {
                     </div>
                     {paymentMethod === "cash" && (
                       <>
-                        <Field label="Cash Received"><Input type="number" min="0" step="1" value={cashReceived} onChange={(event) => setCashReceived(event.target.value)} onFocus={(event) => event.currentTarget.select()} placeholder={String(payableTotal)} /></Field>
+                        <Field label="Cash Received"><Input aria-label="Cash Received" type="number" min="0" step="1" value={cashReceived} onChange={(event) => setCashReceived(event.target.value)} onFocus={(event) => event.currentTarget.select()} placeholder={String(payableTotal)} /></Field>
                         <div className={`rounded-xl border-2 p-3 ${paymentEntryInvalid ? "border-amber-400 bg-amber-50 text-amber-950" : "border-emerald-400 bg-emerald-50 text-emerald-950"}`}>
                           <MoneyRow label="Change / Vangti" value={cashChange} strong />
                           {paymentEntryInvalid && <p className="mt-1 text-xs font-medium">Cash Received must cover the payable total.</p>}

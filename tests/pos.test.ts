@@ -261,6 +261,41 @@ describe("Yamzo POS core", () => {
     expect(getOrderDetail(database, order.id).status).toBe("cancelled");
   });
 
+  it("preserves percent, flat-TK, and manual-total checkout entries in their designated fields", () => {
+    const database = freshDb();
+    const menuItem = saveMenuItem(database, { name: "Checkout State Item", price: 485, category: "Test", available: true });
+    const order = createOrder(database, { source: "in_house", tableNumber: "Table 1" });
+    addOrderItem(database, order.id, { menuItemId: menuItem.id, quantity: 1 });
+
+    applyDiscount(database, order.id, 49, { mode: "percent", value: 10, manualTotal: null });
+    expect(getOrderDetail(database, order.id)).toMatchObject({
+      subtotal: 485,
+      discount: 49,
+      discountMode: "percent",
+      discountInput: 10,
+      manualTotalInput: null,
+      total: 436
+    });
+
+    applyDiscount(database, order.id, 10, { mode: "tk", value: 10, manualTotal: null });
+    expect(getOrderDetail(database, order.id)).toMatchObject({
+      discount: 10,
+      discountMode: "tk",
+      discountInput: 10,
+      manualTotalInput: null,
+      total: 475
+    });
+
+    applyDiscount(database, order.id, 238, { mode: "tk", value: 238, manualTotal: 247 });
+    expect(getOrderDetail(database, order.id)).toMatchObject({
+      discount: 238,
+      discountMode: "tk",
+      discountInput: 238,
+      manualTotalInput: 247,
+      total: 247
+    });
+  });
+
   it("stores external order IDs only as order metadata", () => {
     const database = freshDb();
     setMenuData(database, [

@@ -1,5 +1,5 @@
 import type Database from "better-sqlite3";
-import type { HistoryRange, ManagerAuthorization, OrderBatch, OrderDetail, OrderItemInput, OrderLine, OrderSource, OrderSummary, PaymentMethod, ReceiptPaymentInfo, RecordPaymentResult } from "../../shared/types.js";
+import type { DiscountInputState, HistoryRange, ManagerAuthorization, OrderBatch, OrderDetail, OrderItemInput, OrderLine, OrderSource, OrderSummary, PaymentMethod, ReceiptPaymentInfo, RecordPaymentResult } from "../../shared/types.js";
 import { calculateOrderTotals } from "./pricing.js";
 import { enqueuePrintJob } from "../services/printQueue.js";
 import { buildAuditCopy, buildKitchenTicket, buildReceipt } from "../services/receipts.js";
@@ -119,17 +119,54 @@ export function voidOrderItem(db: Database.Database, orderItemId: number, reason
   touchOrder(db, item.order_id);
 }
 
-export function applyDiscount(db: Database.Database, orderId: number, discount: number): OrderSummary {
-  if (!Number.isFinite(discount) || discount < 0) {
-    throw new Error("Discount cannot be negative.");
+export function applyDiscount(db: Database.Database, orderId: number, discount: number, input?: DiscountInputState): OrderSummary {
+  if (!Number.isSafeInteger(discount) || discount < 0) {
+    throw new Error("Discount must be a non-negative whole TK amount.");
   }
   assertEditableOrder(db, orderId);
   const normalizedDiscount = Math.max(0, discount);
-  const current = db.prepare("SELECT discount FROM orders WHERE id = ?").get(orderId) as { discount: number } | undefined;
-  if (current?.discount === normalizedDiscount) return getOrderSummary(db, orderId);
+  const current = db.prepare(
+    "SELECT discount, discount_mode, discount_input, manual_total_input FROM orders WHERE id = ?"
+  ).get(orderId) as {
+    discount: number;
+    discount_mode: string;
+    discount_input: number;
+    manual_total_input: number | null;
+  } | undefined;
+  const normalizedInput = !input && current?.discount === normalizedDiscount
+    ? {
+        mode: current.discount_mode === "percent" ? "percent" as const : "tk" as const,
+        value: current.discount_input,
+        manualTotal: current.manual_total_input
+      }
+    : normalizeDiscountInput(normalizedDiscount, input);
+  if (
+    current?.discount === normalizedDiscount &&
+    current.discount_mode === normalizedInput.mode &&
+    current.discount_input === normalizedInput.value &&
+    current.manual_total_input === normalizedInput.manualTotal
+  ) return getOrderSummary(db, orderId);
   invalidateCurrentBill(db, orderId);
-  db.prepare("UPDATE orders SET discount = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(normalizedDiscount, orderId);
+  db.prepare(
+    `UPDATE orders
+     SET discount = ?, discount_mode = ?, discount_input = ?, manual_total_input = ?, updated_at = CURRENT_TIMESTAMP
+     WHERE id = ?`
+  ).run(normalizedDiscount, normalizedInput.mode, normalizedInput.value, normalizedInput.manualTotal, orderId);
   return getOrderSummary(db, orderId);
+}
+
+function normalizeDiscountInput(discount: number, input?: DiscountInputState): DiscountInputState {
+  if (!input) return { mode: "tk", value: discount, manualTotal: null };
+  if (input.mode !== "tk" && input.mode !== "percent") {
+    throw new Error("Discount mode is invalid.");
+  }
+  if (!Number.isFinite(input.value) || input.value < 0 || (input.mode === "percent" && input.value > 100)) {
+    throw new Error("Discount entry is invalid.");
+  }
+  if (input.manualTotal !== null && (!Number.isSafeInteger(input.manualTotal) || input.manualTotal < 0)) {
+    throw new Error("Manual total is invalid.");
+  }
+  return { mode: input.mode, value: input.value, manualTotal: input.manualTotal };
 }
 
 export function updateOrderNote(db: Database.Database, orderId: number, note: string): OrderSummary {
@@ -659,6 +696,9 @@ export function getOrderSummary(db: Database.Database, orderId: number): OrderSu
     first_kitchen_sent_at: string | null;
     kitchen_completed_at: string | null;
     delivery_fee: number;
+    discount_mode: string;
+    discount_input: number;
+    manual_total_input: number | null;
     is_test: number;
     initial_kot_print_job_id: number | null;
     initial_kot_printed_at: string | null;
@@ -731,6 +771,9 @@ export function getOrderSummary(db: Database.Database, orderId: number): OrderSu
     subtotal: totals.subtotal,
     deliveryFee: totals.deliveryFee,
     discount: totals.discount,
+    discountMode: order.discount_mode === "percent" ? "percent" : "tk",
+    discountInput: Number.isFinite(order.discount_input) ? order.discount_input : totals.discount,
+    manualTotalInput: typeof order.manual_total_input === "number" && Number.isSafeInteger(order.manual_total_input) && order.manual_total_input >= 0 ? order.manual_total_input : null,
     total: totals.total,
     createdAt: order.created_at,
     updatedAt: order.updated_at,
