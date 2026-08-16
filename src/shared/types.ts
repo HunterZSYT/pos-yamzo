@@ -118,6 +118,7 @@ export interface OrderSummary {
   total: number;
   createdAt: string;
   updatedAt: string;
+  closedAt: string | null;
   kitchenStartedAt: string | null;
   kitchenCompletedAt: string | null;
   itemCount: number;
@@ -170,6 +171,8 @@ export type InitialKotState = "required" | "queued" | "awaiting_retry" | "confir
 export interface OrderPayment {
   method: PaymentMethod;
   amount: number;
+  cashAmount: number;
+  bkashAmount: number;
   cashReceived: number | null;
   changeGiven: number;
   reference: string | null;
@@ -208,6 +211,12 @@ export interface SalesSummary {
     netAfterCommission: number;
   }>;
   paymentTotals: Array<{ method: string; orders: number; amount: number }>;
+  registerTotals: {
+    cash: number;
+    bkash: number;
+    foodpanda: number;
+    foodie: number;
+  };
   topItems: Array<{ name: string; quantity: number; total: number }>;
   rawMaterialCost: number;
   recordedCostTotal: number;
@@ -929,6 +938,8 @@ export interface ReceiptPaymentInfo {
   paid: boolean;
   method: PaymentMethod;
   amount?: number;
+  cashAmount?: number;
+  bkashAmount?: number;
   cashReceived?: number;
   changeGiven?: number;
   reference?: string;

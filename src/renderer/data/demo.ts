@@ -27,6 +27,7 @@ export const demoSummary: SalesSummary = {
   sourceBreakdown: {},
   sourceTotals: [],
   paymentTotals: [],
+  registerTotals: { cash: 0, bkash: 0, foodpanda: 0, foodie: 0 },
   topItems: [],
   rawMaterialCost: 0,
   recordedCostTotal: 0,

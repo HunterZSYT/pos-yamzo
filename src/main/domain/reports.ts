@@ -94,6 +94,8 @@ export function getSalesSummary(
       return leftIndex - rightIndex || left.source.localeCompare(right.source);
     });
   const paymentTotals = buildPaymentTotals(payments);
+  const paymentAmount = (method: string) => paymentTotals.find((payment) => payment.method === method)?.amount ?? 0;
+  const sourceAmount = (source: string) => sourceTotals.find((entry) => entry.source.toLowerCase() === source)?.netSales ?? 0;
   const grossSales = roundMoney(sourceTotals.reduce((sum, source) => sum + source.grossSales, 0));
   const discountTotal = roundMoney(sourceTotals.reduce((sum, source) => sum + source.discount, 0));
   const netSales = roundMoney(sourceTotals.reduce((sum, source) => sum + source.netSales, 0));
@@ -135,6 +137,12 @@ export function getSalesSummary(
     commissionTotal,
     paymentBreakdown: Object.fromEntries(paymentTotals.map((payment) => [payment.method, payment.amount])),
     paymentTotals,
+    registerTotals: {
+      cash: paymentAmount("cash"),
+      bkash: paymentAmount("bkash"),
+      foodpanda: sourceAmount("foodpanda"),
+      foodie: sourceAmount("foodie")
+    },
     sourceBreakdown: Object.fromEntries(sourceTotals.map((source) => [source.source, source.orders])),
     sourceTotals,
     topItems: topItems.map((item) => ({ ...item, total: roundMoney(item.total) })),

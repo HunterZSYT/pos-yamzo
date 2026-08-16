@@ -203,9 +203,10 @@ export function App() {
   const [discountMode, setDiscountMode] = useState<DiscountMode>("percent");
   const [discountValue, setDiscountValue] = useState("");
   const [finalTotalInput, setFinalTotalInput] = useState("");
-  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("cash");
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod | "">("");
   const [paymentReference, setPaymentReference] = useState("");
   const [cashReceived, setCashReceived] = useState("");
+  const [bkashReceived, setBkashReceived] = useState("");
   const [activeOrder, setActiveOrder] = useState<OrderDetail | null>(null);
   const [tableChangeMode, setTableChangeMode] = useState(false);
   const [menuForm, setMenuForm] = useState<MenuFormState>({ id: 0, name: "", price: "", category: "", available: true, trackRecipe: true, menuPrices: {} });
@@ -225,6 +226,7 @@ export function App() {
   const [redoManagerId, setRedoManagerId] = useState("");
   const [redoPin, setRedoPin] = useState("");
   const [redoReason, setRedoReason] = useState("");
+  const [completeConfirmOpen, setCompleteConfirmOpen] = useState(false);
   const [historyView, setHistoryView] = useState<OrderDetail | null>(null);
   const [passwordForm, setPasswordForm] = useState({ current: "", next: "", confirm: "" });
   const [menuSearch, setMenuSearch] = useState("");
@@ -278,27 +280,35 @@ export function App() {
   const selectedMenuDataForSource = menuData.find((entry) => entry.key === selectedMenuType?.menuDataKey);
   const externalOrderIdEnabled = Boolean(selectedMenuDataForSource?.externalOrderIdEnabled);
   const tablesEnabledForSource = selectedMenuType?.tablesEnabled ?? source === "in_house";
-  const activePaymentMethods = paymentMethods.filter((method) => method.active);
+  const platformManagedOrder = source.trim().toLowerCase() === "foodpanda" || source.trim().toLowerCase() === "foodie";
   const cashReceivedAmount = Number(cashReceived);
-  const cashPaymentInvalid = paymentMethod === "cash" && (
-    !cashReceived.trim()
-    || !Number.isFinite(cashReceivedAmount)
-    || cashReceivedAmount < payableTotal
-  );
-  const cashChange = paymentMethod === "cash" && Number.isFinite(cashReceivedAmount)
-    ? Math.max(0, cashReceivedAmount - payableTotal)
+  const bkashReceivedAmount = Number(bkashReceived);
+  const cashPortion = paymentMethod === "split" && Number.isFinite(bkashReceivedAmount) ? Math.max(0, payableTotal - bkashReceivedAmount) : paymentMethod === "cash" ? payableTotal : 0;
+  const paymentEntryInvalid = !paymentMethod
+    || (paymentMethod === "cash" && (!cashReceived.trim() || !Number.isFinite(cashReceivedAmount) || cashReceivedAmount < payableTotal))
+    || (paymentMethod === "bkash" && (!bkashReceived.trim() || !Number.isFinite(bkashReceivedAmount) || bkashReceivedAmount !== payableTotal))
+    || (paymentMethod === "split" && (
+      !cashReceived.trim() || !bkashReceived.trim() || !Number.isFinite(cashReceivedAmount) || !Number.isFinite(bkashReceivedAmount)
+      || bkashReceivedAmount <= 0 || bkashReceivedAmount >= payableTotal || cashReceivedAmount < cashPortion
+    ));
+  const cashChange = (paymentMethod === "cash" || paymentMethod === "split") && Number.isFinite(cashReceivedAmount)
+    ? Math.max(0, cashReceivedAmount - cashPortion)
     : 0;
   const nextOrderAction = !activeOrder
     ? "Add items to start the order"
     : activeOrder.unresolvedKotCount > 0
       ? "Print or retry every required Kitchen KOT"
+      : platformManagedOrder && !externalOrderId.trim()
+        ? "Enter the external platform order ID"
+        : platformManagedOrder
+          ? "Review and confirm completion"
       : activeOrder.billState !== "printed"
         ? "Print the Unpaid Bill Copy"
         : !activeOrder.paid
           ? "Record payment and print Paid Slip"
           : activeOrder.paidSlipState !== "printed"
             ? "Retry the Paid Slip"
-            : "Complete Payment";
+            : "Review and confirm completion";
   const needsDineInTable = tablesEnabledForSource && !tableNumber.trim();
   const failedPrintJobs = printJobs.filter((job) => job.status === "failed" || job.status === "retry");
   const completedOrders = history.filter((order) => order.status === "settled");
@@ -379,7 +389,6 @@ export function App() {
     setManagers(managerRows);
     setSwapManagerId((current) => managerRows.some((manager) => String(manager.id) === current) ? current : String(managerRows[0]?.id ?? ""));
     setProtectedManagerId((current) => managerRows.some((manager) => String(manager.id) === current) ? current : String(managerRows[0]?.id ?? ""));
-    setPaymentMethod((current) => paymentOptions?.some((method) => method.active && method.key === current) ? current : paymentOptions?.find((method) => method.active)?.key ?? "cash");
     setSelectedHost((current) => (hosts.includes(current) ? current : hosts[0] ?? "Cashier"));
     window.yamzo.print.listPrinters().then(setPrinters).catch(() => setPrinters([]));
   }
@@ -448,9 +457,10 @@ export function App() {
     setDiscountMode("percent");
     setDiscountValue("");
     setFinalTotalInput("");
-    setPaymentMethod("cash");
+    setPaymentMethod("");
     setPaymentReference("");
     setCashReceived("");
+    setBkashReceived("");
     setTableChangeMode(false);
     setCancelConfirmOpen(false);
     setCancellationReason("");
@@ -462,6 +472,7 @@ export function App() {
     setRedoPaymentOpen(false);
     setRedoPin("");
     setRedoReason("");
+    setCompleteConfirmOpen(false);
     setMessage("");
   }
 
@@ -497,9 +508,10 @@ export function App() {
     setDiscountMode("percent");
     setDiscountValue(detail.discount ? String(detail.discount) : "");
     setFinalTotalInput("");
-    setPaymentMethod(detail.payment?.method ?? activePaymentMethods[0]?.key ?? "cash");
+    setPaymentMethod(detail.payment?.method ?? "");
     setPaymentReference(detail.payment?.reference ?? "");
     setCashReceived(detail.payment?.cashReceived ? String(detail.payment.cashReceived) : "");
+    setBkashReceived(detail.payment?.bkashAmount ? String(detail.payment.bkashAmount) : "");
     setOrderLane("openOrders");
     setScreen("editOrder");
     setMessage(`Editing ${detail.orderNumber}.`);
@@ -556,6 +568,10 @@ export function App() {
 
   async function chooseSource(nextSource: OrderSource) {
     setSource(nextSource);
+    setPaymentMethod("");
+    setCashReceived("");
+    setBkashReceived("");
+    setPaymentReference("");
     const nextType = menuTypes.find((type) => type.key === nextSource);
     const nextTable = nextType?.tablesEnabled ? tableNumber : "";
     const nextMenuData = menuData.find((entry) => entry.key === nextType?.menuDataKey);
@@ -786,10 +802,26 @@ export function App() {
     }
   }
 
-  async function completeOrder() {
+  async function requestCompleteOrder() {
     const order = await ensureOrder();
     if (!order || !window.yamzo) return;
+    if (order.unresolvedKotCount > 0) {
+      setMessage("Every required Kitchen KOT must print before completion.");
+      return;
+    }
+    if (platformManagedOrder && !externalOrderId.trim()) {
+      setMessage("External Order ID is required before completing Foodpanda or Foodie orders.");
+      return;
+    }
+    setActiveOrder(await window.yamzo.orders.detail(order.id));
+    setCompleteConfirmOpen(true);
+  }
+
+  async function completeOrder() {
+    if (!activeOrder || !window.yamzo) return;
+    const order = activeOrder;
     await window.yamzo.orders.completePaid(order.id);
+    setCompleteConfirmOpen(false);
     resetOrderScreen();
     setScreen("openOrders");
     setMessage(`Order ${order.orderNumber} completed.`);
@@ -850,6 +882,10 @@ export function App() {
   async function recordPayment() {
     const order = await ensureOrder();
     if (!order || !window.yamzo) return;
+    if (platformManagedOrder) {
+      setMessage("Foodpanda and Foodie orders are completed using their External Order ID after KOT; no payment source is required here.");
+      return;
+    }
     if (order.unresolvedKotCount > 0) {
       setMessage("Every required Kitchen KOT must print before payment.");
       return;
@@ -858,13 +894,22 @@ export function App() {
       setMessage("Print the Unpaid Bill Copy before recording payment.");
       return;
     }
-    if (paymentMethod === "cash" && cashPaymentInvalid) {
-      setMessage(`Cash Received must be at least ${money(payableTotal)}.`);
+    if (!paymentMethod) {
+      setMessage("Choose Cash, bKash, or Multi before recording payment.");
+      return;
+    }
+    if (paymentEntryInvalid) {
+      setMessage(paymentMethod === "bkash"
+        ? `bKash Amount must equal ${money(payableTotal)}.`
+        : paymentMethod === "split"
+          ? "Enter both portions. bKash must be below the total and Cash Received must cover the remaining cash portion."
+          : `Cash Received must be at least ${money(payableTotal)}.`);
       return;
     }
     const result = await window.yamzo.orders.recordPayment(order.id, {
       method: paymentMethod,
-      cashReceived: paymentMethod === "cash" ? Number(cashReceived) : undefined,
+      cashReceived: paymentMethod === "cash" || paymentMethod === "split" ? Number(cashReceived) : undefined,
+      bkashAmount: paymentMethod === "bkash" || paymentMethod === "split" ? Number(bkashReceived) : undefined,
       reference: paymentReference.trim() || undefined,
       hostName: selectedHost
     });
@@ -872,7 +917,7 @@ export function App() {
     const updated = await window.yamzo.orders.detail(order.id);
     setActiveOrder(updated);
     setMessage(printed
-      ? paymentMethod === "cash"
+      ? paymentMethod === "cash" || paymentMethod === "split"
         ? `Payment recorded and Paid Slip printed. Change / Vangti: ${money(updated.payment?.changeGiven ?? 0)}.`
         : `${updated.payment ? labelize(updated.payment.method) : "Payment"} recorded and Paid Slip printed.`
       : "Payment recorded, but Paid Slip printing failed. Retry it before Complete Payment.");
@@ -916,8 +961,10 @@ export function App() {
   function buildReceiptPaymentInfo() {
     return {
       paid: Boolean(activeOrder?.payment),
-      method: activeOrder?.payment?.method ?? paymentMethod,
+      method: (activeOrder?.payment?.method ?? paymentMethod) || "cash",
       amount: activeOrder?.payment?.amount ?? payableTotal,
+      cashAmount: activeOrder?.payment?.cashAmount,
+      bkashAmount: activeOrder?.payment?.bkashAmount,
       reference: activeOrder?.payment?.reference ?? (paymentReference.trim() || undefined),
       host: activeOrder?.payment?.hostName ?? selectedHost
     };
@@ -1275,8 +1322,9 @@ export function App() {
               <CardDescription>{activeOrder ? activeOrder.orderNumber : "No order started"}</CardDescription>
               <div className="grid gap-2">
                 {externalOrderIdEnabled && (
-                  <Field label="External order ID">
-                    <Input disabled={Boolean(activeOrder?.paid)} value={externalOrderId} onChange={(event) => setExternalOrderId(event.target.value)} onBlur={() => saveOrderInfo()} placeholder="Example: Foodpanda order ID" />
+                  <Field label={platformManagedOrder ? "External order ID *" : "External order ID"}>
+                    <Input aria-required={platformManagedOrder} disabled={Boolean(activeOrder?.paid)} value={externalOrderId} onChange={(event) => setExternalOrderId(event.target.value)} onBlur={() => saveOrderInfo()} placeholder="Example: Foodpanda order ID" />
+                    {platformManagedOrder && !externalOrderId.trim() && <p className="text-xs font-medium text-amber-800">Required before this platform order can be completed.</p>}
                   </Field>
                 )}
                 <Field label="Number of Guests">
@@ -1339,15 +1387,24 @@ export function App() {
               <div role="status" className="grid grid-cols-2 gap-2 text-xs font-semibold">
                 <div className={`rounded-lg border p-2 ${activeOrder?.unresolvedKotCount === 0 ? "border-emerald-300 bg-emerald-50 text-emerald-900" : "border-amber-300 bg-amber-50 text-amber-950"}`}>1. Kitchen KOT {activeOrder?.unresolvedKotCount === 0 ? "✓" : `(${activeOrder?.unresolvedKotCount ?? 0} pending)`}</div>
                 <div className={`rounded-lg border p-2 ${activeOrder?.unresolvedKotCount === 0 ? "border-emerald-300 bg-emerald-50 text-emerald-900" : "border-slate-300 bg-white text-slate-700"}`}>2. Discount / Manual Entry</div>
-                <div className={`rounded-lg border p-2 ${activeOrder?.billState === "printed" ? "border-emerald-300 bg-emerald-50 text-emerald-900" : activeOrder?.billState === "failed" ? "border-amber-300 bg-amber-50 text-amber-950" : "border-slate-300 bg-white text-slate-700"}`}>3. Unpaid Bill {activeOrder?.billState === "printed" ? "✓" : activeOrder?.billState === "failed" ? "retry" : ""}</div>
-                <div className={`rounded-lg border p-2 ${activeOrder?.paid && activeOrder.paidSlipState === "printed" ? "border-emerald-300 bg-emerald-50 text-emerald-900" : activeOrder?.paid ? "border-amber-300 bg-amber-50 text-amber-950" : "border-slate-300 bg-white text-slate-700"}`}>4. Payment + Paid Slip {activeOrder?.paid && activeOrder.paidSlipState === "printed" ? "✓" : activeOrder?.paid ? "retry slip" : ""}</div>
-                <div className="col-span-2 rounded-lg border border-slate-300 bg-white p-2 text-slate-700">5. Complete Payment</div>
+                {platformManagedOrder ? (
+                  <>
+                    <div className={`rounded-lg border p-2 ${externalOrderId.trim() ? "border-emerald-300 bg-emerald-50 text-emerald-900" : "border-amber-300 bg-amber-50 text-amber-950"}`}>3. External ID {externalOrderId.trim() ? "✓" : "required"}</div>
+                    <div className="rounded-lg border border-sky-300 bg-sky-50 p-2 text-sky-900">4. Platform handled</div>
+                  </>
+                ) : (
+                  <>
+                    <div className={`rounded-lg border p-2 ${activeOrder?.billState === "printed" ? "border-emerald-300 bg-emerald-50 text-emerald-900" : activeOrder?.billState === "failed" ? "border-amber-300 bg-amber-50 text-amber-950" : "border-slate-300 bg-white text-slate-700"}`}>3. Unpaid Bill {activeOrder?.billState === "printed" ? "✓" : activeOrder?.billState === "failed" ? "retry" : ""}</div>
+                    <div className={`rounded-lg border p-2 ${activeOrder?.paid && activeOrder.paidSlipState === "printed" ? "border-emerald-300 bg-emerald-50 text-emerald-900" : activeOrder?.paid ? "border-amber-300 bg-amber-50 text-amber-950" : "border-slate-300 bg-white text-slate-700"}`}>4. Payment + Paid Slip {activeOrder?.paid && activeOrder.paidSlipState === "printed" ? "✓" : activeOrder?.paid ? "retry slip" : ""}</div>
+                  </>
+                )}
+                <div className="col-span-2 rounded-lg border border-slate-300 bg-white p-2 text-slate-700">5. Confirm Complete Order</div>
               </div>
               <div className="grid gap-2 rounded-xl border border-amber-200 bg-white p-3">
                 <p className="text-xs font-medium text-muted-foreground">Kitchen KOT is mandatory for every order type and prints automatically when Create Open Order is pressed.</p>
                 <Button size="lg" disabled={!activeOrder || Boolean(activeOrder.paid)} onClick={activeOrder?.failedKotCount ? () => retryWebsiteKitchenKot(activeOrder.id) : kitchenCopy}>{activeOrder?.failedKotCount ? "Retry Required KOT" : "Kitchen KOT / Reprint"}</Button>
               </div>
-              {activeOrder?.paid && (
+              {!platformManagedOrder && activeOrder?.paid && (
                 <p className="rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm font-medium text-emerald-950">Payment is recorded. Use Redo Payment with a manager PIN before Complete Payment if anything needs correction.</p>
               )}
               <MoneyRow label="Subtotal" value={subtotal} />
@@ -1372,49 +1429,69 @@ export function App() {
                 <Field label="Manual entry"><Input disabled={Boolean(activeOrder?.paid)} type="number" min="0" value={finalTotalInput} onChange={(event) => handleFinalTotal(event.target.value)} onFocus={(event) => event.currentTarget.select()} placeholder={String(payableTotal)} /></Field>
                 <div className="rounded-xl border border-emerald-300 bg-emerald-50 p-3"><MoneyRow label="Total" value={activeOrder?.payment?.amount ?? payableTotal} strong /></div>
               </div>
-              <div className="grid gap-3 rounded-xl border border-amber-300 bg-white p-3 shadow-sm">
+              {!platformManagedOrder && <div className="grid gap-3 rounded-xl border border-amber-300 bg-white p-3 shadow-sm">
                 <div><Label>Unpaid Bill Copy</Label><p className="text-xs text-muted-foreground">Confirm discounts and manual total, then print this before taking payment.</p></div>
                 <Button size="lg" className="h-14 w-full text-base font-bold" variant="secondary" disabled={!activeOrder || Boolean(activeOrder.paid) || activeOrder.unresolvedKotCount > 0 || activeItems.length === 0} onClick={billCopy}>{activeOrder?.billState === "failed" ? "Retry Unpaid Bill Copy" : activeOrder?.billState === "printed" ? "Reprint Unpaid Bill Copy" : "Print Unpaid Bill Copy"}</Button>
-              </div>
-              <div className="grid gap-3 rounded-xl border border-emerald-200 bg-white p-3 shadow-sm">
+              </div>}
+              {!platformManagedOrder ? <div className="grid gap-3 rounded-xl border border-emerald-200 bg-white p-3 shadow-sm">
                 {activeOrder?.payment ? (
                   <div className="grid gap-2 text-sm">
                     <div className="flex justify-between gap-3"><span className="text-muted-foreground">Paid with</span><strong>{paymentMethods.find((method) => method.key === activeOrder.payment?.method)?.label ?? labelize(activeOrder.payment.method)}</strong></div>
                     <MoneyRow label="Amount" value={activeOrder.payment.amount} strong />
+                    {activeOrder.payment.cashAmount > 0 && <MoneyRow label="Cash portion" value={activeOrder.payment.cashAmount} />}
+                    {activeOrder.payment.bkashAmount > 0 && <MoneyRow label="bKash portion" value={activeOrder.payment.bkashAmount} />}
                     {activeOrder.payment.cashReceived !== null && <MoneyRow label="Cash Received" value={activeOrder.payment.cashReceived} />}
                     {activeOrder.payment.changeGiven !== null && <div className="rounded-xl border-2 border-emerald-400 bg-emerald-50 p-3"><MoneyRow label="Change / Vangti" value={activeOrder.payment.changeGiven} strong /></div>}
                     {activeOrder.payment.reference && <div className="flex justify-between gap-3"><span className="text-muted-foreground">Reference</span><strong>{activeOrder.payment.reference}</strong></div>}
                   </div>
                 ) : (
                   <>
-                    <Field label="Payment method">
-                      <Select value={paymentMethod} onValueChange={(value) => {
-                        setPaymentMethod(value as PaymentMethod);
-                        if (value === "cash") setPaymentReference("");
-                      }}>
-                        <SelectTrigger className="h-12 w-full border-emerald-300 bg-emerald-50 text-base font-semibold"><SelectValue /></SelectTrigger>
-                        <SelectContent>
-                          {activePaymentMethods.map((method) => <SelectItem key={method.key} value={method.key}>{method.label}</SelectItem>)}
-                        </SelectContent>
-                      </Select>
-                    </Field>
-                    {paymentMethod === "cash" ? (
+                    <div className="grid gap-2">
+                      <Label>Payment source *</Label>
+                      <div role="group" aria-label="Payment source" className="grid grid-cols-3 gap-2">
+                        {([['cash', 'Cash'], ['bkash', 'bKash'], ['split', 'Multi']] as const).map(([value, label]) => (
+                          <label key={value} className={`flex min-h-14 cursor-pointer items-center justify-center gap-2 rounded-xl border-2 px-2 text-sm font-bold ${paymentMethod === value ? "border-emerald-500 bg-emerald-50 text-emerald-950" : "border-slate-200 bg-white text-slate-700"}`}>
+                            <Checkbox aria-label={label} checked={paymentMethod === value} onCheckedChange={(checked) => {
+                              if (!checked) return;
+                              setPaymentMethod(value);
+                              setCashReceived("");
+                              setBkashReceived("");
+                              setPaymentReference("");
+                            }} />
+                            {label}
+                          </label>
+                        ))}
+                      </div>
+                      {!paymentMethod && <p className="text-xs font-medium text-amber-800">Choose one payment source to continue.</p>}
+                    </div>
+                    {paymentMethod === "cash" && (
                       <>
                         <Field label="Cash Received"><Input type="number" min="0" step="1" value={cashReceived} onChange={(event) => setCashReceived(event.target.value)} onFocus={(event) => event.currentTarget.select()} placeholder={String(payableTotal)} /></Field>
-                        <div className={`rounded-xl border-2 p-3 ${cashPaymentInvalid ? "border-amber-400 bg-amber-50 text-amber-950" : "border-emerald-400 bg-emerald-50 text-emerald-950"}`}>
+                        <div className={`rounded-xl border-2 p-3 ${paymentEntryInvalid ? "border-amber-400 bg-amber-50 text-amber-950" : "border-emerald-400 bg-emerald-50 text-emerald-950"}`}>
                           <MoneyRow label="Change / Vangti" value={cashChange} strong />
-                          {cashPaymentInvalid && <p className="mt-1 text-xs font-medium">Cash Received must cover the payable total.</p>}
+                          {paymentEntryInvalid && <p className="mt-1 text-xs font-medium">Cash Received must cover the payable total.</p>}
                         </div>
                       </>
-                    ) : (
-                      <Field label="Customer number / account details">
-                        <Input value={paymentReference} onChange={(event) => setPaymentReference(event.target.value)} placeholder="Example: bKash number or card note" />
-                      </Field>
                     )}
-                    <Button size="lg" className="h-14 w-full text-base font-bold" disabled={!activeOrder || activeOrder.unresolvedKotCount > 0 || activeOrder.billState !== "printed" || cashPaymentInvalid || activeItems.length === 0} onClick={recordPayment}>Record Payment & Print Paid Slip</Button>
+                    {paymentMethod === "bkash" && <Field label="bKash Amount Received"><Input type="number" min="0" step="1" value={bkashReceived} onChange={(event) => setBkashReceived(event.target.value)} onFocus={(event) => event.currentTarget.select()} placeholder={String(payableTotal)} /></Field>}
+                    {paymentMethod === "split" && (
+                      <div className="grid gap-3 rounded-xl border border-sky-200 bg-sky-50 p-3">
+                        <Field label="bKash Amount"><Input type="number" min="0" step="1" value={bkashReceived} onChange={(event) => setBkashReceived(event.target.value)} onFocus={(event) => event.currentTarget.select()} placeholder="bKash portion" /></Field>
+                        <Field label="Cash Received"><Input type="number" min="0" step="1" value={cashReceived} onChange={(event) => setCashReceived(event.target.value)} onFocus={(event) => event.currentTarget.select()} placeholder={cashPortion ? String(cashPortion) : "Cash portion"} /></Field>
+                        <MoneyRow label="Cash portion due" value={cashPortion} />
+                        <MoneyRow label="Change / Vangti" value={cashChange} strong />
+                      </div>
+                    )}
+                    {(paymentMethod === "bkash" || paymentMethod === "split") && <Field label="bKash reference (optional)"><Input value={paymentReference} onChange={(event) => setPaymentReference(event.target.value)} placeholder="Customer number or transaction note" /></Field>}
+                    <Button size="lg" className="h-14 w-full text-base font-bold" disabled={!activeOrder || activeOrder.unresolvedKotCount > 0 || activeOrder.billState !== "printed" || paymentEntryInvalid || activeItems.length === 0} onClick={recordPayment}>Record Payment & Print Paid Slip</Button>
                   </>
                 )}
-              </div>
+              </div> : (
+                <div className="grid gap-2 rounded-xl border border-sky-300 bg-sky-50 p-3 text-sky-950">
+                  <strong>Platform payment handled outside POS</strong>
+                  <p className="text-sm">No unpaid bill, payment-source entry, or paid slip is required. This order’s total will be recorded under {formatConfiguredSource(source, menuTypes)} after KOT and External Order ID are confirmed.</p>
+                </div>
+              )}
               {activeOrder?.paid && (
                 <div className="grid gap-2 rounded-xl border border-sky-200 bg-white p-3">
                   <Button size="lg" variant="secondary" disabled={activeOrder.paidSlipState === "printed"} onClick={retryPaidSlip}>{activeOrder.paidSlipState === "printed" ? "Paid Slip Printed" : "Retry Paid Slip"}</Button>
@@ -1438,7 +1515,7 @@ export function App() {
                     {activeOrder?.unresolvedKotCount} required Kitchen KOT {activeOrder?.unresolvedKotCount === 1 ? "is" : "are"} unresolved. Unpaid Bill, payment, and completion are locked.
                   </p>
                 )}
-                <Button size="lg" className="w-full" disabled={!activeOrder?.paid || activeOrder.paidSlipState !== "printed" || activeItems.length === 0 || activeOrder.unresolvedKotCount > 0 || activeOrder.billState !== "printed"} onClick={completeOrder}>Complete Payment</Button>
+                <Button size="lg" className="w-full" disabled={!activeOrder || activeItems.length === 0 || activeOrder.unresolvedKotCount > 0 || (platformManagedOrder ? !externalOrderId.trim() : !activeOrder.paid || activeOrder.paidSlipState !== "printed" || activeOrder.billState !== "printed")} onClick={requestCompleteOrder}>Review & Complete Order</Button>
                 <Button size="lg" variant="secondary" className="w-full" disabled={!activeOrder || Boolean(activeOrder.paid)} onClick={requestCancelOrder}>Cancel Order</Button>
               </div>
               <div className="mt-auto grid gap-2 border-t pt-3">
@@ -1457,8 +1534,8 @@ export function App() {
       )}
 
       {screen === "websiteOrders" && <WebsiteOrdersScreen onMessage={setMessage} onAccepted={async () => { await refreshData(); setScreen("openOrders"); }} />}
-      {screen === "completedOrders" && <OrdersScreen title="Completed Orders" description="Permanent read-only POS orders and delivered website snapshots retained for audit." orders={completedOrders} menuTypes={menuTypes} onRefresh={refreshData} onView={viewHistoryOrder} afterList={<WebsiteCompletedOrdersPanel orders={completedWebsiteOrders} onRefresh={refreshData} onMessage={setMessage} />} />}
-      {screen === "cancelledOrders" && <OrdersScreen title="Cancelled Orders" description="Cancelled orders are retained permanently for audit." orders={cancelledOrders} menuTypes={menuTypes} onRefresh={refreshData} onView={viewHistoryOrder} />}
+      {screen === "completedOrders" && <OrdersScreen title="Completed Orders" description="Permanent read-only POS orders and delivered website snapshots retained for audit." orders={completedOrders} menuTypes={menuTypes} onRefresh={refreshData} onView={viewHistoryOrder} historyStatus="settled" afterList={<WebsiteCompletedOrdersPanel orders={completedWebsiteOrders} onRefresh={refreshData} onMessage={setMessage} />} />}
+      {screen === "cancelledOrders" && <OrdersScreen title="Cancelled Orders" description="Cancelled orders are retained permanently for audit." orders={cancelledOrders} menuTypes={menuTypes} onRefresh={refreshData} onView={viewHistoryOrder} historyStatus="cancelled" />}
       {screen === "swappedOrders" && <SwappedOrdersScreen />}
       {screen === "cancelledKots" && <CancelledKotsScreen />}
       {screen === "kitchenKot" && <KitchenKotHistoryScreen />}
@@ -1596,6 +1673,40 @@ export function App() {
           <AlertDialogFooter>
             <AlertDialogCancel>Keep Payment</AlertDialogCancel>
             <Button disabled={!redoManagerId || !redoPin || redoReason.trim().length < 2} onClick={authorizeRedoPayment}>Authorize Redo</Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <AlertDialog open={completeConfirmOpen} onOpenChange={setCompleteConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Confirm complete order</AlertDialogTitle>
+            <AlertDialogDescription>Review this summary carefully. After confirmation the order and all kitchen timers are permanently closed.</AlertDialogDescription>
+          </AlertDialogHeader>
+          {activeOrder && (
+            <div className="grid gap-3 rounded-xl border bg-muted/20 p-4 text-sm">
+              <div className="flex justify-between gap-3"><span className="text-muted-foreground">Order</span><strong>{activeOrder.orderNumber}</strong></div>
+              <div className="flex justify-between gap-3"><span className="text-muted-foreground">Type</span><strong>{formatConfiguredSource(activeOrder.source, menuTypes)}</strong></div>
+              {activeOrder.tableNumber && <div className="flex justify-between gap-3"><span className="text-muted-foreground">Table</span><strong>{activeOrder.tableNumber}</strong></div>}
+              {platformManagedOrder && <div className="flex justify-between gap-3"><span className="text-muted-foreground">External ID</span><strong>{externalOrderId}</strong></div>}
+              <div className="border-y py-2 text-muted-foreground">{activeOrder.itemPreview.join(", ") || `${activeOrder.itemCount} item(s)`}</div>
+              <MoneyRow label="Subtotal" value={activeOrder.subtotal} />
+              {activeOrder.discount > 0 && <MoneyRow label="Discount" value={activeOrder.discount} />}
+              <MoneyRow label="Final total" value={activeOrder.total} strong />
+              {platformManagedOrder ? (
+                <div className="rounded-lg bg-sky-50 p-2 font-medium text-sky-900">Recorded under {formatConfiguredSource(activeOrder.source, menuTypes)}; no POS payment source or bill copy.</div>
+              ) : activeOrder.payment ? (
+                <div className="grid gap-1 rounded-lg bg-emerald-50 p-2 text-emerald-950">
+                  <strong>{activeOrder.payment.method === "split" ? "Multi payment" : labelize(activeOrder.payment.method)}</strong>
+                  {activeOrder.payment.cashAmount > 0 && <span>Cash: {money(activeOrder.payment.cashAmount)}</span>}
+                  {activeOrder.payment.bkashAmount > 0 && <span>bKash: {money(activeOrder.payment.bkashAmount)}</span>}
+                  {activeOrder.payment.changeGiven > 0 && <span>Change: {money(activeOrder.payment.changeGiven)}</span>}
+                </div>
+              ) : null}
+            </div>
+          )}
+          <AlertDialogFooter>
+            <AlertDialogCancel>Go Back</AlertDialogCancel>
+            <AlertDialogAction onClick={() => void completeOrder()}>Confirm Complete Order</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
@@ -2036,14 +2147,46 @@ function ContentShell({ title, description, action, children }: { title: string;
   );
 }
 
-function OrdersScreen({ title, description, orders, menuTypes, onRefresh, onResume, resumeLabel = "Resume", onView, onRetryKot, afterList }: { title: string; description: string; orders: OrderSummary[]; menuTypes: MenuTypeSetting[]; onRefresh: () => void; onResume?: (orderId: number) => void; resumeLabel?: string; onView?: (orderId: number) => void; onRetryKot?: (orderId: number) => void; afterList?: React.ReactNode }) {
+function OrdersScreen({ title, description, orders, menuTypes, onRefresh, onResume, resumeLabel = "Resume", onView, onRetryKot, afterList, historyStatus }: { title: string; description: string; orders: OrderSummary[]; menuTypes: MenuTypeSetting[]; onRefresh: () => void; onResume?: (orderId: number) => void; resumeLabel?: string; onView?: (orderId: number) => void; onRetryKot?: (orderId: number) => void; afterList?: React.ReactNode; historyStatus?: "settled" | "cancelled" }) {
+  type HistoryPreset = "today" | "yesterday" | "7days" | "30days" | "all" | "custom";
+  const [historyPreset, setHistoryPreset] = useState<HistoryPreset>("today");
+  const [historyRange, setHistoryRange] = useState(() => dateRangeForPreset("today"));
+  const [historyOrders, setHistoryOrders] = useState<OrderSummary[]>(orders);
+  const [historyReload, setHistoryReload] = useState(0);
+
+  useEffect(() => {
+    if (!historyStatus) return;
+    let cancelled = false;
+    void window.yamzo?.orders.history({ startDate: historyRange.start || undefined, endDate: historyRange.end || undefined }).then((rows) => {
+      if (!cancelled) setHistoryOrders(rows.filter((order) => order.status === historyStatus));
+    });
+    return () => { cancelled = true; };
+  }, [historyStatus, historyRange.start, historyRange.end, historyReload]);
+
+  const visibleOrders = historyStatus ? historyOrders : orders;
+  function chooseHistoryPreset(next: Exclude<HistoryPreset, "custom">) {
+    setHistoryPreset(next);
+    setHistoryRange(dateRangeForPreset(next));
+  }
   return (
     <ContentShell
       title={title}
       description={description}
-      action={<Button variant="secondary" onClick={onRefresh}>Refresh</Button>}
+      action={<Button variant="secondary" onClick={() => { onRefresh(); if (historyStatus) setHistoryReload((value) => value + 1); }}>Refresh</Button>}
     >
-      <OrderList orders={orders} menuTypes={menuTypes} showResume={Boolean(onResume)} resumeLabel={resumeLabel} onResume={onResume} onView={onView} onRetryKot={onRetryKot} />
+      {historyStatus && (
+        <Card className="border-sky-200">
+          <CardContent className="grid gap-3 p-4">
+            <div className="flex flex-wrap gap-2" aria-label={`${title} date shortcuts`}>
+              {([['today', 'Today'], ['yesterday', 'Yesterday'], ['7days', '7 days'], ['30days', '30 days'], ['all', 'All']] as const).map(([value, label]) => (
+                <Button key={value} size="sm" variant={historyPreset === value ? "default" : "outline"} onClick={() => chooseHistoryPreset(value)}>{label}</Button>
+              ))}
+            </div>
+            <DateRangePicker value={historyRange} onChange={(value) => { setHistoryPreset("custom"); setHistoryRange(value); }} label={`${title} date range`} />
+          </CardContent>
+        </Card>
+      )}
+      <OrderList orders={visibleOrders} menuTypes={menuTypes} showResume={Boolean(onResume)} resumeLabel={resumeLabel} onResume={onResume} onView={onView} onRetryKot={onRetryKot} />
       {afterList}
     </ContentShell>
   );
@@ -2078,11 +2221,11 @@ function OrderList({ orders, menuTypes, showResume = false, resumeLabel = "Resum
               <Badge variant="outline" className={order.unresolvedKotCount === 0 ? "border-emerald-300 bg-emerald-50 text-emerald-800" : "border-amber-300 bg-amber-50 text-amber-900"}>
                 {order.requiredKotCount === 0 ? "KOT not required" : order.unresolvedKotCount === 0 ? `KOT ✓ (${order.requiredKotCount})` : order.failedKotCount > 0 ? `KOT retry (${order.unresolvedKotCount})` : `KOT queued (${order.unresolvedKotCount})`}
               </Badge>
-              <Badge variant="outline" className={order.paid ? "border-emerald-300 bg-emerald-50 text-emerald-800" : "border-slate-300 bg-slate-50 text-slate-700"}>{order.paid ? "Paid ✓" : "Unpaid"}</Badge>
-              <Badge variant="outline" className={order.billState === "printed" ? "border-emerald-300 bg-emerald-50 text-emerald-800" : "border-slate-300 bg-slate-50 text-slate-700"}>{order.billState === "printed" ? "Bill ✓" : order.billState === "failed" ? "Bill retry" : "No bill"}</Badge>
+              {isPlatformManagedSource(order.source) ? <Badge variant="outline" className="border-sky-300 bg-sky-50 text-sky-800">Platform handled</Badge> : <Badge variant="outline" className={order.paid ? "border-emerald-300 bg-emerald-50 text-emerald-800" : "border-slate-300 bg-slate-50 text-slate-700"}>{order.paid ? "Paid ✓" : "Unpaid"}</Badge>}
+              {!isPlatformManagedSource(order.source) && <Badge variant="outline" className={order.billState === "printed" ? "border-emerald-300 bg-emerald-50 text-emerald-800" : "border-slate-300 bg-slate-50 text-slate-700"}>{order.billState === "printed" ? "Bill ✓" : order.billState === "failed" ? "Bill retry" : "No bill"}</Badge>}
             </div>
             <div className="grid gap-1 text-xs text-muted-foreground">
-              <span>Elapsed {elapsedBetween(order.createdAt)}</span>
+              <span>Elapsed {elapsedBetween(order.createdAt, order.closedAt ?? undefined)}</span>
               <span>Host {order.hostName}</span>
               <span>Created {formatDate(order.createdAt)}</span>
               <span>Updated {formatDate(order.updatedAt)}</span>
@@ -2104,7 +2247,7 @@ function OrderList({ orders, menuTypes, showResume = false, resumeLabel = "Resum
                 <div key={batch.id} className="rounded-xl border bg-white p-3">
                   <div className="grid grid-cols-[1fr_auto] items-center gap-2 text-xs text-muted-foreground">
                     <span>{batch.label}</span>
-                    <strong className={batch.completedAt ? "text-emerald-700" : "text-amber-700"}>{elapsedBetween(batch.createdAt, batch.completedAt ?? undefined)}</strong>
+                    <strong className={batch.completedAt || order.closedAt ? "text-emerald-700" : "text-amber-700"}>{elapsedBetween(batch.createdAt, batch.completedAt ?? order.closedAt ?? undefined)}</strong>
                   </div>
                   <p className="mt-2 text-sm font-medium leading-snug">{batch.items.length ? batch.items.join(", ") : "No items"}</p>
                 </div>
@@ -2183,7 +2326,6 @@ function ReportsPanel({ summary, inventory, menuTypes }: { summary: SalesSummary
   }));
   const hasInventoryActivity = reportRestockCount > 0 || reportPhysicalCountCount > 0;
   const costTotal = reportSummary.recordedCostTotal;
-  const netAfterCommission = reportSummary.netAfterCommission ?? reportSummary.netSales - reportSummary.commissionTotal;
   const operationalProfit = reportSummary.operatingProfit;
   const periodLabel = reportRange.start || reportRange.end
     ? `${reportRange.start ? formatBusinessDate(reportRange.start) : "Beginning"} - ${reportRange.end ? formatBusinessDate(reportRange.end) : "Today"}`
@@ -2202,7 +2344,7 @@ function ReportsPanel({ summary, inventory, menuTypes }: { summary: SalesSummary
             <div>
               <p className="text-xs font-semibold uppercase tracking-[0.18em] text-emerald-200">Operational overview</p>
               <h2 className="mt-1 text-2xl font-semibold">{periodLabel}</h2>
-              <p className="mt-1 text-sm text-emerald-100/80">Sales, order mix, payments, food usage, and recorded costs in one view.</p>
+              <p className="mt-1 text-sm text-emerald-100/80">Start with the four register-closing totals below; operational detail remains underneath.</p>
             </div>
             <Badge variant="secondary" className="bg-white/10 text-white">{loading ? "Updating..." : `${reportSummary.settledOrders} completed`}</Badge>
           </div>
@@ -2221,12 +2363,23 @@ function ReportsPanel({ summary, inventory, menuTypes }: { summary: SalesSummary
 
       {reportError && <p role="alert" className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{reportError}</p>}
 
+      <Card className="border-sky-200">
+        <CardHeader className="pb-3">
+          <CardTitle>Register closing totals</CardTitle>
+          <CardDescription>Cash is only money applied as cash after change. Parcel and dine-in bKash payments stay under bKash; platform orders stay under their platform.</CardDescription>
+        </CardHeader>
+        <CardContent className="grid grid-cols-2 gap-3 xl:grid-cols-4">
+          <OperationalMetric label="Cash" value={money(reportSummary.registerTotals.cash)} detail="Expected cash from completed POS payments" tone="emerald" />
+          <OperationalMetric label="bKash" value={money(reportSummary.registerTotals.bkash)} detail="Completed bKash portions only" />
+          <OperationalMetric label="Foodpanda" value={money(reportSummary.registerTotals.foodpanda)} detail="Platform order sales" tone="amber" />
+          <OperationalMetric label="Foodie" value={money(reportSummary.registerTotals.foodie)} detail="Platform order sales" tone="amber" />
+        </CardContent>
+      </Card>
+
       <section aria-label="Sales totals" className="grid grid-cols-[repeat(auto-fit,minmax(180px,1fr))] gap-3">
         <OperationalMetric label="Net sales" value={money(reportSummary.netSales)} detail={`${reportSummary.settledOrders} completed orders`} tone="emerald" />
-        <OperationalMetric label="Gross sales" value={money(reportSummary.grossSales)} detail={`Before ${money(reportSummary.discountTotal)} discounts`} />
-        <OperationalMetric label="Average order" value={money(reportSummary.averageOrderValue)} detail="Per completed order" />
-        <OperationalMetric label="Dine-in guests" value={String(reportSummary.dineInGuests)} detail={`${reportSummary.averageGuestsPerDineInOrder || 0} average guests per dine-in order`} />
-        <OperationalMetric label="Platform commission" value={money(reportSummary.commissionTotal)} detail={`${money(netAfterCommission)} after commission`} tone="amber" />
+        <OperationalMetric label="Completed orders" value={String(reportSummary.settledOrders)} detail={`Average ${money(reportSummary.averageOrderValue)}`} />
+        <OperationalMetric label="Discounts" value={money(reportSummary.discountTotal)} detail={`Gross sales ${money(reportSummary.grossSales)}`} />
         <OperationalMetric label="Recorded costs" value={money(costTotal)} detail={`${reportSummary.costRecordCount} cost records`} tone="amber" />
         <OperationalMetric label="Estimated operating profit" value={money(operationalProfit)} detail={`${money(rawCostTotal)} recipe cost included`} tone={operationalProfit >= 0 ? "emerald" : "red"} />
       </section>
@@ -5365,6 +5518,11 @@ function orderDisplayName(order: Pick<OrderSummary, "source" | "tableNumber">, m
   const sourceLabel = formatConfiguredSource(order.source, menuTypes);
   if (order.tableNumber) return `${sourceLabel} - ${order.tableNumber}`;
   return sourceLabel;
+}
+
+function isPlatformManagedSource(source: string): boolean {
+  const normalized = source.trim().toLowerCase();
+  return normalized === "foodpanda" || normalized === "foodie";
 }
 
 function kitchenElapsed(order: Pick<OrderSummary, "kitchenStartedAt" | "kitchenCompletedAt">): string {

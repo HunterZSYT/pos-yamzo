@@ -1,9 +1,9 @@
 import type Database from "better-sqlite3";
-import type { ManagerAuthorization, OrderBatch, OrderDetail, OrderItemInput, OrderLine, OrderSource, OrderSummary, PaymentMethod, ReceiptPaymentInfo, RecordPaymentResult } from "../../shared/types.js";
+import type { HistoryRange, ManagerAuthorization, OrderBatch, OrderDetail, OrderItemInput, OrderLine, OrderSource, OrderSummary, PaymentMethod, ReceiptPaymentInfo, RecordPaymentResult } from "../../shared/types.js";
 import { calculateOrderTotals } from "./pricing.js";
 import { enqueuePrintJob } from "../services/printQueue.js";
 import { buildAuditCopy, buildKitchenTicket, buildReceipt } from "../services/receipts.js";
-import { getBrandingSettings, getMenuTypes, getPaymentMethods, getPrinterName } from "../services/settings.js";
+import { getBrandingSettings, getMenuTypes, getPrinterName } from "../services/settings.js";
 import { createOrderCostSnapshot } from "./inventory.js";
 import { verifyManagerPin } from "./managers.js";
 
@@ -374,7 +374,14 @@ export function cancelOrder(db: Database.Database, orderId: number, reason = "")
     db.prepare(
       "INSERT INTO audit_logs (action, entity_type, entity_id, details) VALUES ('cancel_order', 'order', ?, ?)"
     ).run(String(orderId), JSON.stringify({ reason: cancellationReason || null, fromStatus: order.status }));
-    db.prepare("UPDATE orders SET status = 'cancelled', settled_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(orderId);
+    db.prepare("UPDATE kitchen_tickets SET completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP) WHERE order_id = ?").run(orderId);
+    db.prepare(
+      `UPDATE orders
+       SET status = 'cancelled', settled_at = NULL,
+           kitchen_completed_at = CASE WHEN first_kitchen_sent_at IS NOT NULL THEN COALESCE(kitchen_completed_at, CURRENT_TIMESTAMP) ELSE kitchen_completed_at END,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?`
+    ).run(orderId);
   });
   tx();
   return getOrderSummary(db, orderId);
@@ -397,13 +404,14 @@ export function orderHasKitchenPrintedItems(db: Database.Database, orderId: numb
 }
 
 export function markKitchenDelivered(db: Database.Database, orderId: number): OrderSummary {
-  const order = db.prepare("SELECT first_kitchen_sent_at FROM orders WHERE id = ?").get(orderId) as { first_kitchen_sent_at: string | null } | undefined;
+  const order = db.prepare("SELECT status, first_kitchen_sent_at FROM orders WHERE id = ?").get(orderId) as { status: string; first_kitchen_sent_at: string | null } | undefined;
   if (!order) {
     throw new Error("Order not found.");
   }
   if (!order.first_kitchen_sent_at) {
     throw new Error("Kitchen Copy has not been sent yet.");
   }
+  assertRunningOrderStatus(order.status);
   assertInitialKotConfirmed(db, orderId);
   db.prepare("UPDATE kitchen_tickets SET completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP) WHERE order_id = ? AND completed_at IS NULL").run(orderId);
   db.prepare("UPDATE orders SET kitchen_completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(orderId);
@@ -411,23 +419,25 @@ export function markKitchenDelivered(db: Database.Database, orderId: number): Or
 }
 
 export function restartKitchenTimer(db: Database.Database, orderId: number): OrderSummary {
-  const order = db.prepare("SELECT first_kitchen_sent_at FROM orders WHERE id = ?").get(orderId) as { first_kitchen_sent_at: string | null } | undefined;
+  const order = db.prepare("SELECT status, first_kitchen_sent_at FROM orders WHERE id = ?").get(orderId) as { status: string; first_kitchen_sent_at: string | null } | undefined;
   if (!order) {
     throw new Error("Order not found.");
   }
   if (!order.first_kitchen_sent_at) {
     throw new Error("Kitchen Copy has not been sent yet.");
   }
+  assertRunningOrderStatus(order.status);
   db.prepare("UPDATE kitchen_tickets SET completed_at = NULL WHERE order_id = ?").run(orderId);
   db.prepare("UPDATE orders SET kitchen_completed_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(orderId);
   return getOrderSummary(db, orderId);
 }
 
 export function markKitchenBatchDelivered(db: Database.Database, ticketId: number): OrderSummary {
-  const ticket = db.prepare("SELECT order_id FROM kitchen_tickets WHERE id = ?").get(ticketId) as { order_id: number } | undefined;
+  const ticket = db.prepare("SELECT kt.order_id, o.status FROM kitchen_tickets kt JOIN orders o ON o.id = kt.order_id WHERE kt.id = ?").get(ticketId) as { order_id: number; status: string } | undefined;
   if (!ticket) {
     throw new Error("Kitchen batch not found.");
   }
+  assertRunningOrderStatus(ticket.status);
   assertInitialKotConfirmed(db, ticket.order_id);
   db.prepare("UPDATE kitchen_tickets SET completed_at = CURRENT_TIMESTAMP WHERE id = ?").run(ticketId);
   const remaining = db.prepare("SELECT COUNT(*) AS count FROM kitchen_tickets WHERE order_id = ? AND completed_at IS NULL").get(ticket.order_id) as { count: number };
@@ -440,10 +450,11 @@ export function markKitchenBatchDelivered(db: Database.Database, ticketId: numbe
 }
 
 export function restartKitchenBatchTimer(db: Database.Database, ticketId: number): OrderSummary {
-  const ticket = db.prepare("SELECT order_id FROM kitchen_tickets WHERE id = ?").get(ticketId) as { order_id: number } | undefined;
+  const ticket = db.prepare("SELECT kt.order_id, o.status FROM kitchen_tickets kt JOIN orders o ON o.id = kt.order_id WHERE kt.id = ?").get(ticketId) as { order_id: number; status: string } | undefined;
   if (!ticket) {
     throw new Error("Kitchen batch not found.");
   }
+  assertRunningOrderStatus(ticket.status);
   db.prepare("UPDATE kitchen_tickets SET completed_at = NULL WHERE id = ?").run(ticketId);
   db.prepare("UPDATE orders SET kitchen_completed_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(ticket.order_id);
   return getOrderSummary(db, ticket.order_id);
@@ -452,11 +463,12 @@ export function restartKitchenBatchTimer(db: Database.Database, ticketId: number
 export function recordOrderPayment(
   db: Database.Database,
   orderId: number,
-  input: { method: PaymentMethod; cashReceived?: number; reference?: string; hostName?: string }
+  input: { method: PaymentMethod; cashReceived?: number; bkashAmount?: number; reference?: string; hostName?: string }
 ): RecordPaymentResult {
-  const order = db.prepare("SELECT status FROM orders WHERE id = ?").get(orderId) as { status: string } | undefined;
+  const order = db.prepare("SELECT status, source FROM orders WHERE id = ?").get(orderId) as { status: string; source: string } | undefined;
   if (!order) throw new Error("Order not found.");
   if (order.status === "settled" || order.status === "cancelled") throw new Error("Order is already closed.");
+  if (isPlatformManagedSource(order.source)) throw new Error("Foodpanda and Foodie orders do not require payment entry or bill copies.");
   assertAllRequiredKotsPrinted(db, orderId);
   const bill = db.prepare(
     `SELECT pj.status
@@ -467,22 +479,21 @@ export function recordOrderPayment(
   if (bill?.status !== "printed") throw new Error("Print the Unpaid Bill Copy before recording payment.");
   const totals = calculateOrderTotals(db, orderId);
   if (totals.total <= 0) throw new Error("Cannot record payment for an empty order.");
-  const activeMethods = getPaymentMethods(db).filter((method) => method.active).map((method) => method.key);
-  if (input.method === "split" || !activeMethods.includes(input.method as Exclude<PaymentMethod, "split">)) {
-    throw new Error("Select an active payment method.");
-  }
+  if (!["cash", "bkash", "split"].includes(input.method)) throw new Error("Choose Cash, bKash, or Multi before recording payment.");
   const hostName = cleanHostName(input.hostName);
   const reference = input.reference?.trim().slice(0, 120) || null;
-  const cashReceived = input.method === "cash" ? normalizeMoney(input.cashReceived, "Cash Received") : null;
-  if (input.method === "cash" && (cashReceived ?? 0) < totals.total) {
-    throw new Error("Cash Received cannot be less than the payable amount.");
-  }
-  const changeGiven = input.method === "cash" ? (cashReceived ?? 0) - totals.total : 0;
+  const bkashAmount = input.method === "bkash" || input.method === "split" ? normalizeMoney(input.bkashAmount, "bKash Amount") : 0;
+  if (input.method === "bkash" && bkashAmount !== totals.total) throw new Error("bKash Amount must equal the payable total.");
+  if (input.method === "split" && (bkashAmount <= 0 || bkashAmount >= totals.total)) throw new Error("Multi payment needs both a cash portion and a bKash portion.");
+  const cashAmount = input.method === "cash" ? totals.total : input.method === "split" ? totals.total - bkashAmount : 0;
+  const cashReceived = cashAmount > 0 ? normalizeMoney(input.cashReceived, "Cash Received") : null;
+  if (cashAmount > 0 && (cashReceived ?? 0) < cashAmount) throw new Error("Cash Received cannot be less than the cash portion.");
+  const changeGiven = cashAmount > 0 ? (cashReceived ?? 0) - cashAmount : 0;
   const existing = db.prepare(
-    "SELECT method, payable_amount, cash_received, reference, host_name FROM order_payment_sessions WHERE order_id = ?"
-  ).get(orderId) as { method: PaymentMethod; payable_amount: number; cash_received: number | null; reference: string | null; host_name: string } | undefined;
+    "SELECT method, payable_amount, cash_amount, bkash_amount, cash_received, reference, host_name FROM order_payment_sessions WHERE order_id = ?"
+  ).get(orderId) as { method: PaymentMethod; payable_amount: number; cash_amount: number; bkash_amount: number; cash_received: number | null; reference: string | null; host_name: string } | undefined;
   if (existing) {
-    if (existing.method === input.method && existing.payable_amount === totals.total && existing.cash_received === cashReceived && existing.reference === reference && existing.host_name === hostName) {
+    if (existing.method === input.method && existing.payable_amount === totals.total && existing.cash_amount === cashAmount && existing.bkash_amount === bkashAmount && existing.cash_received === cashReceived && existing.reference === reference && existing.host_name === hostName) {
       const pointer = db.prepare("SELECT paid_slip_print_job_id FROM orders WHERE id = ?").get(orderId) as { paid_slip_print_job_id: number | null };
       if (!pointer.paid_slip_print_job_id) throw new Error("Paid Slip is missing for the recorded payment.");
       return { order: getOrderSummary(db, orderId), paidSlipPrintJobId: pointer.paid_slip_print_job_id };
@@ -493,14 +504,15 @@ export function recordOrderPayment(
   const tx = db.transaction(() => {
     db.prepare(
       `INSERT INTO order_payment_sessions
-        (order_id, method, payable_amount, cash_received, change_given, reference, host_name)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`
-    ).run(orderId, input.method, totals.total, cashReceived, changeGiven, reference, hostName);
-    db.prepare("INSERT INTO payments (order_id, method, amount) VALUES (?, ?, ?)").run(orderId, input.method, totals.total);
+        (order_id, method, payable_amount, cash_amount, bkash_amount, cash_received, change_given, reference, host_name)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(orderId, input.method, totals.total, cashAmount, bkashAmount, cashReceived, changeGiven, reference, hostName);
+    if (cashAmount > 0) db.prepare("INSERT INTO payments (order_id, method, amount) VALUES (?, 'cash', ?)").run(orderId, cashAmount);
+    if (bkashAmount > 0) db.prepare("INSERT INTO payments (order_id, method, amount) VALUES (?, 'bkash', ?)").run(orderId, bkashAmount);
     db.prepare("UPDATE orders SET host_name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(hostName, orderId);
     db.prepare(
       "INSERT INTO audit_logs (action, entity_type, entity_id, details) VALUES ('record_payment', 'order', ?, ?)"
-    ).run(String(orderId), JSON.stringify({ method: input.method, amount: totals.total, cashReceived, changeGiven, reference }));
+    ).run(String(orderId), JSON.stringify({ method: input.method, amount: totals.total, cashAmount, bkashAmount, cashReceived, changeGiven, reference }));
     const paidSlipPrintJobId = enqueuePrintJob(
       db,
       "paid_slip",
@@ -508,6 +520,8 @@ export function recordOrderPayment(
         paid: true,
         method: input.method,
         amount: totals.total,
+        cashAmount,
+        bkashAmount,
         cashReceived: cashReceived ?? undefined,
         changeGiven,
         reference: reference ?? undefined,
@@ -536,7 +550,7 @@ export function redoOrderPayment(
   if (!order) throw new Error("Order not found.");
   if (order.status === "settled" || order.status === "cancelled") throw new Error("Completed and cancelled orders are permanent.");
   const payment = db.prepare(
-    "SELECT method, payable_amount, cash_received, change_given, reference, host_name, created_at FROM order_payment_sessions WHERE order_id = ?"
+    "SELECT method, payable_amount, cash_amount, bkash_amount, cash_received, change_given, reference, host_name, created_at FROM order_payment_sessions WHERE order_id = ?"
   ).get(orderId) as Record<string, unknown> | undefined;
   if (!payment) throw new Error("No recorded payment is available to redo.");
   const tx = db.transaction(() => {
@@ -554,30 +568,26 @@ export function redoOrderPayment(
 }
 
 export function completePaidOrder(db: Database.Database, orderId: number): OrderSummary {
-  const order = db.prepare("SELECT status FROM orders WHERE id = ?").get(orderId) as { status: string } | undefined;
+  const order = db.prepare("SELECT status, source, external_order_id FROM orders WHERE id = ?").get(orderId) as { status: string; source: string; external_order_id: string | null } | undefined;
   if (!order) throw new Error("Order not found.");
   if (order.status === "settled") return getOrderSummary(db, orderId);
   if (order.status === "cancelled") throw new Error("Cancelled orders cannot be completed.");
   assertAllRequiredKotsPrinted(db, orderId);
   const totals = calculateOrderTotals(db, orderId);
-  const payment = db.prepare(
-    "SELECT payable_amount FROM order_payment_sessions WHERE order_id = ?"
-  ).get(orderId) as { payable_amount: number } | undefined;
-  if (!payment || payment.payable_amount !== totals.total) throw new Error("A valid payment is required before completion.");
-  const bill = db.prepare(
-    `SELECT pj.status
-     FROM orders o
-     LEFT JOIN print_jobs pj ON pj.id = o.bill_print_job_id
-     WHERE o.id = ?`
-  ).get(orderId) as { status: string } | undefined;
-  if (bill?.status !== "printed") throw new Error("The current Unpaid Bill Copy must print successfully before completion.");
-  const paidSlip = db.prepare(
-    `SELECT pj.status
-     FROM orders o
-     LEFT JOIN print_jobs pj ON pj.id = o.paid_slip_print_job_id
-     WHERE o.id = ?`
-  ).get(orderId) as { status: string | null } | undefined;
-  if (paidSlip?.status !== "printed") throw new Error("Paid Slip must print successfully before completion.");
+  const platformManaged = isPlatformManagedSource(order.source);
+  if (platformManaged && !order.external_order_id?.trim()) throw new Error("Foodpanda and Foodie orders require an External Order ID before completion.");
+  if (!platformManaged) {
+    const payment = db.prepare("SELECT payable_amount FROM order_payment_sessions WHERE order_id = ?").get(orderId) as { payable_amount: number } | undefined;
+    if (!payment || payment.payable_amount !== totals.total) throw new Error("A valid payment is required before completion.");
+    const bill = db.prepare(
+      `SELECT pj.status FROM orders o LEFT JOIN print_jobs pj ON pj.id = o.bill_print_job_id WHERE o.id = ?`
+    ).get(orderId) as { status: string } | undefined;
+    if (bill?.status !== "printed") throw new Error("The current Unpaid Bill Copy must print successfully before completion.");
+    const paidSlip = db.prepare(
+      `SELECT pj.status FROM orders o LEFT JOIN print_jobs pj ON pj.id = o.paid_slip_print_job_id WHERE o.id = ?`
+    ).get(orderId) as { status: string | null } | undefined;
+    if (paidSlip?.status !== "printed") throw new Error("Paid Slip must print successfully before completion.");
+  }
   const tx = db.transaction(() => {
     createOrderCostSnapshot(db, orderId);
     db.prepare("UPDATE kitchen_tickets SET completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP) WHERE order_id = ? AND completed_at IS NULL").run(orderId);
@@ -590,7 +600,7 @@ export function completePaidOrder(db: Database.Database, orderId: number): Order
     ).run(orderId);
     db.prepare(
       "INSERT INTO audit_logs (action, entity_type, entity_id, details) VALUES ('complete_paid_order', 'order', ?, ?)"
-    ).run(String(orderId), JSON.stringify({ amount: totals.total }));
+    ).run(String(orderId), JSON.stringify({ amount: totals.total, platformManaged, source: order.source, externalOrderId: order.external_order_id }));
   });
   tx();
   return getOrderSummary(db, orderId);
@@ -645,6 +655,7 @@ export function getOrderSummary(db: Database.Database, orderId: number): OrderSu
     order_date: string;
     created_at: string;
     updated_at: string;
+    settled_at: string | null;
     first_kitchen_sent_at: string | null;
     kitchen_completed_at: string | null;
     delivery_fee: number;
@@ -677,11 +688,13 @@ export function getOrderSummary(db: Database.Database, orderId: number): OrderSu
     : undefined;
   const paid = db.prepare("SELECT COUNT(*) AS count FROM payments WHERE order_id = ?").get(orderId) as { count: number };
   const payment = db.prepare(
-    `SELECT method, payable_amount, cash_received, change_given, reference, host_name, created_at
+    `SELECT method, payable_amount, cash_amount, bkash_amount, cash_received, change_given, reference, host_name, created_at
      FROM order_payment_sessions WHERE order_id = ?`
   ).get(orderId) as {
     method: PaymentMethod;
     payable_amount: number;
+    cash_amount: number;
+    bkash_amount: number;
     cash_received: number | null;
     change_given: number;
     reference: string | null;
@@ -721,6 +734,7 @@ export function getOrderSummary(db: Database.Database, orderId: number): OrderSu
     total: totals.total,
     createdAt: order.created_at,
     updatedAt: order.updated_at,
+    closedAt: order.status === "settled" ? order.settled_at ?? order.updated_at : order.status === "cancelled" ? order.updated_at : null,
     kitchenStartedAt: order.first_kitchen_sent_at,
     kitchenCompletedAt: order.kitchen_completed_at,
     itemCount: itemCount.count,
@@ -733,6 +747,8 @@ export function getOrderSummary(db: Database.Database, orderId: number): OrderSu
     payment: payment ? {
       method: payment.method,
       amount: payment.payable_amount,
+      cashAmount: payment.cash_amount,
+      bkashAmount: payment.bkash_amount,
       cashReceived: payment.cash_received,
       changeGiven: payment.change_given,
       reference: payment.reference,
@@ -765,8 +781,12 @@ export function listOpenOrders(db: Database.Database): OrderSummary[] {
   return rows.map((row) => getOrderSummary(db, row.id));
 }
 
-export function listOrderHistory(db: Database.Database): OrderSummary[] {
-  const rows = db.prepare("SELECT id FROM orders WHERE status IN ('settled', 'cancelled') ORDER BY updated_at DESC LIMIT 200").all() as Array<{ id: number }>;
+export function listOrderHistory(db: Database.Database, range: HistoryRange = {}): OrderSummary[] {
+  const clauses = ["status IN ('settled', 'cancelled')"];
+  const params: string[] = [];
+  if (range.startDate) { clauses.push("date(order_date) >= date(?)"); params.push(range.startDate); }
+  if (range.endDate) { clauses.push("date(order_date) <= date(?)"); params.push(range.endDate); }
+  const rows = db.prepare(`SELECT id FROM orders WHERE ${clauses.join(" AND ")} ORDER BY order_date DESC, updated_at DESC LIMIT 1000`).all(...params) as Array<{ id: number }>;
   return rows.map((row) => getOrderSummary(db, row.id));
 }
 
@@ -777,9 +797,10 @@ export function reprintReceipt(db: Database.Database, orderId: number): number {
 
 export function printBillCopy(db: Database.Database, orderId: number, paymentInfo?: ReceiptPaymentInfo, reprint = false): number {
   const order = db.prepare(
-    "SELECT requires_kot, bill_print_job_id FROM orders WHERE id = ?"
-  ).get(orderId) as { requires_kot: number; bill_print_job_id: number | null } | undefined;
+    "SELECT source, requires_kot, bill_print_job_id FROM orders WHERE id = ?"
+  ).get(orderId) as { source: string; requires_kot: number; bill_print_job_id: number | null } | undefined;
   if (!order) throw new Error("Order not found.");
+  if (isPlatformManagedSource(order.source)) throw new Error("Foodpanda and Foodie orders do not require bill copies.");
   assertAllRequiredKotsPrinted(db, orderId);
   assertNoRecordedPayment(db, orderId);
   paymentInfo = { paid: false, method: "cash" };
@@ -885,6 +906,14 @@ function assertEditableOrder(db: Database.Database, orderId: number): void {
     throw new Error("Order is already closed.");
   }
   assertNoRecordedPayment(db, orderId);
+}
+
+function assertRunningOrderStatus(status: string): void {
+  if (status === "settled" || status === "cancelled") throw new Error("Closed-order timers cannot be restarted or changed.");
+}
+
+function isPlatformManagedSource(source: string): boolean {
+  return source.trim().toLowerCase() === "foodpanda" || source.trim().toLowerCase() === "foodie";
 }
 
 function assertNoRecordedPayment(db: Database.Database, orderId: number): void {

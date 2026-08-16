@@ -200,6 +200,12 @@ function renderPaymentLines(payments: Array<{ method: string; amount: number }>,
     const method = formatSourceLabel(paymentInfo.method);
     const paidAmount = typeof paymentInfo.amount === "number" ? formatTk(paymentInfo.amount) : "Paid";
     const lines = [leftRightReceiptLine(`PAYMENT: ${method}`, paidAmount)];
+    if (typeof paymentInfo.cashAmount === "number" && paymentInfo.cashAmount > 0) {
+      lines.push(leftRightReceiptLine("CASH PORTION:", formatTk(paymentInfo.cashAmount)));
+    }
+    if (typeof paymentInfo.bkashAmount === "number" && paymentInfo.bkashAmount > 0) {
+      lines.push(leftRightReceiptLine("BKASH PORTION:", formatTk(paymentInfo.bkashAmount)));
+    }
     if (typeof paymentInfo.cashReceived === "number") {
       lines.push(leftRightReceiptLine("CASH RECEIVED:", formatTk(paymentInfo.cashReceived)));
     }

@@ -3,7 +3,7 @@ import bcrypt from "bcryptjs";
 import { randomUUID } from "node:crypto";
 
 const BRANDING_DEFAULTS_VERSION = 2;
-export const DATABASE_SCHEMA_VERSION = 9;
+export const DATABASE_SCHEMA_VERSION = 10;
 
 const defaultBranding = {
   restaurantName: "Yamzo",
@@ -126,6 +126,8 @@ export function migrate(db: Database.Database): void {
       order_id INTEGER PRIMARY KEY REFERENCES orders(id) ON DELETE CASCADE,
       method TEXT NOT NULL,
       payable_amount INTEGER NOT NULL CHECK(payable_amount >= 0),
+      cash_amount INTEGER NOT NULL DEFAULT 0 CHECK(cash_amount >= 0),
+      bkash_amount INTEGER NOT NULL DEFAULT 0 CHECK(bkash_amount >= 0),
       cash_received INTEGER,
       change_given INTEGER NOT NULL DEFAULT 0 CHECK(change_given >= 0),
       reference TEXT,
@@ -508,12 +510,36 @@ export function migrate(db: Database.Database): void {
   ensureColumn(db, "orders", "bill_print_job_id", "INTEGER");
   ensureColumn(db, "orders", "paid_slip_print_job_id", "INTEGER");
   ensureColumn(db, "orders", "requires_kot", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn(db, "order_payment_sessions", "cash_amount", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn(db, "order_payment_sessions", "bkash_amount", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn(db, "swap_events", "event_kind", "TEXT NOT NULL DEFAULT 'swap'");
   db.prepare(
     "UPDATE swap_events SET event_kind = 'cancel' WHERE replacement_order_item_id IS NULL"
   ).run();
   db.prepare(
     "UPDATE orders SET requires_kot = 1 WHERE status IN ('open', 'kitchen_sent')"
+  ).run();
+  db.prepare(
+    `UPDATE order_payment_sessions
+     SET cash_amount = CASE WHEN method = 'cash' THEN payable_amount ELSE cash_amount END,
+         bkash_amount = CASE WHEN method = 'bkash' THEN payable_amount ELSE bkash_amount END`
+  ).run();
+  db.prepare(
+    `UPDATE orders
+     SET kitchen_completed_at = COALESCE(kitchen_completed_at, settled_at, updated_at)
+     WHERE status IN ('settled', 'cancelled')
+       AND first_kitchen_sent_at IS NOT NULL
+       AND kitchen_completed_at IS NULL`
+  ).run();
+  db.prepare(
+    `UPDATE kitchen_tickets
+     SET completed_at = COALESCE(
+       completed_at,
+       (SELECT COALESCE(o.kitchen_completed_at, o.settled_at, o.updated_at)
+        FROM orders o WHERE o.id = kitchen_tickets.order_id)
+     )
+     WHERE completed_at IS NULL
+       AND order_id IN (SELECT id FROM orders WHERE status IN ('settled', 'cancelled'))`
   ).run();
   db.prepare(
     `UPDATE orders

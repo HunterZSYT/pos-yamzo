@@ -263,7 +263,7 @@ export function registerIpc(db: Database.Database, dependencies: IpcDependencies
   ipcMain.handle("orders:restartKitchenBatchTimer", (_event, ticketId: number) => withSheetSync(() => restartKitchenBatchTimer(db, ticketId)));
   ipcMain.handle("orders:detail", (_event, orderId: number) => getOrderDetail(db, orderId));
   ipcMain.handle("orders:open", () => listOpenOrders(db));
-  ipcMain.handle("orders:history", () => listOrderHistory(db));
+  ipcMain.handle("orders:history", (_event, range) => listOrderHistory(db, range));
   ipcMain.handle("orders:retryInitialKot", async (_event, orderId: number) => {
     const order = getOrderDetail(db, orderId);
     if (!order.initialKotPrintJobId) throw new Error("Initial Kitchen KOT has not been queued.");

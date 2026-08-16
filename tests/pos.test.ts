@@ -11,6 +11,7 @@ import {
   completePaidOrder,
   createOrder,
   getOrderDetail,
+  listOrderHistory,
   listOpenOrders,
   markKitchenDelivered,
   orderHasKitchenPrintedItems,
@@ -665,7 +666,7 @@ describe("Yamzo POS core", () => {
     updateOrderInfo(database, order.id, { source: "in_house", tableNumber: "Table 4", guestCount: 5, hostName: "Nadia", note: null, externalOrderId: null });
     applyDiscount(database, order.id, 0);
     expect(getOrderDetail(database, order.id).billState).toBe("printed");
-    expect(() => recordOrderPayment(database, order.id, { method: "cash", cashReceived: 300, hostName: "Nadia" })).toThrow(/less than the payable/i);
+    expect(() => recordOrderPayment(database, order.id, { method: "cash", cashReceived: 300, hostName: "Nadia" })).toThrow(/less than the cash portion/i);
 
     const paid = recordOrderPayment(database, order.id, { method: "cash", cashReceived: 500, hostName: "Nadia" });
     expect(paid.order.payment).toMatchObject({ method: "cash", amount: 395, cashReceived: 500, changeGiven: 105, hostName: "Nadia" });
@@ -703,6 +704,95 @@ describe("Yamzo POS core", () => {
     expect(getOrderDetail(database, takeaway.id)).toMatchObject({ tableNumber: null, guestCount: 2, initialKotState: "required" });
   }, 15_000);
 
+  it("records Multi tender as separate cash and bKash amounts and closes every timer", () => {
+    const database = freshDb();
+    const menuItem = saveMenuItem(database, { name: "Split Tender Platter", price: 1000, category: "Checkout", available: true });
+    const order = createOrder(database, { source: "parcel", hostName: "Nadia", orderDate: "2026-08-17" });
+    addOrderItem(database, order.id, { menuItemId: menuItem.id, quantity: 1 });
+    const kotJobId = sendNewItemsToKitchen(database, order.id)!;
+    markPrintJobPrinted(database, kotJobId);
+    const billJobId = printBillCopy(database, order.id);
+    markPrintJobPrinted(database, billJobId);
+
+    expect(() => recordOrderPayment(database, order.id, { method: "split", bkashAmount: 0, cashReceived: 1000, hostName: "Nadia" })).toThrow(/both a cash portion and a bKash portion/i);
+    const paid = recordOrderPayment(database, order.id, {
+      method: "split",
+      bkashAmount: 600,
+      cashReceived: 500,
+      reference: "BK-600",
+      hostName: "Nadia"
+    });
+    expect(paid.order.payment).toMatchObject({
+      method: "split",
+      amount: 1000,
+      cashAmount: 400,
+      bkashAmount: 600,
+      cashReceived: 500,
+      changeGiven: 100
+    });
+    expect(database.prepare("SELECT method, amount FROM payments WHERE order_id = ? ORDER BY method").all(order.id)).toEqual([
+      { method: "bkash", amount: 600 },
+      { method: "cash", amount: 400 }
+    ]);
+    const paidSlip = getPrintJob(database, paid.paidSlipPrintJobId).content;
+    expect(paidSlip).toContain("CASH PORTION:");
+    expect(paidSlip).toContain("BKASH PORTION:");
+    markPrintJobPrinted(database, paid.paidSlipPrintJobId);
+
+    const completed = completePaidOrder(database, order.id);
+    expect(completed).toMatchObject({ status: "settled", payment: { cashAmount: 400, bkashAmount: 600 } });
+    expect(completed.closedAt).toBeTruthy();
+    expect(completed.kitchenCompletedAt).toBeTruthy();
+    expect(completed.batches.every((batch) => batch.completedAt)).toBe(true);
+    expect(() => restartKitchenTimer(database, order.id)).toThrow(/Closed-order timers/i);
+    expect(getSalesSummary(database).registerTotals).toEqual({ cash: 400, bkash: 600, foodpanda: 0, foodie: 0 });
+  });
+
+  it("requires KOT and an external ID for Foodpanda and Foodie but skips bill and payment printing", () => {
+    const database = freshDb();
+    const menuItem = saveMenuItem(database, { name: "Platform Meal", price: 350, category: "Checkout", available: true });
+
+    for (const [source, externalOrderId] of [["foodpanda", "FP-1701"], ["foodie", "FD-1702"]] as const) {
+      const order = createOrder(database, { source, hostName: "Nadia", orderDate: "2026-08-17" });
+      addOrderItem(database, order.id, { menuItemId: menuItem.id, quantity: 1 });
+      expect(() => completePaidOrder(database, order.id)).toThrow(/Kitchen KOT/i);
+      const kotJobId = sendNewItemsToKitchen(database, order.id)!;
+      markPrintJobPrinted(database, kotJobId);
+      expect(() => printBillCopy(database, order.id)).toThrow(/do not require bill copies/i);
+      expect(() => recordOrderPayment(database, order.id, { method: "cash", cashReceived: 350, hostName: "Nadia" })).toThrow(/do not require payment entry/i);
+      expect(() => completePaidOrder(database, order.id)).toThrow(/External Order ID/i);
+      updateOrderInfo(database, order.id, { source, externalOrderId });
+      const completed = completePaidOrder(database, order.id);
+      expect(completed).toMatchObject({ status: "settled", source, externalOrderId, paid: false, billState: "not_printed", paidSlipState: "not_printed" });
+      expect(completed.batches.every((batch) => batch.completedAt)).toBe(true);
+    }
+
+    expect(getSalesSummary(database).registerTotals).toEqual({ cash: 0, bkash: 0, foodpanda: 350, foodie: 350 });
+  });
+
+  it("stops cancelled-order timers and filters completed and cancelled history by order date", () => {
+    const database = freshDb();
+    const menuItem = saveMenuItem(database, { name: "History Meal", price: 200, category: "Checkout", available: true });
+    const cancelled = createOrder(database, { source: "parcel", orderDate: "2026-08-16" });
+    addOrderItem(database, cancelled.id, { menuItemId: menuItem.id, quantity: 1 });
+    sendNewItemsToKitchen(database, cancelled.id);
+    const closed = cancelOrder(database, cancelled.id, "Customer cancelled");
+    expect(closed).toMatchObject({ status: "cancelled" });
+    expect(closed.closedAt).toBeTruthy();
+    expect(closed.kitchenCompletedAt).toBeTruthy();
+    expect(closed.batches.every((batch) => batch.completedAt)).toBe(true);
+    expect(() => restartKitchenTimer(database, cancelled.id)).toThrow(/Closed-order timers/i);
+
+    const completed = createOrder(database, { source: "foodpanda", externalOrderId: "FP-HISTORY", orderDate: "2026-08-17" });
+    addOrderItem(database, completed.id, { menuItemId: menuItem.id, quantity: 1 });
+    const kotJobId = sendNewItemsToKitchen(database, completed.id)!;
+    markPrintJobPrinted(database, kotJobId);
+    completePaidOrder(database, completed.id);
+
+    expect(listOrderHistory(database, { startDate: "2026-08-16", endDate: "2026-08-16" }).map((order) => order.id)).toEqual([cancelled.id]);
+    expect(listOrderHistory(database, { startDate: "2026-08-17", endDate: "2026-08-17" }).map((order) => order.id)).toEqual([completed.id]);
+  });
+
   it("persists a non-cash payment and Bill prerequisite across a database restart", () => {
     const tempDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "yamzo-gate3b-"));
     const databasePath = path.join(tempDirectory, "yamzo.sqlite3");
@@ -722,9 +812,8 @@ describe("Yamzo POS core", () => {
       ]);
       const billJobId = printBillCopy(db, order.id);
       markPrintJobPrinted(db, billJobId);
-      expect(() => recordOrderPayment(db!, order.id, { method: "cash", cashReceived: 245, hostName: "Rafi" })).toThrow(/active payment method/i);
-      const paid = recordOrderPayment(db, order.id, { method: "bkash", reference: "01700000000", hostName: "Rafi" });
-      expect(paid.order.payment).toMatchObject({ method: "bkash", amount: 245, reference: "01700000000", changeGiven: 0 });
+      const paid = recordOrderPayment(db, order.id, { method: "bkash", bkashAmount: 245, reference: "01700000000", hostName: "Rafi" });
+      expect(paid.order.payment).toMatchObject({ method: "bkash", amount: 245, cashAmount: 0, bkashAmount: 245, reference: "01700000000", changeGiven: 0 });
       markPrintJobPrinted(db, paid.paidSlipPrintJobId);
       db.close();
       db = null;
