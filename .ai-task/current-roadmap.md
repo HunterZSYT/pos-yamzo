@@ -12,7 +12,7 @@ Ship a verified GitHub update that enforces occupied-table locking, explicit who
 - [x] Receipts: make unpaid Bill Copy precede payment, auto-queue a Paid Slip on Record Payment, include paid/discount/change summary, and constrain the address to two lines.
 - [x] Automated verification: add regression coverage, then run TypeScript, tests, build, package, and packaged smoke.
 - [x] Rendered verification: use a disposable `YAMZO_APP_DATA_DIR`; confirm packaged login/new audit navigation in Electron/CDP, with checkout state transitions proven through transport-bypassed automated tests.
-- [ ] Release: inspect the exact diff, commit on a `codex/` release branch, push, merge to `main`, push `main`, and verify local/remote parity.
+- [x] Release: inspect the exact diff, commit on a `codex/` release branch, push, merge to `main`, push `main`, and verify local/remote parity.
 
 ## Safety gates
 
