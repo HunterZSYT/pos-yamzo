@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { LockKeyhole } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -1300,16 +1301,18 @@ export function App() {
                   {Array.from({ length: totalTables }, (_, index) => `Table ${index + 1}`).map((table) => {
                     const occupied = openOrderByTable.get(table);
                     const selected = tableNumber === table;
+                    const unavailable = Boolean(occupied && occupied.id !== activeOrder?.id);
                     return (
                       <Button
                         key={table}
                         variant={selected ? "default" : "outline"}
-                        disabled={Boolean(activeOrder?.paid) || Boolean(occupied && occupied.id !== activeOrder?.id) || Boolean(activeOrder && orderLane === "openOrders" && !tableChangeMode)}
-                        aria-label={occupied && occupied.id !== activeOrder?.id ? `${table} occupied and locked` : table}
-                        className={`h-14 text-base font-bold ${!selected && occupied ? "border-slate-400 bg-slate-200 text-slate-600" : ""}`}
+                        disabled={Boolean(activeOrder?.paid) || unavailable || Boolean(activeOrder && orderLane === "openOrders" && !tableChangeMode)}
+                        aria-label={unavailable ? `${table}, occupied and unavailable` : table}
+                        className={`relative h-14 min-w-0 overflow-hidden px-2 text-base font-bold ${!selected && occupied ? "border-slate-400 bg-slate-200 text-slate-500 opacity-75" : ""}`}
                         onClick={() => chooseTable(table)}
                       >
-                        {table}{occupied && occupied.id !== activeOrder?.id ? " · Locked" : ""}
+                        <span className="truncate">{table}</span>
+                        {unavailable && <LockKeyhole aria-hidden="true" className="absolute right-1.5 top-1.5 size-3.5" />}
                       </Button>
                     );
                   })}
